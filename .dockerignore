@@ -1,0 +1,9 @@
+**/node_modules
+**/dist
+**/dist-worker
+**/.env
+**/src/infrastructure/database/generated
+.git
+.idea
+.claude
+docs

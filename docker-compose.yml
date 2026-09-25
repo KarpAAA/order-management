@@ -1,0 +1,111 @@
+# Local environment. Infra (postgres, redis, fake-psp) starts by default;
+# api + worker start with `docker compose --profile app up --build` from ONE image.
+name: oms
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: oms
+      POSTGRES_PASSWORD: oms
+      POSTGRES_DB: oms
+    ports:
+      - '5432:5432'
+    volumes:
+      # postgres:18 keeps PGDATA in a versioned subfolder; mount the parent
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U oms -d oms']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  fake-psp:
+    build:
+      context: .
+      dockerfile: devtools/fake-psp/Dockerfile
+    environment:
+      PORT: 4010
+      FAKE_PSP_LATENCY_MS: 200
+      FAKE_PSP_FAILURE_RATE: 0
+      FAKE_PSP_DECLINE_RATE: 0
+    ports:
+      - '4010:4010'
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://localhost:4010/charges').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ── profile: app ─────────────────────────────────────────────────────────────
+  # One-shot migration step, never part of the api/worker CMD (data/migrations.md §2).
+  migrate:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+      target: build
+    image: oms-api-build:local
+    working_dir: /repo/services/api
+    command: ['pnpm', 'exec', 'prisma', 'migrate', 'deploy']
+    environment:
+      DATABASE_URL: postgresql://oms:oms@postgres:5432/oms?schema=public
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    image: oms-api:local
+    command: ['node', 'dist/entrypoints/main.api.js']
+    env_file: services/api/.env.example
+    environment: &app-env
+      DATABASE_URL: postgresql://oms:oms@postgres:5432/oms?schema=public
+      REDIS_URL: redis://redis:6379
+      PSP_BASE_URL: http://fake-psp:4010
+    ports:
+      - '3000:3000'
+    depends_on: &app-deps
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+      fake-psp:
+        condition: service_healthy
+
+  worker:
+    profiles: [app]
+    image: oms-api:local
+    command: ['node', 'dist/entrypoints/main.worker.js']
+    env_file: services/api/.env.example
+    environment: *app-env
+    depends_on:
+      <<: *app-deps
+      api:
+        condition: service_started
+
+volumes:
+  postgres-data:
+  redis-data:
