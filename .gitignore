@@ -1,0 +1,14 @@
+node_modules/
+dist/
+dist-worker/
+coverage/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+services/api/src/infrastructure/database/generated/
+.idea/workspace.xml
+.idea/shelf/
+.claude/settings.local.json
+.claude/rules/shared
+.claude/skills/new-module

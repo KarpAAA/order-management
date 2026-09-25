@@ -1,0 +1,16 @@
+packages:
+  - services/*
+  - devtools/*
+  # packages/* (shared contracts) arrives in Step 3
+
+onlyBuiltDependencies:
+  - '@nestjs/core'
+  - '@prisma/engines'
+  - argon2
+  - esbuild
+  - msgpackr-extract
+  - prisma
+  - unrs-resolver
+
+ignoredBuiltDependencies:
+  - '@scarf/scarf'
