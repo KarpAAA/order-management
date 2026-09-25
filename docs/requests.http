@@ -1,0 +1,187 @@
+### WebStorm HTTP Client. Run top to bottom after `pnpm infra:up`, `pnpm db:seed`, `pnpm dev`.
+### Seeded ids and credentials: README.md → "Seeded data". Password for every user: Passw0rd!
+
+@api = http://localhost:3000/v1
+@psp = http://localhost:4010
+@acme = 01990000-0000-7000-8000-a00000000000
+@globex = 01990000-0000-7000-8000-b00000000000
+@acmeMug = 01990000-0000-7000-8000-a10000000001
+@acmeArchivedProduct = 01990000-0000-7000-8000-a10000000004
+@globexPaidOrder = 01990000-0000-7000-8000-b20000000004
+@acmePendingOrder = 01990000-0000-7000-8000-a20000000003
+
+###############################################################################
+# Logins
+###############################################################################
+
+### Login as acme MEMBER (creates and places orders)
+POST {{api}}/auth/login
+Content-Type: application/json
+
+{ "email": "member@acme.test", "password": "Passw0rd!" }
+
+> {% client.global.set("member", response.body.accessToken); %}
+
+### Login as acme VIEWER (read-only)
+POST {{api}}/auth/login
+Content-Type: application/json
+
+{ "email": "viewer@acme.test", "password": "Passw0rd!" }
+
+> {% client.global.set("viewer", response.body.accessToken); %}
+
+### Login as acme ADMIN (fulfills orders)
+POST {{api}}/auth/login
+Content-Type: application/json
+
+{ "email": "admin@acme.test", "password": "Passw0rd!" }
+
+> {% client.global.set("admin", response.body.accessToken); %}
+
+### Me: user + memberships
+GET {{api}}/me
+Authorization: Bearer {{member}}
+
+###############################################################################
+# Main flow: create order → place → poll → history
+###############################################################################
+
+### Catalog (active products only)
+GET {{api}}/workspaces/{{acme}}/products?status=ACTIVE&limit=5
+Authorization: Bearer {{member}}
+
+### Create a DRAFT order (2 mugs, 10 % off)
+POST {{api}}/workspaces/{{acme}}/orders
+Authorization: Bearer {{member}}
+Content-Type: application/json
+
+{
+  "items": [{ "productId": "{{acmeMug}}", "quantity": 2 }],
+  "discount": { "type": "PERCENT", "valueBps": 1000 }
+}
+
+> {% client.global.set("orderId", response.body.id); %}
+
+### Order details (status DRAFT, version 0, totals)
+GET {{api}}/workspaces/{{acme}}/orders/{{orderId}}
+Authorization: Bearer {{member}}
+
+> {% client.global.set("version", response.body.version); %}
+
+### Place → 202, status PENDING_PAYMENT
+POST {{api}}/workspaces/{{acme}}/orders/{{orderId}}/place
+Authorization: Bearer {{member}}
+Content-Type: application/json
+
+{ "version": {{version}} }
+
+### Poll: PAID within a second or two (PSP latency ~200 ms)
+GET {{api}}/workspaces/{{acme}}/orders/{{orderId}}
+Authorization: Bearer {{member}}
+
+> {% client.global.set("version", response.body.version); %}
+
+### History: ORDER_CREATED → ORDER_PLACED → PAYMENT_SUCCEEDED
+GET {{api}}/workspaces/{{acme}}/orders/{{orderId}}/events
+Authorization: Bearer {{member}}
+
+### Fulfill (ADMIN) → 204
+POST {{api}}/workspaces/{{acme}}/orders/{{orderId}}/fulfill
+Authorization: Bearer {{admin}}
+Content-Type: application/json
+
+{ "version": {{version}} }
+
+###############################################################################
+# Failure cases
+###############################################################################
+
+### No token → 401
+GET {{api}}/workspaces/{{acme}}/orders
+
+### Cross-tenant: acme member reads a globex order → 404 WORKSPACE_NOT_FOUND
+GET {{api}}/workspaces/{{globex}}/orders/{{globexPaidOrder}}
+Authorization: Bearer {{member}}
+
+### Cross-tenant through our own workspace path → 404 ORDER_NOT_FOUND
+GET {{api}}/workspaces/{{acme}}/orders/{{globexPaidOrder}}
+Authorization: Bearer {{member}}
+
+### VIEWER creates an order → 403
+POST {{api}}/workspaces/{{acme}}/orders
+Authorization: Bearer {{viewer}}
+Content-Type: application/json
+
+{ "items": [] }
+
+### MEMBER fulfills → 403 (ADMIN and OWNER only)
+POST {{api}}/workspaces/{{acme}}/orders/{{orderId}}/fulfill
+Authorization: Bearer {{member}}
+Content-Type: application/json
+
+{ "version": 0 }
+
+### Cancel a PENDING_PAYMENT order → 422 ORDER_INVALID_TRANSITION (Step 0 rule)
+POST {{api}}/workspaces/{{acme}}/orders/{{acmePendingOrder}}/cancel
+Authorization: Bearer {{member}}
+Content-Type: application/json
+
+{ "version": 0 }
+
+### Archived product → 422 PRODUCT_NOT_ACTIVE
+POST {{api}}/workspaces/{{acme}}/orders
+Authorization: Bearer {{member}}
+Content-Type: application/json
+
+{ "items": [{ "productId": "{{acmeArchivedProduct}}", "quantity": 1 }] }
+
+### Validation → 400 VALIDATION_FAILED with field paths
+POST {{api}}/workspaces/{{acme}}/orders
+Authorization: Bearer {{member}}
+Content-Type: application/json
+
+{ "items": [{ "productId": "not-a-uuid", "quantity": 0 }], "extra": true }
+
+### Stale version → 409 STALE_VERSION
+POST {{api}}/workspaces/{{acme}}/orders/{{orderId}}/cancel
+Authorization: Bearer {{member}}
+Content-Type: application/json
+
+{ "version": 999 }
+
+###############################################################################
+# fake-psp: simulate latency, failures, declines (no restart needed)
+###############################################################################
+
+### Current behaviour
+GET {{psp}}/admin/config
+
+### Decline everything → the next placed order ends PAYMENT_FAILED (card code), no retry
+POST {{psp}}/admin/config
+Content-Type: application/json
+
+{ "declineRate": 1, "failureRate": 0 }
+
+### Fail everything with 503 → retries (see /admin/queues), then PAYMENT_FAILED psp_unavailable
+POST {{psp}}/admin/config
+Content-Type: application/json
+
+{ "failureRate": 1, "declineRate": 0, "latencyMs": 50 }
+
+### Slow PSP: 4 s > the 3 s client timeout → treated as transient, retried
+POST {{psp}}/admin/config
+Content-Type: application/json
+
+{ "latencyMs": 4000, "failureRate": 0, "declineRate": 0 }
+
+### Back to normal
+POST {{psp}}/admin/config
+Content-Type: application/json
+
+{ "latencyMs": 200, "failureRate": 0, "declineRate": 0 }
+
+### Every charge the PSP has seen (idempotency keys <orderId>:<attempt>)
+GET {{psp}}/charges
+
+### Forget all charges
+POST {{psp}}/admin/reset

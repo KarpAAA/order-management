@@ -1,0 +1,150 @@
+# Order management: a multi-tenant backend, built step by step
+
+A learning and portfolio project: a **multi-tenant order management backend** (workspaces,
+users with roles, a product catalog, orders with an asynchronous payment flow) that grows one
+area at a time: testing, database scaling, microservices and brokers, observability,
+Kubernetes, load and chaos testing, AI.
+
+**Current state: Step 0, the foundation.** One NestJS service (`services/api`) run as two
+processes from one image: an HTTP **api** and a BullMQ **worker**. A tiny **fake-psp**
+(`devtools/fake-psp`) plays an external payment provider.
+
+## Architecture in one minute
+
+- **Modular monolith** with strict module boundaries: `identity` (users, workspaces,
+  memberships, roles), `catalog` (products), `orders` (lifecycle, calculations, payment).
+  Modules talk only through facades; ESLint enforces it.
+- **Tenancy**: every workspace is a tenant. Tenant tables have composite keys
+  `(workspace_id, id)`; tenant filtering happens in exactly one place (a Prisma extension).
+  A caller who is not a member of a workspace always gets 404.
+- **Payments**: `place` → `PENDING_PAYMENT` → `202`; after the commit a BullMQ job charges the
+  PSP (idempotency key per attempt, 3 s timeout, 5 retries with exponential backoff) and the
+  order becomes `PAID` or `PAYMENT_FAILED`. The PSP sits behind a port with an HTTP adapter
+  and an in-process fake.
+- Money is BigInt minor units (JSON: `{ amountMinor, currency }`), ids are UUIDv7 from the
+  domain, time comes from an injected `Clock`.
+
+Details, diagrams (target architecture, modules, ERD, state machine, payment sequence) and
+**known gaps**: [`docs/architecture.md`](docs/architecture.md).
+Requirements for Step 1 tests: [`docs/requirements.md`](docs/requirements.md).
+Decisions: [`docs/adr/`](docs/adr).
+
+## Stack
+
+Node.js 24 LTS · TypeScript 6 (strict) · pnpm 10 workspaces · NestJS 12 · Prisma 7 ·
+PostgreSQL 18 · Redis 7 · BullMQ 6 · class-validator · zod (env) · nestjs-cls · Swagger ·
+bull-board · argon2 + JWT.
+
+PostgreSQL **18**, not 17: Step 2 adds Citus, and Citus 14 (Feb 2026) supports PG 18.
+
+## Quick start (Windows CMD)
+
+Prerequisites: Docker Desktop running, **Node 24** (`.node-version`), pnpm 10.
+
+```cmd
+pnpm install
+copy services\api\.env.example services\api\.env
+pnpm infra:up
+pnpm db:migrate
+pnpm db:seed
+pnpm dev
+```
+
+- `pnpm infra:up`: Postgres, Redis and fake-psp, waits until healthy.
+- `pnpm dev`: api and worker in watch mode, side by side.
+- Then open `docs/requests.http` in WebStorm and run it top to bottom.
+
+Everything in containers instead (api and worker from **one** image, migrations as a one-shot
+step before them):
+
+```cmd
+docker compose --profile app up --build
+```
+
+Other scripts: `pnpm build`, `pnpm lint`, `pnpm format`, `pnpm typecheck`, `pnpm db:reset`,
+`pnpm infra:down`.
+
+## URLs
+
+| What                          | URL                                                                               |
+| ----------------------------- | --------------------------------------------------------------------------------- |
+| API                           | http://localhost:3000/v1                                                          |
+| Swagger UI                    | http://localhost:3000/docs                                                        |
+| OpenAPI JSON                  | http://localhost:3000/docs-json                                                   |
+| bull-board (queues, dev only) | http://localhost:3000/admin/queues                                                |
+| fake-psp                      | http://localhost:4010 (`GET /charges`, `POST /admin/config`, `POST /admin/reset`) |
+
+## Seeded data
+
+Every user's password is **`Passw0rd!`**.
+
+| Workspace | Id                                     | Currency | Tax             |
+| --------- | -------------------------------------- | -------- | --------------- |
+| acme      | `01990000-0000-7000-8000-a00000000000` | EUR      | 2000 bps (20 %) |
+| globex    | `01990000-0000-7000-8000-b00000000000` | USD      | 0               |
+
+| User               | Id                                     | acme   | globex |
+| ------------------ | -------------------------------------- | ------ | ------ |
+| owner@acme.test    | `01990000-0000-7000-8000-c000000000a1` | OWNER  | –      |
+| admin@acme.test    | `01990000-0000-7000-8000-c000000000a2` | ADMIN  | –      |
+| member@acme.test   | `01990000-0000-7000-8000-c000000000a3` | MEMBER | –      |
+| viewer@acme.test   | `01990000-0000-7000-8000-c000000000a4` | VIEWER | –      |
+| owner@globex.test  | `01990000-0000-7000-8000-c000000000b1` | –      | OWNER  |
+| admin@globex.test  | `01990000-0000-7000-8000-c000000000b2` | –      | ADMIN  |
+| member@globex.test | `01990000-0000-7000-8000-c000000000b3` | –      | MEMBER |
+| viewer@globex.test | `01990000-0000-7000-8000-c000000000b4` | –      | VIEWER |
+| both@example.test  | `01990000-0000-7000-8000-c000000000c1` | MEMBER | VIEWER |
+
+**Products**: 18 per workspace, ids `…-a100000000NN` (acme) and `…-b100000000NN` (globex)
+where `NN` = 01…12 in hex (1…18); SKUs `ACM-001…018` / `GBX-001…018`. Products 4, 11 and 16
+(`…04`, `…0b`, `…10`) are **ARCHIVED**.
+
+**Orders**: the same set in each workspace, ids `…-a2000000000N` (acme) / `…-b2000000000N` (globex):
+
+| N   | Status          | Notes                                                     |
+| --- | --------------- | --------------------------------------------------------- |
+| 1   | DRAFT           | 1 item                                                    |
+| 2   | DRAFT           | no items (placing it → 422)                               |
+| 3   | PENDING_PAYMENT | has **no job**: shows the enqueue gap, stays pending      |
+| 4   | PAID            | 2 items, 10 % discount                                    |
+| 5   | PAYMENT_FAILED  | `insufficient_funds`, FIXED discount; can be placed again |
+| 6   | FULFILLED       | full history                                              |
+| 7   | CANCELLED       | cancelled from DRAFT                                      |
+
+## Simulating the payment provider
+
+fake-psp reads `FAKE_PSP_LATENCY_MS`, `FAKE_PSP_FAILURE_RATE`, `FAKE_PSP_DECLINE_RATE` at start
+(see `docker-compose.yml`) and can be changed at runtime without a restart:
+
+```cmd
+curl -X POST http://localhost:4010/admin/config -H "content-type: application/json" -d "{\"declineRate\":1}"
+curl -X POST http://localhost:4010/admin/config -H "content-type: application/json" -d "{\"failureRate\":1,\"declineRate\":0}"
+curl -X POST http://localhost:4010/admin/config -H "content-type: application/json" -d "{\"latencyMs\":4000}"
+curl -X POST http://localhost:4010/admin/config -H "content-type: application/json" -d "{\"latencyMs\":200,\"failureRate\":0,\"declineRate\":0}"
+curl http://localhost:4010/charges
+```
+
+- `declineRate: 1`: every new charge is declined → `PAYMENT_FAILED` with the decline code, no
+  retry. Place the order again: a new attempt, a new idempotency key.
+- `failureRate: 1`: every call returns 503 → the job is retried (watch `/admin/queues`),
+  then `PAYMENT_FAILED` with `psp_unavailable`.
+- `latencyMs` above 3000: the api's 3 s timeout fires → handled like a failure.
+- The same `Idempotency-Key` always returns the same response.
+
+Set `PAYMENT_GATEWAY=fake` in `services/api/.env` to skip fake-psp entirely (in-process,
+deterministic: amounts ending in `13` minor units are declined).
+
+## Repository layout
+
+```
+services/api/        NestJS service: src/entrypoints/main.api.ts + main.worker.ts, one image
+  prisma/            schema, migrations, seed
+  src/entrypoints/   one module + one main per process
+  src/config/        zod-validated env, typed namespaces
+  src/common/        HTTP frame: guards, filter, decorators, DTOs, tenant context
+  src/shared/        framework-free: errors, Actor, Money, Clock, ids, events, pagination
+  src/infrastructure/ database (tenant choke point), queues, events
+  src/modules/       identity (L1), catalog (L1), orders (L4)
+devtools/fake-psp/   external PSP simulator (not part of the system)
+docs/                architecture, requirements, ADRs, requests.http
+```
