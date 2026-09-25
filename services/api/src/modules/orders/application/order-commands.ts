@@ -1,0 +1,48 @@
+import type { RequestedItem } from './order-inputs.reader';
+import type { DiscountType } from '../domain/discount';
+
+/** Use case inputs. Plain objects built by the controller or the consumer from their DTOs. */
+
+export interface DiscountInput {
+  type: DiscountType;
+  valueBps?: number;
+  valueMinor?: bigint;
+}
+
+export interface CreateOrderCommand {
+  workspaceId: string;
+  items: RequestedItem[];
+  discount?: DiscountInput;
+}
+
+export interface UpdateOrderCommand {
+  orderId: string;
+  version: number;
+  items: RequestedItem[];
+  discount: DiscountInput;
+}
+
+/** place, cancel, fulfill: the order and the version the client saw. */
+export interface OrderActionCommand {
+  orderId: string;
+  version: number;
+}
+
+export interface ProcessOrderPaymentCommand {
+  orderId: string;
+  paymentAttempt: number;
+  /** The queue will not retry after this run: a transient failure becomes final. */
+  isFinalAttempt: boolean;
+}
+
+export interface CompleteOrderPaymentCommand {
+  orderId: string;
+  paymentAttempt: number;
+  pspChargeId: string;
+}
+
+export interface FailOrderPaymentCommand {
+  orderId: string;
+  paymentAttempt: number;
+  reason: string;
+}
