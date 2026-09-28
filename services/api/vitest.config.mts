@@ -3,12 +3,17 @@
 //  - e2e:  integration (*.int-spec.ts) and API (*.e2e-spec.ts) tests against Testcontainers;
 //          `pnpm test:e2e`. SWC emits the decorator metadata Nest DI needs.
 // `.mts`: the package is CommonJS, the config is ESM (same reason as eslint.config.mjs).
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { parseEnv } from 'node:util';
 
 import swc from 'unplugin-swc';
 import { defineConfig } from 'vitest/config';
 
 const src = (dir: string): string => fileURLToPath(new URL(`./src/${dir}`, import.meta.url));
+
+/** Test-only environment of the e2e project; the dev .env is never read there. */
+const testEnv = parseEnv(readFileSync(new URL('./.env.test', import.meta.url), 'utf8'));
 
 export default defineConfig({
   resolve: {
@@ -38,6 +43,7 @@ export default defineConfig({
           name: 'e2e',
           include: ['test/**/*.e2e-spec.ts', 'test/**/*.int-spec.ts'],
           environment: 'node',
+          env: testEnv,
           testTimeout: 30_000,
           hookTimeout: 60_000,
           // once per run: containers + migrated, seeded test_template

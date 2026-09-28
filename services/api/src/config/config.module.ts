@@ -10,6 +10,8 @@ import { validateEnv } from './env.schema';
       isGlobal: true,
       cache: true,
       envFilePath: ['.env'],
+      // tests get their env from .env.test via vitest; a developer's .env must not leak in
+      ignoreEnvFile: process.env.NODE_ENV === 'test',
       load: allConfigs,
       validate: validateEnv,
     }),
