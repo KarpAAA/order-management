@@ -62,8 +62,11 @@ away from zero, and all values here are non-negative.
 | CALC-015 | Examples: 3 × 1250 EUR, PERCENT 1000, tax 2000 → subtotal 3750, discount 375, tax 675, total 4050. 2 × 299 EUR, no discount, tax 2000 → total 718. PERCENT 5000 of subtotal 3 → discount 2 (1.5 rounds up). | `unit + api` |
 | CALC-016 | Money in JSON is `{ amountMinor: integer, currency: "XXX" }`.                                                                                                                                               | `api`        |
 
-Property tests (Step 1) for CALC-008…011 over random items (1…50, quantity 1…1000, price
-1…100 000 000), random discounts and tax 0…5000.
+Property tests (Step 1) for CALC-008…011 over random items (0…50, quantity 1…1000, price
+1…100 000 000), random discounts and tax 0…5000: `orders/domain/order-totals.prop.spec.ts`
+(plus an independent oracle, rounding bounds, monotonicity, line order), with generators in
+`orders/domain/__test__/arbitraries.ts`. `Money` and `discountOf` (ORD-007) have their own
+`*.prop.spec.ts` next to them.
 
 ## ORD: order lifecycle and state machine
 
