@@ -9,6 +9,7 @@
 //     (Nest DI constructors; code-style.md §2 allows ≤ 6 dependencies).
 //  5. eslint-plugin-boundaries pinned to 5.x: the template uses its API (mode, element-types).
 //  6. Prisma-generated client and the prisma/ scripts are outside the layer map.
+//  7. test/setup/global.ts default-exports (Vitest globalSetup).
 import boundaries from 'eslint-plugin-boundaries';
 import importPlugin from 'eslint-plugin-import';
 import prettier from 'eslint-config-prettier';
@@ -269,8 +270,11 @@ export default tseslint.config(
     },
   },
 
-  // Prisma CLI and Vitest require a default export from their config files
-  { files: ['prisma.config.ts', 'vitest.config.mts'], rules: { 'import/no-default-export': 'off' } },
+  // Prisma CLI and Vitest require a default export from their config files (and globalSetup)
+  {
+    files: ['prisma.config.ts', 'vitest.config.mts', 'test/setup/global.ts'],
+    rules: { 'import/no-default-export': 'off' },
+  },
 
   // tests: relax size and assertion rules
   {

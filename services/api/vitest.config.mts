@@ -40,7 +40,10 @@ export default defineConfig({
           environment: 'node',
           testTimeout: 30_000,
           hookTimeout: 60_000,
-          // globalSetup (Testcontainers) arrives with the first suite in 1.5/1.6
+          // once per run: containers + migrated, seeded test_template
+          globalSetup: ['test/setup/global.ts'],
+          // once per file: a copy of the template as the file's own database
+          setupFiles: ['test/setup/db.ts'],
         },
       },
     ],
