@@ -95,6 +95,7 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
 - `eslint.config.mjs` (not `.js`, package is CJS); `eslint-plugin-boundaries` pinned to 5.x
   (the template uses its API); `interface`/`read` may import own `domain`; L1 `read` may
   import its module root; `max-params` replaced by selectors (4 for functions, 6 for
-  constructors); an `entry` element for `src/entrypoints`. Details at the top of the file.
+  constructors); an `entry` element for `src/entrypoints`; `test/factories` may import module
+  internals (domain + mapper). Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
   transport modules (Nest needs them exported to inject them into controllers/consumers).
