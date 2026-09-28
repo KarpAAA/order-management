@@ -53,7 +53,7 @@
   - Подивитись: внеси баг — fast-check знайде контрприклад і «стисне» його до мінімального.
 
 - [ ] **1.4 Test doubles на use case-ах**
-  - Закласти: тести application-шару (PlaceOrder, CancelOrder) з fake-репозиторієм і fake PaymentGateway (конвенції вже вимагають fake для кожного порту), плюс spy на публікацію події.
+  - Закласти: тести application-шару (PlaceOrder, CancelOrder, ProcessOrderPayment) з fake-репозиторієм, spy на публікацію події і scripted PaymentGateway (його використовує лише ProcessOrderPayment). Дублери в `application/__test__/`.
   - Подивитись: різницю між перевіркою стану (що лежить у fake-репозиторії) і перевіркою взаємодії (що подія опублікована).
 
 - [ ] **1.5 Тестові дані й ізоляція БД**
