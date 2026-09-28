@@ -55,7 +55,7 @@ export default tseslint.config(
         { type: 'modindex', pattern: 'src/modules/*/index.ts', capture: ['module'], mode: 'file' },
         { type: 'modroot', pattern: 'src/modules/*/*.ts', capture: ['module'], mode: 'file' },
       ],
-      'boundaries/ignore': ['**/*.spec.ts', '**/*.e2e-spec.ts', 'test/**', 'prisma/**', '*.ts'],
+      'boundaries/ignore': ['**/*.spec.ts', '**/*.e2e-spec.ts', 'test/**', 'prisma/**', '*.ts', '*.mts'],
     },
 
     rules: {
@@ -269,12 +269,12 @@ export default tseslint.config(
     },
   },
 
-  // Prisma CLI requires a default export from its config file
-  { files: ['prisma.config.ts'], rules: { 'import/no-default-export': 'off' } },
+  // Prisma CLI and Vitest require a default export from their config files
+  { files: ['prisma.config.ts', 'vitest.config.mts'], rules: { 'import/no-default-export': 'off' } },
 
   // tests: relax size and assertion rules
   {
-    files: ['**/*.spec.ts', '**/*.e2e-spec.ts', 'test/**'],
+    files: ['**/*.spec.ts', '**/*.e2e-spec.ts', '**/*.int-spec.ts', '**/__test__/**', 'test/**'],
     rules: {
       '@typescript-eslint/no-non-null-assertion': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',

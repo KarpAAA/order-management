@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 0: foundation** (see `docs/architecture.md`).
+Current step: **Step 1: testing** (see `docs/ROADMAP.md`; Step 0 foundation: `docs/architecture.md`).
 
 ## Conventions
 
@@ -37,7 +37,7 @@ traces: none
 metrics-endpoint: none          # Step 4
 tracker: none
 merge: merge-commit
-testing: vitest                 # deferred to Step 1: no tests in Step 0
+testing: vitest                 # projects unit + e2e; test levels per requirement in docs/requirements.md
 ```
 
 ## Stack
@@ -54,6 +54,8 @@ pnpm db:seed           # fixed-id dev data (README → Seeded data)
 pnpm db:reset          # drop, migrate, seed
 pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
+pnpm test              # Vitest project unit: domain, VOs, policies (no Docker)
+pnpm test:e2e          # Vitest project e2e: *.int-spec.ts + *.e2e-spec.ts (Testcontainers)
 docker compose --profile app up --build   # migrate + api + worker from one image
 ```
 

@@ -34,5 +34,5 @@
       "@modules/*": ["./src/modules/*"]
     }
   },
-  "include": ["src/**/*.ts", "prisma/**/*.ts", "prisma.config.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "prisma/**/*.ts", "prisma.config.ts", "vitest.config.mts"]
 }
