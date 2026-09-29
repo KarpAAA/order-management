@@ -78,3 +78,26 @@ jobs:
         uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
+
+  commits:
+    name: commits
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      # the commit-msg hook can be skipped (-n, IDE commits); this check cannot
+      - run: >-
+          pnpm exec commitlint
+          --from origin/${{ github.base_ref }}
+          --to ${{ github.event.pull_request.head.sha }}
+      - name: No AI attribution trailers (quality/git-pr.md §1)
+        run: |
+          range="origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}"
+          if git log --format=%B "$range" | grep -iE '^(co-authored-by|claude-session):'; then
+            echo "::error::remove the Co-Authored-By / Claude-Session trailers above"
+            exit 1
+          fi

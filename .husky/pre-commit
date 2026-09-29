@@ -1,0 +1,2 @@
+# Staged files only: format, then lint with autofix (.lintstagedrc.json, services/api/.lintstagedrc.json).
+pnpm exec lint-staged
