@@ -57,6 +57,7 @@ pnpm lint && pnpm typecheck
 pnpm test              # Vitest project unit: domain, VOs, policies, architecture tests (no Docker)
 pnpm test:e2e          # Vitest project e2e: *.int-spec.ts + *.e2e-spec.ts (Testcontainers)
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
+pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
 pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
 docker compose --profile app up --build   # migrate + api + worker from one image
 ```

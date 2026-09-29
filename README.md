@@ -163,6 +163,29 @@ test caught. A surviving mutant is a missing or too weak assertion. Report only 
 threshold fails the run. Repeated runs are incremental (`reports/stryker-incremental.json`).
 Config: `services/api/stryker.config.mjs`.
 
+## Migration checks
+
+```cmd
+pnpm test:migrations   & rem guard, fresh, drift, upgrade on a throwaway Postgres (Testcontainers)
+```
+
+Four steps against the merge base with `main` (`MIGRATIONS_BASE_REF` overrides the ref); the
+first failure stops the run:
+
+- **guard** (git only): no migration of the base edited, deleted or renamed, uncommitted
+  edits included; new migrations sort after the base's last one. More than one new
+  migration is a warning (one migration per PR).
+- **fresh**: `prisma migrate deploy` of every migration on an empty database.
+- **drift**: `prisma migrate diff` of that database against `schema.prisma`; on a
+  difference it prints the SQL still missing (a forgotten `prisma migrate dev`). The
+  hand-written CHECKs are invisible to it; the `*.int-spec.ts` tests cover them.
+- **upgrade**, only when the branch adds migrations: a git worktree of the base installs,
+  migrates and runs its own `prisma/seed.ts`, then this branch's new migrations run on top.
+  Catches SQL that passes on an empty table and fails on data (`ADD COLUMN … NOT NULL`
+  without a default).
+
+Script: `services/api/prisma/check-migrations.ts`.
+
 ## Repository layout
 
 ```
