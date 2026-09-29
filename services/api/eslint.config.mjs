@@ -14,10 +14,61 @@
 //     OrderMapper, a double implements a port, the worker app overrides PAYMENT_GATEWAY, an
 //     int test assembles a slice of a module. API specs (*.e2e-spec.ts) stay behind the rule.
 //     test/setup/global.ts default-exports.
+//  8. Transport boundary (pending upstream to the template): `entryclass` (controller,
+//     consumer, job, gateway) is imported only by a `transport` module (*.http|worker|ws.module.ts),
+//     so the core module cannot wire them; their decorators are banned elsewhere. `domain`
+//     imports no package at all (allow-list); `@prisma/*` instead of `@prisma/client` (the
+//     Prisma 7 client is generated into src/infrastructure). Proven by test/architecture/.
 import boundaries from 'eslint-plugin-boundaries';
 import importPlugin from 'eslint-plugin-import';
 import prettier from 'eslint-config-prettier';
 import tseslint from 'typescript-eslint';
+
+const RESTRICTED_SYNTAX = [
+  {
+    selector: "CallExpression[callee.property.name='queryRawUnsafe']",
+    message: 'Use $queryRaw tagged template.',
+  },
+  {
+    selector:
+      ":function[params.length>4]:not(MethodDefinition[kind='constructor'] > FunctionExpression)",
+    message: 'At most 4 parameters; the fifth becomes an options object (code-style.md §2).',
+  },
+  {
+    selector: "MethodDefinition[kind='constructor'] > FunctionExpression[params.length>6]",
+    message: 'At most 6 constructor dependencies; split the class (code-style.md §2).',
+  },
+];
+
+const INTERFACE_ALLOW = [
+  'shared',
+  'common',
+  'config',
+  ['domain', { module: '${from.module}' }],
+  ['app', { module: '${from.module}' }],
+  ['read', { module: '${from.module}' }],
+  ['features', { module: '${from.module}' }],
+  ['modinfra', { module: '${from.module}' }],
+  ['modroot', { module: '${from.module}' }],
+  'modindex',
+];
+
+// no `interface`, no `entryclass`: only `transport` wires those
+const MODROOT_ALLOW = [
+  'shared',
+  'common',
+  'config',
+  'infra',
+  ['domain', { module: '${from.module}' }],
+  ['ports', { module: '${from.module}' }],
+  ['app', { module: '${from.module}' }],
+  ['features', { module: '${from.module}' }],
+  ['read', { module: '${from.module}' }],
+  ['modinfra', { module: '${from.module}' }],
+  ['events', { module: '${from.module}' }],
+  ['modroot', { module: '${from.module}' }],
+  'modindex',
+];
 
 export default tseslint.config(
   {
@@ -52,6 +103,20 @@ export default tseslint.config(
         { type: 'common', pattern: 'src/common/**' },
         { type: 'config', pattern: 'src/config/**' },
         { type: 'infra', pattern: 'src/infrastructure/**' },
+        // classes that start working on their own (principles #12), wired by transport modules
+        // only; listed before `interface` and `modroot`, the first match wins
+        {
+          type: 'entryclass',
+          pattern: 'src/modules/*/**/*.{controller,consumer,job,gateway}.ts',
+          capture: ['module'],
+          mode: 'file',
+        },
+        {
+          type: 'transport',
+          pattern: 'src/modules/*/*.{http,worker,ws}.module.ts',
+          capture: ['module'],
+          mode: 'file',
+        },
         { type: 'domain', pattern: 'src/modules/*/domain/**', capture: ['module'] },
         { type: 'ports', pattern: 'src/modules/*/ports/**', capture: ['module'] },
         { type: 'app', pattern: 'src/modules/*/application/**', capture: ['module'] },
@@ -67,6 +132,7 @@ export default tseslint.config(
       'boundaries/ignore': [
         '**/*.spec.ts',
         '**/*.e2e-spec.ts',
+        '**/__test__/**', // unit-test helpers next to the code (fast-check arbitraries, in-memory doubles)
         'test/**',
         'prisma/**',
         '*.ts',
@@ -95,22 +161,7 @@ export default tseslint.config(
       'max-lines-per-function': ['warn', { max: 50, skipBlankLines: true, skipComments: true }],
       'no-console': 'error',
       'no-warning-comments': ['error', { terms: ['todo'], location: 'anywhere' }], // use TODO(name, YYYY-MM)
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector: "CallExpression[callee.property.name='queryRawUnsafe']",
-          message: 'Use $queryRaw tagged template.',
-        },
-        {
-          selector:
-            ":function[params.length>4]:not(MethodDefinition[kind='constructor'] > FunctionExpression)",
-          message: 'At most 4 parameters; the fifth becomes an options object (code-style.md §2).',
-        },
-        {
-          selector: "MethodDefinition[kind='constructor'] > FunctionExpression[params.length>6]",
-          message: 'At most 6 constructor dependencies; split the class (code-style.md §2).',
-        },
-      ],
+      'no-restricted-syntax': ['error', ...RESTRICTED_SYNTAX],
 
       // ── imports ───────────────────────────────────────────────────────────
       'import/no-cycle': ['error', { maxDepth: 1 }],
@@ -209,45 +260,25 @@ export default tseslint.config(
                 ['modinfra', { module: '${from.module}' }],
               ],
             },
+            { from: 'interface', allow: INTERFACE_ALLOW },
+            // a controller/consumer/job reaches what interface/ reaches, plus its own DTOs
             {
-              from: 'interface',
-              allow: [
-                'shared',
-                'common',
-                'config',
-                ['domain', { module: '${from.module}' }],
-                ['app', { module: '${from.module}' }],
-                ['read', { module: '${from.module}' }],
-                ['features', { module: '${from.module}' }],
-                ['modinfra', { module: '${from.module}' }],
-                ['modroot', { module: '${from.module}' }],
-                'modindex',
-              ],
+              from: 'entryclass',
+              allow: [...INTERFACE_ALLOW, ['interface', { module: '${from.module}' }]],
             },
             { from: 'events', allow: ['shared'] },
+            // the core module and other root files: no controllers, consumers or jobs
+            { from: 'modroot', allow: MODROOT_ALLOW },
+            // only a transport module wires the classes that start working on their own
             {
-              from: 'modroot',
-              allow: [
-                'shared',
-                'common',
-                'config',
-                'infra',
-                ['domain', { module: '${from.module}' }],
-                ['ports', { module: '${from.module}' }],
-                ['app', { module: '${from.module}' }],
-                ['features', { module: '${from.module}' }],
-                ['read', { module: '${from.module}' }],
-                ['modinfra', { module: '${from.module}' }],
-                ['interface', { module: '${from.module}' }],
-                ['events', { module: '${from.module}' }],
-                ['modroot', { module: '${from.module}' }],
-                'modindex',
-              ],
+              from: 'transport',
+              allow: [...MODROOT_ALLOW, ['entryclass', { module: '${from.module}' }]],
             },
             {
               from: 'modindex',
               allow: [
                 ['modroot', { module: '${from.module}' }],
+                ['transport', { module: '${from.module}' }],
                 ['read', { module: '${from.module}' }],
                 ['events', { module: '${from.module}' }],
               ],
@@ -260,26 +291,33 @@ export default tseslint.config(
         {
           default: 'allow',
           rules: [
-            {
-              from: 'domain',
-              disallow: [
-                '@nestjs/*',
-                '@prisma/client',
-                'typeorm',
-                'class-validator',
-                'class-transformer',
-                'axios',
-                'stripe',
-                'openai',
-              ],
-            },
+            // allow-list: domain/ imports no package at all, only @shared/* and itself
+            { from: 'domain', disallow: ['*', '@*/*'] },
             {
               from: 'ports',
-              disallow: ['@nestjs/*', '@prisma/client', 'typeorm', 'stripe', 'openai'],
+              disallow: ['@nestjs/*', '@prisma/*', 'typeorm', 'stripe', 'openai'],
             },
-            { from: 'app', disallow: ['@prisma/client', 'typeorm', 'stripe', 'openai', 'axios'] },
-            { from: 'events', disallow: ['@nestjs/*', '@prisma/client'] },
+            { from: 'app', disallow: ['@prisma/*', 'typeorm', 'stripe', 'openai', 'axios'] },
+            { from: 'events', disallow: ['@nestjs/*', '@prisma/*'] },
           ],
+        },
+      ],
+    },
+  },
+
+  // entry decorators only in their own files: @Processor on a use case would make it a consumer
+  {
+    files: ['src/**/*.ts'],
+    ignores: ['src/**/*.controller.ts', 'src/**/*.consumer.ts', 'src/**/*.gateway.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...RESTRICTED_SYNTAX,
+        {
+          selector:
+            'Decorator > CallExpression[callee.name=/^(Controller|Processor|WebSocketGateway)$/]',
+          message:
+            '@Controller/@Processor/@WebSocketGateway only in *.controller|consumer|gateway.ts (principles #12).',
         },
       ],
     },

@@ -32,7 +32,11 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'unit',
-          include: ['src/**/*.spec.ts'],
+          // + architecture tests: lint rules and the Nest process graph, no Docker (ROADMAP 1.13)
+          include: ['src/**/*.spec.ts', 'test/architecture/**/*.spec.ts'],
+          // process-graph.spec.ts imports the entrypoint modules, and ConfigModule.forRoot
+          // validates the env on import; nothing connects, the placeholders are enough
+          env: testEnv,
           environment: 'node',
         },
       },

@@ -54,7 +54,7 @@ pnpm db:seed           # fixed-id dev data (README → Seeded data)
 pnpm db:reset          # drop, migrate, seed
 pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
-pnpm test              # Vitest project unit: domain, VOs, policies (no Docker)
+pnpm test              # Vitest project unit: domain, VOs, policies, architecture tests (no Docker)
 pnpm test:e2e          # Vitest project e2e: *.int-spec.ts + *.e2e-spec.ts (Testcontainers)
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
 pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
@@ -99,6 +99,10 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   import its module root; `max-params` replaced by selectors (4 for functions, 6 for
   constructors); an `entry` element for `src/entrypoints`; `test/factories`, `test/doubles`,
   `test/helpers` and `*.int-spec.ts` may import module internals. Details at the top of the file.
+  Pending upstream to the template: `entryclass` (controller/consumer/job/gateway) is imported
+  only by a `transport` module (`*.http|worker|ws.module.ts`), entry decorators are banned
+  elsewhere, `domain` imports no package (allow-list), `@prisma/*` instead of `@prisma/client`.
+  Proven by `test/architecture/` (lint rules fire; api graph has no `@Processor`).
 - Module core exports include the use cases and query services, for the module's own
   transport modules (Nest needs them exported to inject them into controllers/consumers).
 - Stryker also mutates `src/shared/domain/money.ts`, runs a unit-only vitest config, and the
