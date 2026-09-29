@@ -84,6 +84,12 @@ describe('validation → 400 VALIDATION_FAILED (ORD-002, ORD-003, ORD-007, VAL-0
     expect(res.body).toMatchObject({ code });
   });
 
+  // found by Schemathesis: the discount is optional, but not nullable
+  it('rejects a null discount', async () => {
+    const res = await create({ items: [], discount: null }).expect(400);
+    expect(fieldsOf(res.body)).toContainEqual(expect.objectContaining({ path: 'discount' }));
+  });
+
   it('rejects an unknown body field, naming it', async () => {
     const res = await create({ items: [], note: 'hi' }).expect(400);
     expect(fieldsOf(res.body)).toContainEqual(

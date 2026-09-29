@@ -133,6 +133,21 @@ describe('PATCH /products/{id} (CAT-004)', () => {
     expect((await get(product.id)).description).toBeNull();
   });
 
+  // found by Schemathesis: null passed @IsOptional() and crashed the NOT NULL column with 500
+  it.each(['name', 'priceMinor'])(
+    'refuses null for %s: 400, only description clears',
+    async (field) => {
+      const product = await productFactory.create();
+      const res = await api
+        .http()
+        .patch(productPath(WS_ACME, product.id))
+        .set(admin)
+        .send({ [field]: null })
+        .expect(400);
+      expect(fieldPaths(res.body)).toContain(field);
+    },
+  );
+
   it('refuses to change the sku: 400, nothing written', async () => {
     const product = await productFactory.create();
 
