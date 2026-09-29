@@ -14,11 +14,6 @@
 //     OrderMapper, a double implements a port, the worker app overrides PAYMENT_GATEWAY, an
 //     int test assembles a slice of a module. API specs (*.e2e-spec.ts) stay behind the rule.
 //     test/setup/global.ts default-exports.
-//  8. Transport boundary (pending upstream to the template): `entryclass` (controller,
-//     consumer, job, gateway) is imported only by a `transport` module (*.http|worker|ws.module.ts),
-//     so the core module cannot wire them; their decorators are banned elsewhere. `domain`
-//     imports no package at all (allow-list); `@prisma/*` instead of `@prisma/client` (the
-//     Prisma 7 client is generated into src/infrastructure). Proven by test/architecture/.
 import boundaries from 'eslint-plugin-boundaries';
 import importPlugin from 'eslint-plugin-import';
 import prettier from 'eslint-config-prettier';
