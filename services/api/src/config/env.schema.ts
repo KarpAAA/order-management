@@ -16,6 +16,8 @@ export const envSchema = z.object({
     ),
 
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
+  /** Emit Prisma `query` events (debug log; the e2e suite counts queries with them). */
+  DATABASE_LOG_QUERIES: booleanString.default(false),
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
 
   JWT_SECRET: z.string().min(32),
