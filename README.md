@@ -151,6 +151,18 @@ Config: `devtools/contract/schemathesis.toml`. It logs in as `owner@acme.test` b
 pins `workspaceId` to acme (a random one is a non-member → 404 at the guard) and draws
 `orderId` / `productId` mostly from the seeded ids. Every failure prints a `curl` to reproduce it.
 
+## Mutation testing (Stryker)
+
+```cmd
+pnpm test:mutation     & rem Stryker over the unit suite, report in services/api/reports/mutation
+```
+
+Stryker plants small bugs (mutants) in `orders` `domain/` + `application/` and in
+`shared/domain/money.ts`, runs the unit tests covering each one, and reports the mutants no
+test caught. A surviving mutant is a missing or too weak assertion. Report only for now: no
+threshold fails the run. Repeated runs are incremental (`reports/stryker-incremental.json`).
+Config: `services/api/stryker.config.mjs`.
+
 ## Repository layout
 
 ```

@@ -57,6 +57,7 @@ pnpm lint && pnpm typecheck
 pnpm test              # Vitest project unit: domain, VOs, policies (no Docker)
 pnpm test:e2e          # Vitest project e2e: *.int-spec.ts + *.e2e-spec.ts (Testcontainers)
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
+pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
 docker compose --profile app up --build   # migrate + api + worker from one image
 ```
 
@@ -100,3 +101,5 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   `test/helpers` and `*.int-spec.ts` may import module internals. Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
   transport modules (Nest needs them exported to inject them into controllers/consumers).
+- Stryker also mutates `src/shared/domain/money.ts`, runs a unit-only vitest config, and the
+  vitest runner is patched for Vitest 5. Details: `.claude/rules/project/testing.md`.

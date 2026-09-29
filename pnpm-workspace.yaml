@@ -1,8 +1,8 @@
 packages:
   - services/*
   - devtools/*
-  # packages/* (shared contracts) arrives in Step 3
-
+ignoredBuiltDependencies:
+  - '@scarf/scarf'
 onlyBuiltDependencies:
   - '@nestjs/core'
   - '@prisma/engines'
@@ -12,6 +12,8 @@ onlyBuiltDependencies:
   - msgpackr-extract
   - prisma
   - unrs-resolver
-
-ignoredBuiltDependencies:
-  - '@scarf/scarf'
+patchedDependencies:
+  # Vitest 5 matches testNamePattern against names joined with " > "; the runner joined them
+  # with " ", so the perTest filter selected no test and every mutant "survived". Drop the
+  # patch once the runner supports Vitest 5.
+  '@stryker-mutator/vitest-runner@10.0.0': patches/@stryker-mutator__vitest-runner@10.0.0.patch

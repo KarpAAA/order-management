@@ -2,6 +2,8 @@ node_modules/
 dist/
 dist-worker/
 coverage/
+reports/
+.stryker-tmp/
 *.tsbuildinfo
 .env
 .env.*

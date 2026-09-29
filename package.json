@@ -15,6 +15,7 @@
     "typecheck": "pnpm -r run typecheck",
     "test": "pnpm --filter @oms/api test",
     "test:e2e": "pnpm --filter @oms/api test:e2e",
+    "test:mutation": "pnpm --filter @oms/api test:mutation",
     "test:contract": "pnpm contract:down && docker compose -p oms-contract -f docker-compose.yml -f docker-compose.contract.yml --profile app run --build --rm schemathesis",
     "contract:down": "docker compose -p oms-contract -f docker-compose.yml -f docker-compose.contract.yml --profile app down -v",
     "db:migrate": "pnpm --filter @oms/api db:migrate",

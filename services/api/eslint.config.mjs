@@ -28,6 +28,9 @@ export default tseslint.config(
       'prisma/migrations/**',
       'src/infrastructure/database/generated/**',
       'eslint.config.mjs',
+      'stryker.config.mjs',
+      'reports/**',
+      '.stryker-tmp/**',
     ],
   },
 
@@ -60,7 +63,14 @@ export default tseslint.config(
         { type: 'modindex', pattern: 'src/modules/*/index.ts', capture: ['module'], mode: 'file' },
         { type: 'modroot', pattern: 'src/modules/*/*.ts', capture: ['module'], mode: 'file' },
       ],
-      'boundaries/ignore': ['**/*.spec.ts', '**/*.e2e-spec.ts', 'test/**', 'prisma/**', '*.ts', '*.mts'],
+      'boundaries/ignore': [
+        '**/*.spec.ts',
+        '**/*.e2e-spec.ts',
+        'test/**',
+        'prisma/**',
+        '*.ts',
+        '*.mts',
+      ],
     },
 
     rules: {
@@ -276,7 +286,12 @@ export default tseslint.config(
 
   // Prisma CLI and Vitest require a default export from their config files (and globalSetup)
   {
-    files: ['prisma.config.ts', 'vitest.config.mts', 'test/setup/global.ts'],
+    files: [
+      'prisma.config.ts',
+      'vitest.config.mts',
+      'vitest.stryker.config.mts',
+      'test/setup/global.ts',
+    ],
     rules: { 'import/no-default-export': 'off' },
   },
 
