@@ -29,13 +29,17 @@ beforeAll(async () => {
   const url = databaseUrl(serverUrl, dbName);
   process.env.DATABASE_URL = url; // the app under test (1.7+) boots against this database
   process.env.REDIS_URL = inject('redisUrl');
+  // own BullMQ namespace too: a worker in one file never takes the jobs of another
+  process.env.QUEUE_PREFIX = dbName;
   prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
   faker.seed(20260928); // generated values repeat from run to run: a failure reproduces
 });
 
 afterAll(async () => {
   await prisma?.$disconnect();
-  if (dbName) await adminQuery(inject('pgServerUrl'), `DROP DATABASE IF EXISTS ${dbName}`);
+  // FORCE: a closing app's pool (e.g. a worker's) may still hold a connection for a moment
+  if (dbName)
+    await adminQuery(inject('pgServerUrl'), `DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);
 });
 
 /**

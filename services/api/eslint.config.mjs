@@ -9,10 +9,11 @@
 //     (Nest DI constructors; code-style.md §2 allows ≤ 6 dependencies).
 //  5. eslint-plugin-boundaries pinned to 5.x: the template uses its API (mode, element-types).
 //  6. Prisma-generated client and the prisma/ scripts are outside the layer map.
-//  7. test/factories and int tests (*.int-spec.ts) may import module internals: a factory
-//     persists through the domain and OrderMapper, an int test assembles a slice of a module
-//     (repository, use case, policy). API tests stay behind the rule. test/setup/global.ts
-//     default-exports.
+//  7. Test infrastructure (test/factories, test/doubles, test/helpers) and int tests
+//     (*.int-spec.ts) may import module internals: a factory persists through the domain and
+//     OrderMapper, a double implements a port, the worker app overrides PAYMENT_GATEWAY, an
+//     int test assembles a slice of a module. API specs (*.e2e-spec.ts) stay behind the rule.
+//     test/setup/global.ts default-exports.
 import boundaries from 'eslint-plugin-boundaries';
 import importPlugin from 'eslint-plugin-import';
 import prettier from 'eslint-config-prettier';
@@ -279,9 +280,9 @@ export default tseslint.config(
     rules: { 'import/no-default-export': 'off' },
   },
 
-  // factories and int tests are built from module internals (domain, mapper, repository, use case)
+  // test infrastructure and int tests are built from module internals (ports, domain, mapper…)
   {
-    files: ['test/factories/**', 'test/**/*.int-spec.ts'],
+    files: ['test/factories/**', 'test/doubles/**', 'test/helpers/**', 'test/**/*.int-spec.ts'],
     rules: { 'no-restricted-imports': 'off' },
   },
 

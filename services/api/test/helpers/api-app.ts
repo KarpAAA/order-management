@@ -10,12 +10,14 @@ import { PrismaService } from '@infra/database/prisma.service';
 import { ApiModule } from '../../src/entrypoints/api.module';
 import { configureApi } from '../../src/entrypoints/configure-api';
 
+import type { Type } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
 export interface ApiApp {
   http(): ReturnType<typeof request>;
   /** Runs `work` and returns how many SQL statements the app sent meanwhile. */
   countQueries(work: () => Promise<unknown>): Promise<number>;
+  get<T>(token: Type<T> | string | symbol): T;
   /** Every route the app registered, as `GET /v1/workspaces/:workspaceId/orders`. */
   routes(): string[];
   close(): Promise<void>;
@@ -41,6 +43,7 @@ export async function createApiApp(): Promise<ApiApp> {
       await work();
       return queries - before;
     },
+    get: (token) => app.get(token),
     routes: () => registeredRoutes(app),
     close: () => app.close(),
   };
