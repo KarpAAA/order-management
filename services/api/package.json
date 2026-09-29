@@ -19,6 +19,7 @@
     "test:watch": "vitest --project unit",
     "test:e2e": "vitest run --project e2e --passWithNoTests",
     "test:mutation": "stryker run",
+    "test:migrations": "tsx prisma/check-migrations.ts",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
     "db:deploy": "prisma migrate deploy",
