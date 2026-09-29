@@ -8,7 +8,11 @@ import { redisConfig, type RedisConfig } from '@config/configuration';
   imports: [
     BullModule.forRootAsync({
       inject: [redisConfig.KEY],
-      useFactory: (redis: RedisConfig) => ({ connection: { url: redis.url } }),
+      // `prefix` applies to every queue and worker of the process (BullMQ's default is `bull`)
+      useFactory: (redis: RedisConfig) => ({
+        connection: { url: redis.url },
+        prefix: redis.queuePrefix,
+      }),
     }),
   ],
 })

@@ -24,6 +24,7 @@ export type DatabaseConfig = ConfigType<typeof databaseConfig>;
 
 export const redisConfig = registerAs('redis', () => ({
   url: env().REDIS_URL,
+  queuePrefix: env().QUEUE_PREFIX,
 }));
 export type RedisConfig = ConfigType<typeof redisConfig>;
 
