@@ -45,7 +45,7 @@ export class HttpPaymentGateway implements PaymentGateway {
       throw new PaymentGatewayError(`PSP rejected the request (${response.status})`, false);
     }
 
-    const body: unknown = await response.json();
+    const body = await this.readBody(response);
     if (!isPspChargeResponse(body)) {
       throw new PaymentGatewayError('PSP returned an unexpected body', false);
     }
@@ -72,6 +72,21 @@ export class HttpPaymentGateway implements PaymentGateway {
     } catch (err: unknown) {
       // timeout (AbortSignal) or network failure: both transient
       throw new PaymentGatewayError('PSP unreachable or timed out', true, { cause: err });
+    }
+  }
+
+  private async readBody(response: Response): Promise<unknown> {
+    try {
+      return await response.json();
+    } catch (err: unknown) {
+      // Unparsable JSON is the PSP's bug: a retry gets the same answer. Anything else is the
+      // body cut off by the timeout (the signal also covers the body) or by the network.
+      const malformed = err instanceof SyntaxError;
+      throw new PaymentGatewayError(
+        malformed ? 'PSP returned a malformed body' : 'PSP body timed out or was cut off',
+        !malformed,
+        { cause: err },
+      );
     }
   }
 }
