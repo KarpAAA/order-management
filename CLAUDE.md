@@ -56,6 +56,7 @@ pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
 pnpm test              # Vitest project unit: domain, VOs, policies (no Docker)
 pnpm test:e2e          # Vitest project e2e: *.int-spec.ts + *.e2e-spec.ts (Testcontainers)
+pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
 docker compose --profile app up --build   # migrate + api + worker from one image
 ```
 

@@ -134,6 +134,23 @@ curl http://localhost:4010/charges
 Set `PAYMENT_GATEWAY=fake` in `services/api/.env` to skip fake-psp entirely (in-process,
 deterministic: amounts ending in `13` minor units are declined).
 
+## Contract fuzzing (Schemathesis)
+
+```cmd
+pnpm test:contract     & rem fresh stack + seed in project oms-contract, then Schemathesis
+pnpm contract:down     & rem remove the project and its volumes
+```
+
+Schemathesis generates requests from `/docs-json` and checks every response: no 5xx, only
+documented status codes, bodies matching the schema, and the API accepting what the schema
+allows (and rejecting what it forbids). It runs in its own compose project with no host
+ports, so it works next to the dev stack and never touches dev data. The containers stay up
+after a run for `docker compose -p oms-contract logs api`.
+
+Config: `devtools/contract/schemathesis.toml`. It logs in as `owner@acme.test` by itself,
+pins `workspaceId` to acme (a random one is a non-member → 404 at the guard) and draws
+`orderId` / `productId` mostly from the seeded ids. Every failure prints a `curl` to reproduce it.
+
 ## Repository layout
 
 ```
