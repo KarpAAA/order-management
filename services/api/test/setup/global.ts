@@ -5,7 +5,6 @@
 import { execSync } from 'node:child_process';
 
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { RedisContainer } from '@testcontainers/redis';
 
 import { PrismaClient } from '@infra/database/generated/prisma/client';
@@ -13,24 +12,13 @@ import { PrismaClient } from '@infra/database/generated/prisma/client';
 import { seedTest } from '../seed/seed-test';
 
 import { adminQuery, databaseUrl, TEMPLATE_DB } from './database-url';
+import { startPostgres } from './postgres';
 
 import type { TestProject } from 'vitest/node';
 
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
   const [pg, redis] = await Promise.all([
-    new PostgreSqlContainer('postgres:18')
-      // durability off: the database lives for one run, writes get much cheaper. Never in prod.
-      .withCommand([
-        'postgres',
-        '-c',
-        'fsync=off',
-        '-c',
-        'synchronous_commit=off',
-        '-c',
-        'full_page_writes=off',
-      ])
-      .withTmpFs({ '/var/lib/postgresql': 'rw' })
-      .start(),
+    startPostgres(),
     new RedisContainer('redis:7-alpine').start(),
   ]);
 
