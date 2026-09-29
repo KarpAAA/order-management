@@ -6,7 +6,12 @@
 /** @type {import('@stryker-mutator/api/core').PartialStrykerOptions} */
 export default {
   // explicit: the default `@stryker-mutator/*` glob resolves next to core, which pnpm isolates
-  plugins: ['@stryker-mutator/vitest-runner', '@stryker-mutator/typescript-checker'],
+  plugins: [
+    '@stryker-mutator/vitest-runner',
+    '@stryker-mutator/typescript-checker',
+    './stryker.ignorers.mjs',
+  ],
+  ignorers: ['error-message'],
   testRunner: 'vitest',
   vitest: {
     configFile: 'vitest.stryker.config.mts',

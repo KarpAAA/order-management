@@ -29,6 +29,7 @@ export default tseslint.config(
       'src/infrastructure/database/generated/**',
       'eslint.config.mjs',
       'stryker.config.mjs',
+      'stryker.ignorers.mjs',
       'reports/**',
       '.stryker-tmp/**',
     ],
