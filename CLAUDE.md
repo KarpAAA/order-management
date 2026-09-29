@@ -106,7 +106,5 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   transport modules (Nest needs them exported to inject them into controllers/consumers).
 - Stryker also mutates `src/shared/domain/money.ts`, runs a unit-only vitest config, and the
   vitest runner is patched for Vitest 5. Details: `.claude/rules/project/testing.md`.
-- Git hooks (husky, lint-staged, commitlint) are not in the conventions; every hook check is
-  repeated in CI (`.github/workflows/ci.yml`), a hook only saves the round trip.
 - `pnpm audit` exceptions live in `package.json` → `pnpm.auditConfig`, the reason next to the
   `overrides` in `pnpm-workspace.yaml` (JSON has no comments).
