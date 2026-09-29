@@ -3,6 +3,7 @@ import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
   IsArray,
+  IsDefined,
   IsEnum,
   IsInt,
   IsOptional,
@@ -94,6 +95,7 @@ export class UpdateOrderDto extends VersionDto {
   items: OrderItemInputDto[];
 
   @ApiProperty({ type: DiscountInputDto })
+  @IsDefined() // @ValidateNested() alone lets a missing object through
   @ValidateNested()
   @Type(() => DiscountInputDto)
   discount: DiscountInputDto;

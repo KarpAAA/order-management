@@ -110,6 +110,16 @@ describe('validation → 400 VALIDATION_FAILED (ORD-002, ORD-003, ORD-007, VAL-0
     const res = await action(id, 'place', {}).expect(400);
     expect(fieldsOf(res.body)).toContainEqual(expect.objectContaining({ path: 'version' }));
   });
+
+  // found by Schemathesis: a missing discount used to pass validation and crash with 500
+  it.each([
+    ['discount', { version: 0, items: [] }],
+    ['items', { version: 0, discount: { type: 'NONE' } }],
+  ])('PATCH requires %s (ORD-008)', async (field, body) => {
+    const { id } = await orderFactory.create();
+    const res = await api.http().patch(orderPath(WS_ACME, id)).set(member).send(body).expect(400);
+    expect(fieldsOf(res.body)).toContainEqual(expect.objectContaining({ path: field }));
+  });
 });
 
 describe('malformed and oversized bodies (VAL-002)', () => {
