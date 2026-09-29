@@ -186,6 +186,24 @@ first failure stops the run:
 
 Script: `services/api/prisma/check-migrations.ts`.
 
+## CI and git hooks
+
+Each check runs at the cheapest level that can catch its bug; a hook is a shortcut, CI is the
+gate (a hook can be skipped, CI cannot).
+
+| When                             | What                                                                                   | Where                            |
+| -------------------------------- | -------------------------------------------------------------------------------------- | -------------------------------- |
+| `git commit`                     | Prettier + ESLint `--fix` on staged files                                              | `.husky/pre-commit`, lint-staged |
+| `git commit`                     | Conventional Commits (`commitlint.config.mjs`), no `Co-Authored-By` / `Claude-Session` | `.husky/commit-msg`              |
+| `git push`                       | `pnpm typecheck && pnpm test`                                                          | `.husky/pre-push`                |
+| every PR, every push to `main`   | static (format, lint, typecheck) → unit → e2e + migrations; audit; commits (PR)        | `.github/workflows/ci.yml`       |
+| push to `main`, nightly, by hand | Stryker (incremental, report artifact), Schemathesis                                   | `.github/workflows/nightly.yml`  |
+| weekly                           | dependency PRs, each through the full CI                                               | `.github/dependabot.yml`         |
+
+Hooks install with `pnpm install` (`prepare`). By hand only: e2e and migration checks before
+pushing a change to repositories or `schema.prisma`, `pnpm test:contract` while fixing DTOs,
+Stryker on one file (`pnpm --filter @oms/api exec stryker run --mutate <file>`).
+
 ## Repository layout
 
 ```
