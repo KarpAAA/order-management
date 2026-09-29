@@ -93,4 +93,15 @@ describe('Order state machine', () => {
     expect(order.pullHistory()).toEqual([]);
     expect(order.pullEvents()).toEqual([]);
   });
+
+  it.each(FORBIDDEN.filter(({ action }) => !isPaymentOutcome(action)))(
+    'ORD-022 names $action and $from in the 422 details',
+    ({ from, action }) => {
+      const order = orderIn(from);
+
+      expect(() => {
+        run(order, action);
+      }).toThrow(expect.objectContaining({ details: { orderId: order.id, action, status: from } }));
+    },
+  );
 });

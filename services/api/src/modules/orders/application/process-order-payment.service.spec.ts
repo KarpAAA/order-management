@@ -19,11 +19,7 @@ import { ScriptedPaymentGateway } from './__test__/scripted-payment-gateway';
 import { CompleteOrderPaymentService } from './complete-order-payment.service';
 import { FailOrderPaymentService } from './fail-order-payment.service';
 import { OrdersPolicy } from './orders.policy';
-import {
-  ProcessOrderPaymentService,
-  PSP_REJECTED,
-  PSP_UNAVAILABLE,
-} from './process-order-payment.service';
+import { ProcessOrderPaymentService } from './process-order-payment.service';
 
 // The PENDING_PAYMENT builder waits for payment attempt 1.
 const ATTEMPT = 1;
@@ -102,7 +98,7 @@ describe('ProcessOrderPaymentService', () => {
 
     const saved = (await orders.getById(ORDER)).snapshot();
     expect(saved.status).toBe(OrderStatus.PaymentFailed);
-    expect(saved.failureReason).toBe(PSP_UNAVAILABLE);
+    expect(saved.failureReason).toBe('psp_unavailable'); // PAY-007, literal on purpose
   });
 
   it('fails the payment as psp_rejected on a non-retryable gateway failure', async () => {
@@ -112,7 +108,7 @@ describe('ProcessOrderPaymentService', () => {
 
     const saved = (await orders.getById(ORDER)).snapshot();
     expect(saved.status).toBe(OrderStatus.PaymentFailed);
-    expect(saved.failureReason).toBe(PSP_REJECTED);
+    expect(saved.failureReason).toBe('psp_rejected'); // PAY-008, literal on purpose
   });
 
   it('rethrows an unexpected error and leaves the order pending', async () => {

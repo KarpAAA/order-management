@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 
 import { Money } from '@shared/domain/money';
 
-import { InvalidOrderError } from './errors';
 import { OrderLine } from './order-line';
 
 const create = (quantity: number): OrderLine =>
@@ -21,7 +20,12 @@ describe('OrderLine.create', () => {
   });
 
   it.each([0, -1, 1001, 1.5])('ORD-003 rejects quantity %s', (quantity) => {
-    expect(() => create(quantity)).toThrow(InvalidOrderError);
+    expect(() => create(quantity)).toThrow(
+      expect.objectContaining({
+        code: 'INVALID_ORDER',
+        details: { productId: 'product-1', quantity },
+      }),
+    );
   });
 
   it('CALC-001 its total is unit price × quantity', () => {

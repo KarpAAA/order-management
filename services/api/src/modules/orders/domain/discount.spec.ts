@@ -38,4 +38,10 @@ describe('discountOf', () => {
   ])('ORD-007 rejects %s', (_case, input) => {
     expect(() => discountOf(input)).toThrow(InvalidOrderError);
   });
+
+  it.each([-1, 10_001])('ORD-007 names the out-of-range valueBps %s', (valueBps) => {
+    expect(() => discountOf({ type: DiscountType.Percent, valueBps })).toThrow(
+      expect.objectContaining({ code: 'INVALID_ORDER', details: { valueBps } }),
+    );
+  });
 });

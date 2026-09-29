@@ -170,6 +170,7 @@ export class Order extends AggregateRoot {
 
   markPaid(input: Change & { attempt: number; pspChargeId: string }): void {
     this.assertAwaitingPayment(input.attempt);
+    // Stryker disable next-line StringLiteral: unreachable, assertAwaitingPayment guarantees PENDING_PAYMENT → PAID
     const from = this.transitionTo(OrderStatus.Paid, 'mark paid');
     this.props.pspChargeId = input.pspChargeId;
     this.props.paidAt = input.now;
@@ -181,6 +182,7 @@ export class Order extends AggregateRoot {
 
   markPaymentFailed(input: Change & { attempt: number; reason: string }): void {
     this.assertAwaitingPayment(input.attempt);
+    // Stryker disable next-line StringLiteral: unreachable, assertAwaitingPayment guarantees PENDING_PAYMENT → PAYMENT_FAILED
     const from = this.transitionTo(OrderStatus.PaymentFailed, 'mark payment failed');
     this.props.failureReason = input.reason;
     this.addHistory(OrderEventType.PaymentFailed, from, input, {

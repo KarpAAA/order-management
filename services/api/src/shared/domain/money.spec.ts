@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { CurrencyMismatchError, InvalidMoneyError, Money, roundHalfUp } from './money';
+import { InvalidMoneyError, Money, roundHalfUp } from './money';
 
 const eur = (minor: bigint): Money => Money.of(minor, 'EUR');
 const usd = (minor: bigint): Money => Money.of(minor, 'USD');
+
+/** The error a client would see: its code (the contract) and what it names in details. */
+const invalidMoney = (details: Record<string, unknown>): unknown =>
+  expect.objectContaining({ code: 'INVALID_MONEY', details });
 
 describe('roundHalfUp', () => {
   it.each([
@@ -36,7 +40,7 @@ describe('Money.of', () => {
   });
 
   it.each(['eur', 'EU', 'EURO', ''])('rejects the currency "%s" (not ISO 4217)', (currency) => {
-    expect(() => Money.of(1n, currency)).toThrow(InvalidMoneyError);
+    expect(() => Money.of(1n, currency)).toThrow(invalidMoney({ currency }));
   });
 });
 
@@ -51,10 +55,14 @@ describe('Money arithmetic', () => {
     expect(eur(25n).min(eur(100n)).amountMinor).toBe(25n);
   });
 
-  it('never combines two currencies', () => {
-    expect(() => eur(1n).add(usd(1n))).toThrow(CurrencyMismatchError);
-    expect(() => eur(1n).subtract(usd(1n))).toThrow(CurrencyMismatchError);
-    expect(() => eur(1n).min(usd(1n))).toThrow(CurrencyMismatchError);
+  it('never combines two currencies, naming both', () => {
+    const mismatch = expect.objectContaining({
+      code: 'CURRENCY_MISMATCH',
+      details: { left: 'EUR', right: 'USD' },
+    });
+    expect(() => eur(1n).add(usd(1n))).toThrow(mismatch);
+    expect(() => eur(1n).subtract(usd(1n))).toThrow(mismatch);
+    expect(() => eur(1n).min(usd(1n))).toThrow(mismatch);
   });
 
   it('CALC-001 multiplies by an integer quantity', () => {
@@ -62,7 +70,7 @@ describe('Money arithmetic', () => {
   });
 
   it.each([1.5, Number.NaN, Number.MAX_SAFE_INTEGER + 1])('rejects the factor %s', (factor) => {
-    expect(() => eur(1n).multiply(factor)).toThrow(InvalidMoneyError);
+    expect(() => eur(1n).multiply(factor)).toThrow(invalidMoney({ factor }));
   });
 
   it('stays exact beyond Number.MAX_SAFE_INTEGER', () => {
@@ -95,6 +103,6 @@ describe('Money.basisPoints', () => {
   });
 
   it('rejects fractional basis points', () => {
-    expect(() => eur(1n).basisPoints(1.5)).toThrow(InvalidMoneyError);
+    expect(() => eur(1n).basisPoints(1.5)).toThrow(invalidMoney({ bps: 1.5 }));
   });
 });

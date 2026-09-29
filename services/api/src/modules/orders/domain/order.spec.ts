@@ -77,12 +77,16 @@ describe('Order.draft', () => {
   });
 
   it('ORD-002 rejects 51 items', () => {
-    expect(() => draft(lineInputs(51))).toThrow(InvalidOrderError);
+    expect(() => draft(lineInputs(51))).toThrow(
+      expect.objectContaining({ code: 'INVALID_ORDER', details: { count: 51 } }),
+    );
   });
 
-  it('ORD-004 rejects the same product twice', () => {
+  it('ORD-004 rejects the same product twice, naming it', () => {
     const lines = [lineInput(), lineInput({ sku: 'OTHER' })];
-    expect(() => draft(lines)).toThrow(InvalidOrderError);
+    expect(() => draft(lines)).toThrow(
+      expect.objectContaining({ code: 'INVALID_ORDER', details: { productId: PRODUCT_1 } }),
+    );
   });
 
   it('ORD-006 rejects an archived product', () => {
@@ -196,6 +200,7 @@ describe('Order.place', () => {
     expect(events).toHaveLength(1);
     expect(events[0]).toBeInstanceOf(OrderPlaced);
     expect(events[0]).toMatchObject({
+      name: 'order.placed',
       workspaceId: WORKSPACE,
       orderId: order.id,
       paymentAttempt: 1,
