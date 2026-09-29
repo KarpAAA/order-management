@@ -1,0 +1,65 @@
+# Merge gate: every PR and every push to main (quality/git-pr.md §5, quality/testing.md §6).
+# Cheap jobs first; the Docker-backed ones start only when static checks and unit tests pass.
+# Mutation and contract suites are not here: nightly.yml.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      # unit + property + architecture tests, no Docker
+      - run: pnpm test
+
+  e2e:
+    name: e2e
+    needs: [static, unit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      # Testcontainers uses the runner's Docker: Postgres + Redis, a database per test file
+      - run: pnpm test:e2e
+
+  migrations:
+    name: migrations
+    needs: [static, unit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # check-migrations.ts needs the merge base and checks the base out in a worktree
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - run: pnpm test:migrations
+        env:
+          # a CI checkout has no local `main`; a PR compares with its own target branch
+          MIGRATIONS_BASE_REF: origin/${{ github.base_ref || 'main' }}
