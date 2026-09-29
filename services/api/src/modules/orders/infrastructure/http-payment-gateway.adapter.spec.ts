@@ -121,7 +121,11 @@ describe('HttpPaymentGateway', () => {
     });
 
     await gateway.charge(
-      request({ amount: Money.of(99_90n, 'USD'), reference: 'order-7', idempotencyKey: 'order-7:2' }),
+      request({
+        amount: Money.of(99_90n, 'USD'),
+        reference: 'order-7',
+        idempotencyKey: 'order-7:2',
+      }),
     );
 
     expect(sent?.headers.get('idempotency-key')).toBe('order-7:2');

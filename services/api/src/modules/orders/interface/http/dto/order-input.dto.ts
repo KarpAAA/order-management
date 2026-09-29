@@ -1,4 +1,4 @@
-import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { ApiProperty, ApiPropertyOptional, getSchemaPath } from '@nestjs/swagger';
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
@@ -15,6 +15,7 @@ import {
 } from 'class-validator';
 
 import { CursorPageQueryDto, VersionDto } from '@common/dto/common.dto';
+import { IsOmittable } from '@common/validation/is-omittable.decorator';
 
 import { DiscountType, MAX_PERCENT_BPS } from '../../../domain/discount';
 import { MAX_LINES } from '../../../domain/order';
@@ -35,36 +36,76 @@ export class OrderItemInputDto {
   quantity: number;
 }
 
-/** `valueBps` goes with PERCENT, `valueMinor` with FIXED, neither with NONE. */
+/**
+ * `valueBps` goes with PERCENT, `valueMinor` with FIXED, neither with NONE. Validated as one
+ * class; wrong combinations are rejected by the domain (`INVALID_ORDER`). The OpenAPI
+ * document describes the same rule as three variants (`discountSchema` below).
+ */
 export class DiscountInputDto {
-  @ApiProperty({ enum: DiscountType, enumName: 'DiscountType' })
   @IsEnum(DiscountType)
   type: DiscountType;
 
-  @ApiPropertyOptional({
-    type: 'integer',
-    minimum: 0,
-    maximum: MAX_PERCENT_BPS,
-    description: 'Required for PERCENT; 10000 = 100 %',
-  })
   @ValidateIf((o: DiscountInputDto) => o.type === DiscountType.Percent || o.valueBps !== undefined)
   @IsInt()
   @Min(0)
   @Max(MAX_PERCENT_BPS)
   valueBps?: number;
 
-  @ApiPropertyOptional({
-    type: 'integer',
-    minimum: 0,
-    maximum: Number.MAX_SAFE_INTEGER,
-    description: 'Required for FIXED; minor units, capped at the subtotal',
-  })
   @ValidateIf((o: DiscountInputDto) => o.type === DiscountType.Fixed || o.valueMinor !== undefined)
   @IsInt()
   @Min(0)
   @Max(Number.MAX_SAFE_INTEGER)
   valueMinor?: number;
 }
+
+// OpenAPI only: one schema per discount type, so a client sees which fields go with which type.
+export class DiscountNoneDto {
+  @ApiProperty({ enum: [DiscountType.None] })
+  type: DiscountType.None;
+}
+
+export class DiscountPercentDto {
+  @ApiProperty({ enum: [DiscountType.Percent] })
+  type: DiscountType.Percent;
+
+  @ApiProperty({
+    type: 'integer',
+    minimum: 0,
+    maximum: MAX_PERCENT_BPS,
+    description: '10000 = 100 %',
+  })
+  valueBps: number;
+}
+
+export class DiscountFixedDto {
+  @ApiProperty({ enum: [DiscountType.Fixed] })
+  type: DiscountType.Fixed;
+
+  @ApiProperty({
+    type: 'integer',
+    minimum: 0,
+    maximum: Number.MAX_SAFE_INTEGER,
+    description: 'Minor units, capped at the subtotal',
+  })
+  valueMinor: number;
+}
+
+/** Register with `@ApiExtraModels(...DISCOUNT_SCHEMA_MODELS)` on the controller. */
+export const DISCOUNT_SCHEMA_MODELS = [DiscountNoneDto, DiscountPercentDto, DiscountFixedDto];
+
+const discountSchema = {
+  // explicit, or Nest adds `allOf: [DiscountInputDto]` from the TypeScript type
+  type: Object,
+  oneOf: DISCOUNT_SCHEMA_MODELS.map((model) => ({ $ref: getSchemaPath(model) })),
+  discriminator: {
+    propertyName: 'type',
+    mapping: {
+      [DiscountType.None]: getSchemaPath(DiscountNoneDto),
+      [DiscountType.Percent]: getSchemaPath(DiscountPercentDto),
+      [DiscountType.Fixed]: getSchemaPath(DiscountFixedDto),
+    },
+  },
+};
 
 export class CreateOrderDto {
   @ApiProperty({
@@ -78,8 +119,8 @@ export class CreateOrderDto {
   @Type(() => OrderItemInputDto)
   items: OrderItemInputDto[];
 
-  @ApiPropertyOptional({ type: DiscountInputDto })
-  @IsOptional()
+  @ApiPropertyOptional(discountSchema)
+  @IsOmittable()
   @ValidateNested()
   @Type(() => DiscountInputDto)
   discount?: DiscountInputDto;
@@ -94,7 +135,7 @@ export class UpdateOrderDto extends VersionDto {
   @Type(() => OrderItemInputDto)
   items: OrderItemInputDto[];
 
-  @ApiProperty({ type: DiscountInputDto })
+  @ApiProperty(discountSchema)
   @IsDefined() // @ValidateNested() alone lets a missing object through
   @ValidateNested()
   @Type(() => DiscountInputDto)

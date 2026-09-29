@@ -10,6 +10,7 @@ import {
   Query,
 } from '@nestjs/common';
 import {
+  ApiBody,
   ApiCreatedResponse,
   ApiNoContentResponse,
   ApiOkResponse,
@@ -19,6 +20,7 @@ import {
 
 import { ApiErrors } from '@common/decorators/api-errors.decorator';
 import { CurrentActor } from '@common/decorators/current-actor.decorator';
+import { UuidParam } from '@common/decorators/uuid-param.decorator';
 import { WorkspaceScoped } from '@common/decorators/workspace-scoped.decorator';
 import { CreatedDto } from '@common/dto/common.dto';
 import type { UserActor } from '@shared/auth/actor';
@@ -81,7 +83,7 @@ export class CatalogController {
   @ApiErrors(400)
   getProduct(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
-    @Param('productId', ParseUUIDPipe) productId: string,
+    @UuidParam('productId') productId: string,
   ): Promise<ProductDto> {
     return this.query.get(workspaceId, productId);
   }
@@ -89,11 +91,13 @@ export class CatalogController {
   @Patch(':productId')
   @HttpCode(204)
   @ApiOperation({ summary: 'Update name, description or price (ADMIN, OWNER)' })
+  // every field is optional, so no body is the same as {}: nothing to change, 204
+  @ApiBody({ type: UpdateProductDto, required: false })
   @ApiNoContentResponse()
   @ApiErrors(400)
   async updateProduct(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
-    @Param('productId', ParseUUIDPipe) productId: string,
+    @UuidParam('productId') productId: string,
     @Body() dto: UpdateProductDto,
     @CurrentActor() actor: UserActor,
   ): Promise<void> {
@@ -116,7 +120,7 @@ export class CatalogController {
   @ApiErrors(400)
   async archiveProduct(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
-    @Param('productId', ParseUUIDPipe) productId: string,
+    @UuidParam('productId') productId: string,
     @CurrentActor() actor: UserActor,
   ): Promise<void> {
     await this.catalog.archive({ workspaceId, productId }, actor);

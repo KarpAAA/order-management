@@ -12,6 +12,7 @@ import {
 import {
   ApiAcceptedResponse,
   ApiCreatedResponse,
+  ApiExtraModels,
   ApiNoContentResponse,
   ApiOkResponse,
   ApiOperation,
@@ -20,6 +21,7 @@ import {
 
 import { ApiErrors } from '@common/decorators/api-errors.decorator';
 import { CurrentActor } from '@common/decorators/current-actor.decorator';
+import { UuidParam } from '@common/decorators/uuid-param.decorator';
 import { WorkspaceScoped } from '@common/decorators/workspace-scoped.decorator';
 import { CreatedDto, CursorPageQueryDto, VersionDto } from '@common/dto/common.dto';
 import type { UserActor } from '@shared/auth/actor';
@@ -40,12 +42,14 @@ import { OrdersQueryService } from '../../read/orders.query.service';
 
 import {
   CreateOrderDto,
+  DISCOUNT_SCHEMA_MODELS,
   ListOrdersQueryDto,
   toDiscountInput,
   UpdateOrderDto,
 } from './dto/order-input.dto';
 
 @ApiTags('orders')
+@ApiExtraModels(...DISCOUNT_SCHEMA_MODELS)
 @WorkspaceScoped()
 @Controller('workspaces/:workspaceId/orders')
 export class OrdersController {
@@ -97,7 +101,7 @@ export class OrdersController {
   @ApiErrors(400)
   getOrder(
     @Param('workspaceId', ParseUUIDPipe) _workspaceId: string,
-    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @UuidParam('orderId') orderId: string,
   ): Promise<OrderDto> {
     return this.query.get(orderId);
   }
@@ -109,7 +113,7 @@ export class OrdersController {
   @ApiErrors(400, 409, 422)
   async updateOrder(
     @Param('workspaceId', ParseUUIDPipe) _workspaceId: string,
-    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @UuidParam('orderId') orderId: string,
     @Body() dto: UpdateOrderDto,
     @CurrentActor() actor: UserActor,
   ): Promise<void> {
@@ -136,7 +140,7 @@ export class OrdersController {
   @ApiErrors(400, 409, 422)
   async placeOrder(
     @Param('workspaceId', ParseUUIDPipe) _workspaceId: string,
-    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @UuidParam('orderId') orderId: string,
     @Body() dto: VersionDto,
     @CurrentActor() actor: UserActor,
   ): Promise<OrderAcceptedDto> {
@@ -154,7 +158,7 @@ export class OrdersController {
   @ApiErrors(400, 409, 422)
   async cancelOrder(
     @Param('workspaceId', ParseUUIDPipe) _workspaceId: string,
-    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @UuidParam('orderId') orderId: string,
     @Body() dto: VersionDto,
     @CurrentActor() actor: UserActor,
   ): Promise<void> {
@@ -168,7 +172,7 @@ export class OrdersController {
   @ApiErrors(400, 409, 422)
   async fulfillOrder(
     @Param('workspaceId', ParseUUIDPipe) _workspaceId: string,
-    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @UuidParam('orderId') orderId: string,
     @Body() dto: VersionDto,
     @CurrentActor() actor: UserActor,
   ): Promise<void> {
@@ -181,7 +185,7 @@ export class OrdersController {
   @ApiErrors(400)
   listOrderEvents(
     @Param('workspaceId', ParseUUIDPipe) _workspaceId: string,
-    @Param('orderId', ParseUUIDPipe) orderId: string,
+    @UuidParam('orderId') orderId: string,
     @Query() page: CursorPageQueryDto,
   ): Promise<OrderEventPageDto> {
     return this.query.listEvents(orderId, page);
