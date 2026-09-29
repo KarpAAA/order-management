@@ -1,8 +1,4 @@
-import type {
-  ChargeRequest,
-  ChargeResult,
-  PaymentGateway,
-} from '../../ports/payment-gateway.port';
+import type { ChargeRequest, ChargeResult, PaymentGateway } from '../../ports/payment-gateway.port';
 
 type Scripted = { kind: 'result'; result: ChargeResult } | { kind: 'error'; error: Error };
 

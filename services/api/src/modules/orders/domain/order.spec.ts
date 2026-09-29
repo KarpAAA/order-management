@@ -120,10 +120,10 @@ describe('Order.draft', () => {
   });
 
   it('CALC-015 computes its totals and the amount due from its items', () => {
-    const order = draft(
-      [lineInput({ unitPriceMinor: 1250n, quantity: 3 })],
-      { type: DiscountType.Percent, valueBps: 1000 },
-    );
+    const order = draft([lineInput({ unitPriceMinor: 1250n, quantity: 3 })], {
+      type: DiscountType.Percent,
+      valueBps: 1000,
+    });
     expect(order.totals.total.amountMinor).toBe(4050n);
     expect(order.amountDue.equals(order.totals.total)).toBe(true);
   });

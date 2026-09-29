@@ -84,9 +84,7 @@ describe('ProcessOrderPaymentService', () => {
   it('rethrows a transient failure so the queue retries, leaving the order pending', async () => {
     gateway.willThrow(new TestGatewayError(true));
 
-    await expect(processPayment.execute(charge, paymentConsumer)).rejects.toThrow(
-      TestGatewayError,
-    );
+    await expect(processPayment.execute(charge, paymentConsumer)).rejects.toThrow(TestGatewayError);
 
     expect(await statusOf()).toBe(OrderStatus.PendingPayment);
   });

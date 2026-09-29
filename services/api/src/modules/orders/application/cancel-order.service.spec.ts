@@ -31,16 +31,19 @@ describe('CancelOrderService', () => {
   const cancelOrder = (role: WorkspaceRole = WorkspaceRole.Member): CancelOrderService =>
     new CancelOrderService(orders, new OrdersPolicy(), tenantAs(role), fixedClock, events);
 
-  it.each([OrderStatus.Draft, OrderStatus.PaymentFailed])('cancels an order in %s', async (status) => {
-    orders.put(orderIn(status));
+  it.each([OrderStatus.Draft, OrderStatus.PaymentFailed])(
+    'cancels an order in %s',
+    async (status) => {
+      orders.put(orderIn(status));
 
-    await cancelOrder().execute({ orderId: ORDER, version: VERSION }, member);
+      await cancelOrder().execute({ orderId: ORDER, version: VERSION }, member);
 
-    const saved = await orders.getById(ORDER);
-    expect(saved.status).toBe(OrderStatus.Cancelled);
-    expect(saved.snapshot().cancelledAt).toEqual(LATER);
-    expect(saved.version).toBe(VERSION + 1);
-  });
+      const saved = await orders.getById(ORDER);
+      expect(saved.status).toBe(OrderStatus.Cancelled);
+      expect(saved.snapshot().cancelledAt).toEqual(LATER);
+      expect(saved.version).toBe(VERSION + 1);
+    },
+  );
 
   it('publishes no events when an order is cancelled', async () => {
     orders.put(orderIn(OrderStatus.Draft));

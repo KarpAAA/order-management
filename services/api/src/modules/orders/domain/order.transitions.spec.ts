@@ -17,14 +17,54 @@ type Action = 'place' | 'cancel' | 'fulfill' | 'markPaid' | 'markPaymentFailed';
 
 const ACTIONS: readonly Action[] = ['place', 'cancel', 'fulfill', 'markPaid', 'markPaymentFailed'];
 
-const ALLOWED: readonly { from: OrderStatus; action: Action; to: OrderStatus; recorded: OrderEventType }[] = [
-  { from: OrderStatus.Draft, action: 'place', to: OrderStatus.PendingPayment, recorded: OrderEventType.OrderPlaced },
-  { from: OrderStatus.Draft, action: 'cancel', to: OrderStatus.Cancelled, recorded: OrderEventType.OrderCancelled },
-  { from: OrderStatus.PendingPayment, action: 'markPaid', to: OrderStatus.Paid, recorded: OrderEventType.PaymentSucceeded },
-  { from: OrderStatus.PendingPayment, action: 'markPaymentFailed', to: OrderStatus.PaymentFailed, recorded: OrderEventType.PaymentFailed },
-  { from: OrderStatus.PaymentFailed, action: 'place', to: OrderStatus.PendingPayment, recorded: OrderEventType.OrderPlaced },
-  { from: OrderStatus.PaymentFailed, action: 'cancel', to: OrderStatus.Cancelled, recorded: OrderEventType.OrderCancelled },
-  { from: OrderStatus.Paid, action: 'fulfill', to: OrderStatus.Fulfilled, recorded: OrderEventType.OrderFulfilled },
+const ALLOWED: readonly {
+  from: OrderStatus;
+  action: Action;
+  to: OrderStatus;
+  recorded: OrderEventType;
+}[] = [
+  {
+    from: OrderStatus.Draft,
+    action: 'place',
+    to: OrderStatus.PendingPayment,
+    recorded: OrderEventType.OrderPlaced,
+  },
+  {
+    from: OrderStatus.Draft,
+    action: 'cancel',
+    to: OrderStatus.Cancelled,
+    recorded: OrderEventType.OrderCancelled,
+  },
+  {
+    from: OrderStatus.PendingPayment,
+    action: 'markPaid',
+    to: OrderStatus.Paid,
+    recorded: OrderEventType.PaymentSucceeded,
+  },
+  {
+    from: OrderStatus.PendingPayment,
+    action: 'markPaymentFailed',
+    to: OrderStatus.PaymentFailed,
+    recorded: OrderEventType.PaymentFailed,
+  },
+  {
+    from: OrderStatus.PaymentFailed,
+    action: 'place',
+    to: OrderStatus.PendingPayment,
+    recorded: OrderEventType.OrderPlaced,
+  },
+  {
+    from: OrderStatus.PaymentFailed,
+    action: 'cancel',
+    to: OrderStatus.Cancelled,
+    recorded: OrderEventType.OrderCancelled,
+  },
+  {
+    from: OrderStatus.Paid,
+    action: 'fulfill',
+    to: OrderStatus.Fulfilled,
+    recorded: OrderEventType.OrderFulfilled,
+  },
 ];
 
 const FORBIDDEN = Object.values(OrderStatus).flatMap((from) =>
@@ -53,7 +93,11 @@ function run(order: Order, action: Action): void {
       order.markPaid({ ...change(), attempt: order.paymentAttempt, pspChargeId: 'ch_1' });
       return;
     case 'markPaymentFailed':
-      order.markPaymentFailed({ ...change(), attempt: order.paymentAttempt, reason: 'card_declined' });
+      order.markPaymentFailed({
+        ...change(),
+        attempt: order.paymentAttempt,
+        reason: 'card_declined',
+      });
       return;
   }
 }
@@ -81,18 +125,23 @@ describe('Order state machine', () => {
     },
   );
 
-  it.each(FORBIDDEN)('ORD-022 rejects $action from $from and changes nothing', ({ from, action }) => {
-    const order = orderIn(from);
-    const before = order.snapshot();
+  it.each(FORBIDDEN)(
+    'ORD-022 rejects $action from $from and changes nothing',
+    ({ from, action }) => {
+      const order = orderIn(from);
+      const before = order.snapshot();
 
-    expect(() => {
-      run(order, action);
-    }).toThrow(isPaymentOutcome(action) ? PaymentAttemptNotPendingError : OrderInvalidTransitionError);
+      expect(() => {
+        run(order, action);
+      }).toThrow(
+        isPaymentOutcome(action) ? PaymentAttemptNotPendingError : OrderInvalidTransitionError,
+      );
 
-    expect(order.snapshot()).toEqual(before);
-    expect(order.pullHistory()).toEqual([]);
-    expect(order.pullEvents()).toEqual([]);
-  });
+      expect(order.snapshot()).toEqual(before);
+      expect(order.pullHistory()).toEqual([]);
+      expect(order.pullEvents()).toEqual([]);
+    },
+  );
 
   it.each(FORBIDDEN.filter(({ action }) => !isPaymentOutcome(action)))(
     'ORD-022 names $action and $from in the 422 details',

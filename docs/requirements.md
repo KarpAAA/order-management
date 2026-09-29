@@ -14,12 +14,12 @@ current state.
 
 The `Level` column says where a requirement is tested (Step 1).
 
-| Level     | What runs                                                             | Vitest project | Files                            |
-| --------- | --------------------------------------------------------------------- | -------------- | -------------------------------- |
-| `unit`    | domain, value objects, policies; no Nest, no infrastructure           | `unit`         | `src/**/*.spec.ts`               |
+| Level     | What runs                                                             | Vitest project | Files                             |
+| --------- | --------------------------------------------------------------------- | -------------- | --------------------------------- |
+| `unit`    | domain, value objects, policies; no Nest, no infrastructure           | `unit`         | `src/**/*.spec.ts`                |
 | `adapter` | an HTTP adapter against MSW handlers (1.10)                           | `unit`         | `src/**/infrastructure/*.spec.ts` |
-| `int`     | a repository or a DB constraint against a real Postgres (1.6)         | `e2e`          | `test/**/*.int-spec.ts`          |
-| `api`     | the whole app through Supertest, with the worker and BullMQ (1.7–1.9) | `e2e`          | `test/**/*.e2e-spec.ts`          |
+| `int`     | a repository or a DB constraint against a real Postgres (1.6)         | `e2e`          | `test/**/*.int-spec.ts`           |
+| `api`     | the whole app through Supertest, with the worker and BullMQ (1.7–1.9) | `e2e`          | `test/**/*.e2e-spec.ts`           |
 
 A rule is tested in full at the **lowest** level where it lives. A higher level adds only
 what the lower one cannot see (HTTP mapping, guards, transactions, "nothing was written"),

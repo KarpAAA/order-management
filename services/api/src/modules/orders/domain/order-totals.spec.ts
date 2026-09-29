@@ -42,11 +42,21 @@ describe('calculateTotals', () => {
     });
 
     it('CALC-002 is 0 for an order with no items, and so is everything else', () => {
-      expect(totals([], NO_DISCOUNT, TAX)).toEqual({ subtotal: 0n, discount: 0n, tax: 0n, total: 0n });
+      expect(totals([], NO_DISCOUNT, TAX)).toEqual({
+        subtotal: 0n,
+        discount: 0n,
+        tax: 0n,
+        total: 0n,
+      });
     });
 
     it('keeps the order currency', () => {
-      const t = calculateTotals({ currency: 'USD', lineTotals: [], discount: NO_DISCOUNT, taxRateBps: 0 });
+      const t = calculateTotals({
+        currency: 'USD',
+        lineTotals: [],
+        discount: NO_DISCOUNT,
+        taxRateBps: 0,
+      });
       expect(t.total.currency).toBe('USD');
     });
   });
@@ -73,9 +83,12 @@ describe('calculateTotals', () => {
       [3750n, 9999n, 3750n],
       [3750n, 0n, 0n],
       [0n, 100n, 0n],
-    ])('CALC-005 FIXED on %s of %s is %s: never more than the subtotal', (subtotal, value, expected) => {
-      expect(totals([subtotal], fixed(value), 0).discount).toBe(expected);
-    });
+    ])(
+      'CALC-005 FIXED on %s of %s is %s: never more than the subtotal',
+      (subtotal, value, expected) => {
+        expect(totals([subtotal], fixed(value), 0).discount).toBe(expected);
+      },
+    );
   });
 
   describe('tax and total', () => {
