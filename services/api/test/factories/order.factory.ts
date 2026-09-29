@@ -21,7 +21,8 @@ import { testDb } from '../setup/db';
 /** What a test asks for. The order itself is built by the domain, never by hand. */
 export interface OrderSpec {
   workspaceId: string;
-  status: OrderStatus;
+  /** The enum or its string value — e2e specs do not import the domain. */
+  status: OrderStatus | `${OrderStatus}`;
   /** null → one unit of the workspace's seeded ACTIVE product */
   lines: { productId: string; quantity: number }[] | null;
   discount: Discount;
@@ -104,8 +105,10 @@ export const orderFactory = Factory.define<OrderSpec, unknown, Order>(({ onCreat
       };
     });
 
-    let now = Date.now();
-    const tick = (): Date => new Date((now += 1000)); // history entries 1 s apart, in order
+    // History entries 1 s apart, ending a second in the PAST: whatever the test does next
+    // through the API is stamped later and sorts after the factory's history.
+    let now = Date.now() - (PATH[spec.status as OrderStatus].length + 1) * 1000;
+    const tick = (): Date => new Date((now += 1000));
     const order = Order.draft({
       workspaceId: spec.workspaceId,
       currency: workspace.currency,
@@ -115,7 +118,7 @@ export const orderFactory = Factory.define<OrderSpec, unknown, Order>(({ onCreat
       createdBy,
       now: new Date(now),
     });
-    for (const step of PATH[spec.status]) step(order, tick(), createdBy);
+    for (const step of PATH[spec.status as OrderStatus]) step(order, tick(), createdBy);
 
     // The same rows OrdersRepository.insert writes.
     await db.order.create({ data: OrderMapper.toCreate(order) });

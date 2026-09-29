@@ -1,5 +1,6 @@
 // A slice of the app for int tests: config, database, CLS + transactions — exactly as
 // shared.module.ts wires them — plus whatever the test is about. No HTTP, queues or JWT.
+import { ConsoleLogger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ClsPluginTransactional, TransactionHost } from '@nestjs-cls/transactional';
 import { ClsModule, ClsService } from 'nestjs-cls';
@@ -42,7 +43,9 @@ export async function createIntModule(opts: {
       ...(opts.imports ?? []),
     ],
     providers: opts.providers,
-  }).compile();
+  })
+    .setLogger(new ConsoleLogger({ logLevels: ['fatal', 'error', 'warn'] })) // no query debug spam
+    .compile();
   await moduleRef.init();
 
   const tenant = moduleRef.get(TenantContext);
