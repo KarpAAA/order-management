@@ -61,7 +61,13 @@ export class CreateWorkspaceDto {
   @Matches(/^[a-z0-9]+(-[a-z0-9]+)*$/)
   slug: string;
 
-  @ApiProperty({ description: 'ISO 4217, fixed for the life of the workspace', example: 'EUR' })
+  @ApiProperty({
+    description: 'ISO 4217, upper case, fixed for the life of the workspace',
+    example: 'EUR',
+    pattern: '^[A-Z]{3}$',
+  })
+  // IsISO4217CurrencyCode ignores case; the column CHECK does not ('eur' was a 500)
+  @Matches(/^[A-Z]{3}$/)
   @IsISO4217CurrencyCode()
   currency: string;
 

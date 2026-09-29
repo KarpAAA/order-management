@@ -1,0 +1,48 @@
+# Contract fuzzing: an override of docker-compose.yml for the separate `oms-contract` project.
+#   pnpm test:contract    fresh stack + seed → Schemathesis against http://api:3000/docs-json
+#   pnpm contract:down    remove the project with its volumes
+# Everything talks over the compose network, so no host ports: it runs next to the dev stack.
+
+services:
+  postgres:
+    ports: !reset []
+  redis:
+    ports: !reset []
+  fake-psp:
+    ports: !reset []
+
+  # Fixed-id data (README → Seeded data): the login user and the ids in schemathesis.toml.
+  seed:
+    profiles: [app]
+    image: oms-api-build:local
+    working_dir: /repo/services/api
+    command: ['pnpm', 'exec', 'prisma', 'db', 'seed']
+    environment:
+      DATABASE_URL: postgresql://oms:oms@postgres:5432/oms?schema=public
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  api:
+    ports: !reset []
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
+  schemathesis:
+    profiles: [app]
+    image: schemathesis/schemathesis:v4.28.0
+    volumes:
+      - ./devtools/contract:/contract:ro
+    environment:
+      CONTRACT_EMAIL: owner@acme.test
+      CONTRACT_PASSWORD: Passw0rd!
+    # the api has no healthcheck: wait for its OpenAPI document instead
+    command:
+      - --config-file=/contract/schemathesis.toml
+      - run
+      - http://api:3000/docs-json
+      - --wait-for-schema=60
+    depends_on:
+      api:
+        condition: service_started

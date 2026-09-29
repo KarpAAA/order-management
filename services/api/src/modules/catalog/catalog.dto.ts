@@ -13,6 +13,7 @@ import {
 
 import { CursorPageQueryDto, MoneyDto } from '@common/dto/common.dto';
 import { CursorPageDto } from '@common/dto/cursor-page.dto';
+import { IsOmittable } from '@common/validation/is-omittable.decorator';
 
 import { ProductStatus } from './product-status';
 
@@ -33,7 +34,7 @@ export class CreateProductDto {
   @Length(1, 200)
   name: string;
 
-  @ApiPropertyOptional({ maxLength: 2000, nullable: true })
+  @ApiPropertyOptional({ type: String, maxLength: 2000, nullable: true })
   @IsOptional()
   @IsString()
   @MaxLength(2000)
@@ -55,19 +56,24 @@ export class CreateProductDto {
 /** Hand-written: `sku` is immutable after creation (orders snapshot it). */
 export class UpdateProductDto {
   @ApiPropertyOptional({ minLength: 1, maxLength: 200 })
-  @IsOptional()
+  @IsOmittable()
   @IsString()
   @Length(1, 200)
   name?: string;
 
-  @ApiPropertyOptional({ maxLength: 2000, nullable: true, description: '`null` clears it' })
+  @ApiPropertyOptional({
+    type: String,
+    maxLength: 2000,
+    nullable: true,
+    description: '`null` clears it',
+  })
   @IsOptional()
   @IsString()
   @MaxLength(2000)
   description?: string | null;
 
   @ApiPropertyOptional({ type: 'integer', minimum: MIN_PRICE_MINOR, maximum: MAX_PRICE_MINOR })
-  @IsOptional()
+  @IsOmittable()
   @IsInt()
   @Min(MIN_PRICE_MINOR)
   @Max(MAX_PRICE_MINOR)

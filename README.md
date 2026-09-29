@@ -134,6 +134,76 @@ curl http://localhost:4010/charges
 Set `PAYMENT_GATEWAY=fake` in `services/api/.env` to skip fake-psp entirely (in-process,
 deterministic: amounts ending in `13` minor units are declined).
 
+## Contract fuzzing (Schemathesis)
+
+```cmd
+pnpm test:contract     & rem fresh stack + seed in project oms-contract, then Schemathesis
+pnpm contract:down     & rem remove the project and its volumes
+```
+
+Schemathesis generates requests from `/docs-json` and checks every response: no 5xx, only
+documented status codes, bodies matching the schema, and the API accepting what the schema
+allows (and rejecting what it forbids). It runs in its own compose project with no host
+ports, so it works next to the dev stack and never touches dev data. The containers stay up
+after a run for `docker compose -p oms-contract logs api`.
+
+Config: `devtools/contract/schemathesis.toml`. It logs in as `owner@acme.test` by itself,
+pins `workspaceId` to acme (a random one is a non-member → 404 at the guard) and draws
+`orderId` / `productId` mostly from the seeded ids. Every failure prints a `curl` to reproduce it.
+
+## Mutation testing (Stryker)
+
+```cmd
+pnpm test:mutation     & rem Stryker over the unit suite, report in services/api/reports/mutation
+```
+
+Stryker plants small bugs (mutants) in `orders` `domain/` + `application/` and in
+`shared/domain/money.ts`, runs the unit tests covering each one, and reports the mutants no
+test caught. A surviving mutant is a missing or too weak assertion. Report only for now: no
+threshold fails the run. Repeated runs are incremental (`reports/stryker-incremental.json`).
+Config: `services/api/stryker.config.mjs`.
+
+## Migration checks
+
+```cmd
+pnpm test:migrations   & rem guard, fresh, drift, upgrade on a throwaway Postgres (Testcontainers)
+```
+
+Four steps against the merge base with `main` (`MIGRATIONS_BASE_REF` overrides the ref); the
+first failure stops the run:
+
+- **guard** (git only): no migration of the base edited, deleted or renamed, uncommitted
+  edits included; new migrations sort after the base's last one. More than one new
+  migration is a warning (one migration per PR).
+- **fresh**: `prisma migrate deploy` of every migration on an empty database.
+- **drift**: `prisma migrate diff` of that database against `schema.prisma`; on a
+  difference it prints the SQL still missing (a forgotten `prisma migrate dev`). The
+  hand-written CHECKs are invisible to it; the `*.int-spec.ts` tests cover them.
+- **upgrade**, only when the branch adds migrations: a git worktree of the base installs,
+  migrates and runs its own `prisma/seed.ts`, then this branch's new migrations run on top.
+  Catches SQL that passes on an empty table and fails on data (`ADD COLUMN … NOT NULL`
+  without a default).
+
+Script: `services/api/prisma/check-migrations.ts`.
+
+## CI and git hooks
+
+Each check runs at the cheapest level that can catch its bug; a hook is a shortcut, CI is the
+gate (a hook can be skipped, CI cannot).
+
+| When                             | What                                                                                   | Where                            |
+| -------------------------------- | -------------------------------------------------------------------------------------- | -------------------------------- |
+| `git commit`                     | Prettier + ESLint `--fix` on staged files                                              | `.husky/pre-commit`, lint-staged |
+| `git commit`                     | Conventional Commits (`commitlint.config.mjs`), no `Co-Authored-By` / `Claude-Session` | `.husky/commit-msg`              |
+| `git push`                       | `pnpm typecheck && pnpm test`                                                          | `.husky/pre-push`                |
+| every PR, every push to `main`   | static (format, lint, typecheck) → unit → e2e + migrations; audit; commits (PR)        | `.github/workflows/ci.yml`       |
+| push to `main`, nightly, by hand | Stryker (incremental, report artifact), Schemathesis                                   | `.github/workflows/nightly.yml`  |
+| weekly                           | dependency PRs, each through the full CI                                               | `.github/dependabot.yml`         |
+
+Hooks install with `pnpm install` (`prepare`). By hand only: e2e and migration checks before
+pushing a change to repositories or `schema.prisma`, `pnpm test:contract` while fixing DTOs,
+Stryker on one file (`pnpm --filter @oms/api exec stryker run --mutate <file>`).
+
 ## Repository layout
 
 ```

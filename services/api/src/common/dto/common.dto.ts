@@ -17,13 +17,21 @@ export class MoneyDto {
   currency: string;
 }
 
+const CURSOR_PATTERN = /^[A-Za-z0-9_-]+$/;
+const CURSOR_MAX_LENGTH = 200;
+
 /** Keyset pagination input. `cursor` is opaque: pass back `nextCursor` unchanged. */
 export class CursorPageQueryDto {
-  @ApiPropertyOptional({ description: 'Opaque cursor from the previous page' })
+  @ApiPropertyOptional({
+    description: 'Opaque cursor from the previous page',
+    pattern: CURSOR_PATTERN.source,
+    minLength: 1,
+    maxLength: CURSOR_MAX_LENGTH,
+  })
   @IsOptional()
   @IsString()
-  @MaxLength(200)
-  @Matches(/^[A-Za-z0-9_-]+$/)
+  @MaxLength(CURSOR_MAX_LENGTH)
+  @Matches(CURSOR_PATTERN)
   cursor?: string;
 
   @ApiPropertyOptional({ minimum: 1, maximum: 100, default: 20, type: 'integer' })

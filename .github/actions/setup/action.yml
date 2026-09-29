@@ -1,0 +1,33 @@
+# Shared job setup: pnpm + Node from the repo's own pins, dependencies, Prisma client.
+# The generated client is gitignored; type-aware lint, tsc and Stryker's checker need it.
+name: Setup
+description: Install pnpm, Node, dependencies and generate the Prisma client
+
+runs:
+  using: composite
+  steps:
+    # version from package.json → packageManager
+    - uses: pnpm/action-setup@v6
+
+    - uses: actions/setup-node@v7
+      with:
+        node-version-file: .nvmrc
+        cache: pnpm
+
+    # For every later step of the job:
+    #  - HUSKY=0: `prepare` installs git hooks; a CI checkout has no use for them;
+    #  - DATABASE_URL: prisma.config.ts requires one even for `generate` and there is no .env in
+    #    CI. Nothing connects to it: tests and migration checks pass their container's URL.
+    - name: Set job environment
+      shell: bash
+      run: |
+        echo "HUSKY=0" >> "$GITHUB_ENV"
+        echo "DATABASE_URL=postgresql://ci:ci@localhost:1/ci" >> "$GITHUB_ENV"
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
+
+    - name: Generate Prisma client
+      shell: bash
+      run: pnpm --filter @oms/api db:generate

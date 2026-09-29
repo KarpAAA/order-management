@@ -16,7 +16,14 @@ export const envSchema = z.object({
     ),
 
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
+  /** Emit Prisma `query` events (debug log; the e2e suite counts queries with them). */
+  DATABASE_LOG_QUERIES: booleanString.default(false),
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
+  /** Namespace of every BullMQ key in Redis; the e2e suite gives each test file its own. */
+  QUEUE_PREFIX: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]+$/)
+    .default('bull'),
 
   JWT_SECRET: z.string().min(32),
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().max(86_400).default(900),

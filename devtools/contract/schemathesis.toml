@@ -1,0 +1,95 @@
+# Schemathesis: fuzz the API against its own OpenAPI document (/docs-json).
+# Runs inside the `oms-contract` compose project (docker-compose.contract.yml): `pnpm test:contract`.
+# All checks are on; switching one off needs a comment saying why.
+
+base-url = "http://api:3000"
+continue-on-failure = true
+
+[checks]
+# Expects 405 + Allow for a method a path does not have; Express/Nest answer 404 and no
+# client relies on the difference.
+unsupported_method.enabled = false
+
+[phases]
+# Stateless first: every operation on its own. Stateful (create → use the id) comes later.
+stateful.enabled = false
+
+[generation]
+max-examples = 100
+
+# Log in as the acme OWNER once per run: Schemathesis POSTs the credentials, takes the token
+# by JSON Pointer and sends it to every operation under the `bearer` security scheme.
+[auth.dynamic.openapi.bearer]
+path = "/v1/auth/login"
+payload = { email = "${CONTRACT_EMAIL}", password = "${CONTRACT_PASSWORD}" }
+extract_selector = "/accessToken"
+
+# Seeded ids (README → Seeded data, services/api/prisma/seed-data.ts → seedId).
+# Products 1…18 of acme, ARCHIVED ones (…04, …0b, …10) included.
+[dictionaries.acme_products]
+values = [
+  "01990000-0000-7000-8000-a10000000001", "01990000-0000-7000-8000-a10000000002",
+  "01990000-0000-7000-8000-a10000000003", "01990000-0000-7000-8000-a10000000004",
+  "01990000-0000-7000-8000-a10000000005", "01990000-0000-7000-8000-a10000000006",
+  "01990000-0000-7000-8000-a10000000007", "01990000-0000-7000-8000-a10000000008",
+  "01990000-0000-7000-8000-a10000000009", "01990000-0000-7000-8000-a1000000000a",
+  "01990000-0000-7000-8000-a1000000000b", "01990000-0000-7000-8000-a1000000000c",
+  "01990000-0000-7000-8000-a1000000000d", "01990000-0000-7000-8000-a1000000000e",
+  "01990000-0000-7000-8000-a1000000000f", "01990000-0000-7000-8000-a10000000010",
+  "01990000-0000-7000-8000-a10000000011", "01990000-0000-7000-8000-a10000000012",
+]
+
+# Orders 1…7 of acme, one per status (DRAFT, empty DRAFT, PENDING_PAYMENT, PAID, …).
+[dictionaries.acme_orders]
+values = [
+  "01990000-0000-7000-8000-a20000000001", "01990000-0000-7000-8000-a20000000002",
+  "01990000-0000-7000-8000-a20000000003", "01990000-0000-7000-8000-a20000000004",
+  "01990000-0000-7000-8000-a20000000005", "01990000-0000-7000-8000-a20000000006",
+  "01990000-0000-7000-8000-a20000000007",
+]
+
+[parameters]
+# Always acme: a random workspace id is a non-member → 404 at the guard, and the fuzzer
+# would never reach a controller.
+"path.workspaceId" = "01990000-0000-7000-8000-a00000000000"
+# Mostly real records (depth), sometimes a random id (the 404 branch).
+"path.orderId" = { dictionary = "acme_orders", probability = 0.8 }
+"path.productId" = { dictionary = "acme_products", probability = 0.8 }
+# Always real here: with up to 50 items, a per-item 20 % chance of a random id makes almost
+# every order 404; unknown ids are already covered by the negative cases.
+"body.items[*].productId" = { dictionary = "acme_products" }
+# Exception: the schema says `^[A-Z]{3}$`, the API also checks the code exists (IsISO4217).
+# OpenAPI cannot hold the ISO 4217 list, so positive examples draw from real codes.
+"body.currency" = { dictionary = "currencies" }
+
+# Half the time a seeded email: adding a member needs a registered user (else 404), and
+# register/login then hit the "exists" and "wrong password" branches too.
+"body.email" = { dictionary = "seeded_emails", probability = 0.5 }
+
+[dictionaries.seeded_emails]
+values = [
+  "owner@acme.test", "admin@acme.test", "member@acme.test", "viewer@acme.test",
+  "owner@globex.test", "admin@globex.test", "member@globex.test", "viewer@globex.test",
+  "both@example.test",
+]
+
+[dictionaries.currencies]
+values = ["EUR", "USD", "GBP", "UAH", "PLN", "JPY", "CHF"]
+
+# A state transition that the order's current status forbids is 422 by design
+# (InvalidStateError): business state, not something a schema can express.
+[[operations]]
+include-name-regex = '^POST /v1/workspaces/\{workspaceId\}/orders/\{orderId\}/(place|cancel|fulfill)$'
+checks.positive_data_acceptance.expected-statuses = [202, 204, 401, 403, 404, 409, 422]
+
+# The same productId twice in one order is 400 INVALID_ORDER (ORD-004). JSON Schema has no
+# "unique by field" for array items, and 18 seeded products make repeats common.
+[[operations]]
+include-name-regex = '^(POST|PATCH) /v1/workspaces/\{workspaceId\}/orders(/\{orderId\})?$'
+checks.positive_data_acceptance.expected-statuses = [201, 204, 400, 401, 403, 404, 409, 422]
+
+# `cursor` is opaque: only a `nextCursor` from a previous page is valid. Any other string
+# that fits the pattern is 400 INVALID_CURSOR by design; a schema cannot say "one we issued".
+[[operations]]
+include-name-regex = '^GET /v1/workspaces(/\{workspaceId\}/(members|orders|products|orders/\{orderId\}/events))?$'
+checks.positive_data_acceptance.expected-statuses = [200, 400, 401, 403, 404]

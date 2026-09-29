@@ -1,0 +1,103 @@
+# Merge gate: every PR and every push to main (quality/git-pr.md §5, quality/testing.md §6).
+# Cheap jobs first; the Docker-backed ones start only when static checks and unit tests pass.
+# Mutation and contract suites are not here: nightly.yml.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+
+  unit:
+    name: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      # unit + property + architecture tests, no Docker
+      - run: pnpm test
+
+  e2e:
+    name: e2e
+    needs: [static, unit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      # Testcontainers uses the runner's Docker: Postgres + Redis, a database per test file
+      - run: pnpm test:e2e
+
+  migrations:
+    name: migrations
+    needs: [static, unit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # check-migrations.ts needs the merge base and checks the base out in a worktree
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      - run: pnpm test:migrations
+        env:
+          # a CI checkout has no local `main`; a PR compares with its own target branch
+          MIGRATIONS_BASE_REF: origin/${{ github.base_ref || 'main' }}
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      # known vulnerabilities in what ships; exceptions: package.json → pnpm.auditConfig
+      - run: pnpm audit --prod --audit-level=high
+      # dependencies this PR adds or bumps (license + vulnerabilities); free on a public repo
+      - if: github.event_name == 'pull_request'
+        uses: actions/dependency-review-action@v5
+        with:
+          fail-on-severity: high
+
+  commits:
+    name: commits
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      # the commit-msg hook can be skipped (-n, IDE commits); this check cannot
+      - run: >-
+          pnpm exec commitlint
+          --from origin/${{ github.base_ref }}
+          --to ${{ github.event.pull_request.head.sha }}
+      - name: No AI attribution trailers (quality/git-pr.md §1)
+        run: |
+          range="origin/${{ github.base_ref }}..${{ github.event.pull_request.head.sha }}"
+          if git log --format=%B "$range" | grep -iE '^(co-authored-by|claude-session):'; then
+            echo "::error::remove the Co-Authored-By / Claude-Session trailers above"
+            exit 1
+          fi

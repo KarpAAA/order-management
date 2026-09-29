@@ -2,10 +2,13 @@ node_modules/
 dist/
 dist-worker/
 coverage/
+reports/
+.stryker-tmp/
 *.tsbuildinfo
 .env
 .env.*
 !.env.example
+!.env.test
 services/api/src/infrastructure/database/generated/
 .idea/workspace.xml
 .idea/shelf/

@@ -1,0 +1,2 @@
+# Whole-project checks too slow for every commit; e2e and migrations stay in CI (ci.yml).
+pnpm typecheck && pnpm test

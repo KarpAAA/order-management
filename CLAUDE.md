@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 0: foundation** (see `docs/architecture.md`).
+Current step: **Step 1: testing** (see `docs/ROADMAP.md`; Step 0 foundation: `docs/architecture.md`).
 
 ## Conventions
 
@@ -37,7 +37,9 @@ traces: none
 metrics-endpoint: none          # Step 4
 tracker: none
 merge: merge-commit
-testing: vitest                 # deferred to Step 1: no tests in Step 0
+testing: vitest                 # projects unit + e2e; test levels per requirement in docs/requirements.md
+ci: github-actions              # PR + main: static, unit, e2e, migrations, audit, commits; main + nightly: mutation, contract
+hooks: husky                    # pre-commit: lint-staged; commit-msg: commitlint + no AI trailers; pre-push: typecheck + unit
 ```
 
 ## Stack
@@ -54,6 +56,11 @@ pnpm db:seed           # fixed-id dev data (README → Seeded data)
 pnpm db:reset          # drop, migrate, seed
 pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
+pnpm test              # Vitest project unit: domain, VOs, policies, architecture tests (no Docker)
+pnpm test:e2e          # Vitest project e2e: *.int-spec.ts + *.e2e-spec.ts (Testcontainers)
+pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
+pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
+pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
 docker compose --profile app up --build   # migrate + api + worker from one image
 ```
 
@@ -93,6 +100,11 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
 - `eslint.config.mjs` (not `.js`, package is CJS); `eslint-plugin-boundaries` pinned to 5.x
   (the template uses its API); `interface`/`read` may import own `domain`; L1 `read` may
   import its module root; `max-params` replaced by selectors (4 for functions, 6 for
-  constructors); an `entry` element for `src/entrypoints`. Details at the top of the file.
+  constructors); an `entry` element for `src/entrypoints`; `test/factories`, `test/doubles`,
+  `test/helpers` and `*.int-spec.ts` may import module internals. Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
   transport modules (Nest needs them exported to inject them into controllers/consumers).
+- Stryker also mutates `src/shared/domain/money.ts`, runs a unit-only vitest config, and the
+  vitest runner is patched for Vitest 5. Details: `.claude/rules/project/testing.md`.
+- `pnpm audit` exceptions live in `package.json` → `pnpm.auditConfig`, the reason next to the
+  `overrides` in `pnpm-workspace.yaml` (JSON has no comments).

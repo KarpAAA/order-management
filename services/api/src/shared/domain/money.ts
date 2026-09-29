@@ -21,7 +21,9 @@ const BPS_DENOMINATOR = 10_000n;
  */
 export function roundHalfUp(numerator: bigint, denominator: bigint): bigint {
   if (denominator <= 0n) throw new InvalidMoneyError('Denominator must be positive', {});
+  // Stryker disable next-line EqualityOperator: `<=` flips the sign of 0 only, and -0n === 0n
   const sign = numerator < 0n ? -1n : 1n;
+  // Stryker disable next-line ArithmeticOperator: sign is ±1, so `/ sign` equals `* sign`
   const abs = numerator * sign;
   return sign * ((abs * 2n + denominator) / (denominator * 2n));
 }
@@ -69,6 +71,7 @@ export class Money {
 
   min(other: Money): Money {
     this.assertSameCurrency(other);
+    // Stryker disable next-line EqualityOperator: on equal amounts `<` returns an equal Money
     return this.amountMinor <= other.amountMinor ? this : other;
   }
 

@@ -7,12 +7,19 @@
     "node": ">=24.0.0"
   },
   "scripts": {
+    "prepare": "husky",
     "dev": "pnpm --filter @oms/api dev",
     "build": "pnpm -r run build",
     "lint": "pnpm -r run lint",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "pnpm -r run typecheck",
+    "test": "pnpm --filter @oms/api test",
+    "test:e2e": "pnpm --filter @oms/api test:e2e",
+    "test:mutation": "pnpm --filter @oms/api test:mutation",
+    "test:migrations": "pnpm --filter @oms/api test:migrations",
+    "test:contract": "pnpm contract:down && docker compose -p oms-contract -f docker-compose.yml -f docker-compose.contract.yml --profile app run --build --rm schemathesis",
+    "contract:down": "docker compose -p oms-contract -f docker-compose.yml -f docker-compose.contract.yml --profile app down -v",
     "db:migrate": "pnpm --filter @oms/api db:migrate",
     "db:seed": "pnpm --filter @oms/api db:seed",
     "db:reset": "pnpm --filter @oms/api db:reset",
@@ -20,6 +27,17 @@
     "infra:down": "docker compose down"
   },
   "devDependencies": {
+    "@commitlint/cli": "21.2.3",
+    "@commitlint/config-conventional": "21.2.3",
+    "husky": "9.1.7",
+    "lint-staged": "17.6.0",
     "prettier": "3.9.9"
+  },
+  "pnpm": {
+    "auditConfig": {
+      "ignoreGhsas": [
+        "GHSA-ggr8-5vv4-36mx"
+      ]
+    }
   }
 }

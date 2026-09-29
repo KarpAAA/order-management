@@ -18,11 +18,13 @@ export type AppConfig = ConfigType<typeof appConfig>;
 
 export const databaseConfig = registerAs('database', () => ({
   url: env().DATABASE_URL,
+  logQueries: env().DATABASE_LOG_QUERIES,
 }));
 export type DatabaseConfig = ConfigType<typeof databaseConfig>;
 
 export const redisConfig = registerAs('redis', () => ({
   url: env().REDIS_URL,
+  queuePrefix: env().QUEUE_PREFIX,
 }));
 export type RedisConfig = ConfigType<typeof redisConfig>;
 
