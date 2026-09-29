@@ -52,6 +52,11 @@ export class InMemoryOrdersRepository implements OrdersRepositoryPort {
     this.rows.set(order.id, { ...order.snapshot() });
   }
 
+  /** Assert: how many orders are stored. */
+  count(): number {
+    return this.rows.size;
+  }
+
   /**
    * Arrange: another writer saves the order right after the use case loads it, so the
    * use case's `save` hits the optimistic lock.
