@@ -1,0 +1,58 @@
+# Weekly dependency updates; every PR runs the full CI (ci.yml) before it can merge.
+# Minor and patch bumps are grouped into one PR per ecosystem; majors come one by one.
+# Commit messages use `build(deps)`, a type commitlint accepts (quality/git-pr.md §1).
+version: 2
+
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build(deps)
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # patched for Vitest 5 (patches/, pnpm-workspace.yaml): a new version would not match the
+      # patch. Upgrade by hand when upstream supports Vitest 5 and the patch goes.
+      - dependency-name: '@stryker-mutator/vitest-runner'
+      # pinned to 5.x on purpose: the conventions template uses its 5.x API (CLAUDE.md → Deviations)
+      - dependency-name: eslint-plugin-boundaries
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        update-types: [minor, patch]
+
+  # node:24-slim of the api image and of fake-psp
+  - package-ecosystem: docker
+    directories: [/services/api, /devtools/fake-psp]
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build(deps)
+    ignore:
+      # Node major = the LTS line (.nvmrc, engines): moved on purpose, never by a bot
+      - dependency-name: node
+        update-types: [version-update:semver-major]
+
+  # postgres and redis of the local stack
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: build(deps)
+    ignore:
+      # a database major is a migration project, not a bump; Testcontainers pins the same majors
+      - dependency-name: postgres
+        update-types: [version-update:semver-major]
+      - dependency-name: redis
+        update-types: [version-update:semver-major]
