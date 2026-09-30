@@ -6,6 +6,7 @@ import { TenantContext } from '@common/tenancy/tenant-context';
 import { ordersQueueConfig, type OrdersQueueConfig } from '@config/configuration';
 import { systemActor } from '@shared/auth/actor';
 import { InvalidStateError } from '@shared/errors/domain-error';
+import { InfrastructureError } from '@shared/errors/infrastructure-error';
 
 import { ProcessOrderPaymentService } from '../../application/process-order-payment.service';
 import { ORDERS_QUEUE, type OrdersJobs } from '../../infrastructure/orders.queue';
@@ -52,6 +53,10 @@ export class OrdersConsumer extends WorkerHost implements OnApplicationBootstrap
         this.logger.log(`job ${job.id ?? ''} skipped: ${err.code}`);
         return;
       }
+      if (err instanceof InfrastructureError && !err.retryable) {
+        // a bad request or key: retrying cannot help, straight to failed (queues.md §3)
+        throw new UnrecoverableError(err.message);
+      }
       this.logger.warn(
         `job ${job.id ?? ''} attempt ${job.attemptsMade + 1}/${maxAttempts} failed: ${
           err instanceof Error ? err.message : String(err)
@@ -61,10 +66,15 @@ export class OrdersConsumer extends WorkerHost implements OnApplicationBootstrap
     }
   }
 
-  /** A job that exhausted its attempts is a bug (transient PSP failures end as PAYMENT_FAILED). */
+  /**
+   * A dead job is a bug (transient PSP failures end as PAYMENT_FAILED). This event fires on
+   * every failed attempt; dead = attempts spent, or failed for good by UnrecoverableError after
+   * fewer attempts (queues.md §4).
+   */
   @OnWorkerEvent('failed')
   onFailed(job: Job, err: Error): void {
-    if (job.attemptsMade >= (job.opts.attempts ?? 1)) {
+    const attemptsSpent = job.attemptsMade >= (job.opts.attempts ?? 1);
+    if (attemptsSpent || err.name === 'UnrecoverableError') {
       this.logger.error(`dead job ${job.name} id=${job.id ?? ''}: ${err.message}`);
     }
   }
