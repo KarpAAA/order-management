@@ -12,9 +12,11 @@ on:
 permissions:
   contents: read
 
+# never cancel: a merge must not kill a running mutation or contract run (the Stryker
+# incremental cache is saved only when a run finishes); the next run waits instead
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   mutation:
