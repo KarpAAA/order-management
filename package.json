@@ -22,6 +22,8 @@
     "contract:down": "docker compose -p oms-contract -f docker-compose.yml -f docker-compose.contract.yml --profile app down -v",
     "db:migrate": "pnpm --filter @oms/api db:migrate",
     "db:seed": "pnpm --filter @oms/api db:seed",
+    "db:datagen": "pnpm --filter @oms/api db:datagen",
+    "db:explain": "docker compose exec -T postgres psql -U oms -d oms -f - < services/api/prisma/explain/lists.sql",
     "db:reset": "pnpm --filter @oms/api db:reset",
     "infra:up": "docker compose up -d --wait",
     "infra:down": "docker compose down"

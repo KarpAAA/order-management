@@ -111,6 +111,42 @@ where `NN` = 01…12 in hex (1…18); SKUs `ACM-001…018` / `GBX-001…018`. Pr
 | 6   | FULFILLED       | full history                                              |
 | 7   | CANCELLED       | cancelled from DRAFT                                      |
 
+## Generated data (Step 2)
+
+A volume dataset for the Step 2 experiments (indexes, partitioning, tenancy modes, sharding),
+loaded **next to** the seed after a reset:
+
+```
+pnpm db:reset
+pnpm db:datagen                      # full: 100 tenants, 2M orders, 24 months (~6 GB, minutes)
+pnpm db:datagen --scale smoke        # 10 tenants, 20k orders, 6 months (seconds)
+```
+
+Flags: `--seed 42`, `--until <ISO date>` (default today 00:00 UTC, printed at start),
+`--tenants`, `--orders`, `--months`. The same `--seed` and `--until` give byte-identical data.
+
+- **Tenants** `gen-001…gen-100` follow a Zipf distribution: `gen-001` holds ~20 % of all
+  orders, the long tail a few hundred each. Late tenants join during the window.
+- **Orders** are built through the domain (`Order.draft` + real transitions + `OrderMapper`),
+  so totals, CHECKs and history always match the status. Order times grow denser towards
+  `until` and are loaded in time order with tenants interleaved, as production writes them.
+  Ids are UUIDv7 stamped with the row's own `created_at`.
+- **Users**: `owner@gen-001.datagen.local`, `user-01@gen-001.datagen.local`, … with the seed
+  password. The last user of each tenant is a VIEWER.
+- Loaded with `COPY` in 5000-order transactions, then `VACUUM ANALYZE`; the script prints
+  table and index sizes, the top tenants and the status mix. It refuses production, a non-local
+  host, and a database that already has `gen-*` tenants.
+
+Sizes later on:
+
+```sql
+SELECT relname, n_live_tup,
+       pg_size_pretty(pg_relation_size(relid))       AS heap,
+       pg_size_pretty(pg_indexes_size(relid))        AS indexes,
+       pg_size_pretty(pg_total_relation_size(relid)) AS total
+FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC;
+```
+
 ## Simulating the payment provider
 
 fake-psp reads `FAKE_PSP_LATENCY_MS`, `FAKE_PSP_FAILURE_RATE`, `FAKE_PSP_DECLINE_RATE` at start

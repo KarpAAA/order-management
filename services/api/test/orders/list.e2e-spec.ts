@@ -8,6 +8,7 @@ import { orderFactory } from '../factories';
 import { createApiApp, type ApiApp } from '../helpers/api-app';
 import { orderPath, ordersPath } from '../helpers/paths';
 import { createTenant, type Tenant } from '../helpers/tenant';
+import { testDb } from '../setup/db';
 
 let api: ApiApp;
 beforeAll(async () => {
@@ -84,6 +85,26 @@ describe('GET /orders (ORD-023)', () => {
 
     const seen = [...first.items, ...second.items].map((o) => o.id);
     expect(new Set(seen).size).toBe(25);
+    expect(seen).toEqual([...created].reverse());
+  });
+
+  it('pages through orders sharing one created_at by the id tiebreak, none repeated or skipped', async () => {
+    const t = await createTenant();
+    const created = await createOrders(t, 5);
+    await testDb().order.updateMany({
+      where: { workspaceId: t.workspaceId },
+      data: { createdAt: new Date('2026-01-01T00:00:00.000Z') },
+    });
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await list(t, { limit: 2, ...(cursor && { cursor }) });
+      seen.push(...page.items.map((o) => o.id));
+      cursor = page.nextCursor;
+    } while (cursor);
+
+    // equal timestamps → id DESC; UUIDv7 ids grow with creation, so newest created first
     expect(seen).toEqual([...created].reverse());
   });
 
