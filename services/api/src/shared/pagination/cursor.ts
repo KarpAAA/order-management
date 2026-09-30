@@ -60,11 +60,19 @@ export function toCursorPage<TRow extends CursorPosition, TItem>(
 /**
  * Filter for "rows after this cursor" under ORDER BY created_at DESC, id DESC.
  * Plain object so it spreads into any Prisma `where` with `createdAt` and `id`.
+ *
+ * The conventions' `(created_at, id) < ($1, $2)` is not expressible in Prisma, and `$queryRaw`
+ * bypasses the tenant scope. The OR alone is only a Filter: Postgres starts at the newest row
+ * and discards every row before the cursor (a hidden OFFSET). The redundant `created_at <=`
+ * bound becomes the Index Cond that starts the scan at the cursor (docs/perf/2.2-indexes-explain.md).
  */
 export function afterCursor(cursor: string | undefined) {
   if (cursor === undefined) return {};
   const { createdAt, id } = decodeCursor(cursor);
-  return { OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }] };
+  return {
+    createdAt: { lte: createdAt },
+    OR: [{ createdAt: { lt: createdAt } }, { createdAt, id: { lt: id } }],
+  };
 }
 
 export const newestFirst = () => [{ createdAt: 'desc' as const }, { id: 'desc' as const }];
@@ -73,7 +81,10 @@ export const newestFirst = () => [{ createdAt: 'desc' as const }, { id: 'desc' a
 export function afterCursorAsc(cursor: string | undefined) {
   if (cursor === undefined) return {};
   const { createdAt, id } = decodeCursor(cursor);
-  return { OR: [{ createdAt: { gt: createdAt } }, { createdAt, id: { gt: id } }] };
+  return {
+    createdAt: { gte: createdAt },
+    OR: [{ createdAt: { gt: createdAt } }, { createdAt, id: { gt: id } }],
+  };
 }
 
 export const oldestFirst = () => [{ createdAt: 'asc' as const }, { id: 'asc' as const }];
