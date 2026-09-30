@@ -20,6 +20,9 @@ updates:
       # pinned to 5.x on purpose: the conventions template uses its 5.x API (CLAUDE.md → Deviations)
       - dependency-name: eslint-plugin-boundaries
         update-types: [version-update:semver-major]
+      # follows the runtime major (Node 24 LTS, .nvmrc, engines): moved together with Node
+      - dependency-name: '@types/node'
+        update-types: [version-update:semver-major]
 
   - package-ecosystem: github-actions
     directory: /

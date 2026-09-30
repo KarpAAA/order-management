@@ -114,7 +114,7 @@
   - Закласти: у CI — накат усіх міграцій з нуля на чистий Postgres і перевірка, що схема не розходиться з Prisma-моделлю (`migrate diff`). За конвенціями міграції йдуть окремим кроком CI.
   - Подивитись: зламана або забута міграція ловиться до мержу.
 
-- [ ] **1.15 CI (GitHub Actions)**
+- [x] **1.15 CI (GitHub Actions)**
   - Закласти:
     - основний пайплайн: lint → typecheck → unit → integration/API (Testcontainers працюють у GitHub Actions) → міграції
     - Schemathesis і Stryker — окремими job-ами, вручну або за розкладом
