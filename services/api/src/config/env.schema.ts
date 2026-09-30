@@ -3,7 +3,8 @@ import { z } from 'zod';
 const booleanString = z.enum(['true', 'false']).transform((v) => v === 'true');
 
 export const envSchema = z.object({
-  NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+  // no default: a deploy that forgets it must not boot as development (ops/config-env.md §1)
+  NODE_ENV: z.enum(['development', 'test', 'production']),
   API_PORT: z.coerce.number().int().positive().default(3000),
   CORS_ORIGINS: z
     .string()
@@ -26,7 +27,8 @@ export const envSchema = z.object({
     .default('bull'),
 
   JWT_SECRET: z.string().min(32),
-  JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().max(86_400).default(900),
+  // ≤ 15 min (ops/security.md §3); with refresh: none a leaked token lives this long
+  JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().max(900).default(900),
 
   PAYMENT_GATEWAY: z.enum(['http', 'fake']).default('fake'),
   PSP_BASE_URL: z.url().default('http://localhost:4010'),
@@ -36,8 +38,9 @@ export const envSchema = z.object({
   CHARGE_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
   CHARGE_BACKOFF_MS: z.coerce.number().int().positive().default(1000),
 
-  SWAGGER_ENABLED: booleanString.default(true),
-  BULL_BOARD_ENABLED: booleanString.default(true),
+  // off unless enabled: bull-board has no auth and can retry or remove jobs (.env.example turns both on)
+  SWAGGER_ENABLED: booleanString.default(false),
+  BULL_BOARD_ENABLED: booleanString.default(false),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -51,9 +54,13 @@ export function validateEnv(raw: Record<string, unknown>): Env {
     throw new Error(`Invalid environment:\n${issues}`);
   }
   const env = parsed.data;
-  // Boot-time safety checks — the only place NODE_ENV is read (ops/config-env.md §3).
+  // Boot-time safety checks (ops/config-env.md §3).
   if (env.NODE_ENV === 'production' && (env.SWAGGER_ENABLED || env.BULL_BOARD_ENABLED)) {
     throw new Error('Invalid environment: Swagger and bull-board must be disabled in production');
+  }
+  // the fake gateway marks orders PAID with no money moved
+  if (env.NODE_ENV === 'production' && env.PAYMENT_GATEWAY === 'fake') {
+    throw new Error('Invalid environment: PAYMENT_GATEWAY=fake is not allowed in production');
   }
   return env;
 }
