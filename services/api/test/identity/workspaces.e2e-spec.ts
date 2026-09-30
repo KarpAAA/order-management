@@ -108,6 +108,24 @@ describe('members (WS-003, WS-004)', () => {
     expect(again.body).toMatchObject({ code: 'ALREADY_MEMBER' });
   });
 
+  it.each([
+    ['an invalid email', { email: 'not-an-email', role: 'MEMBER' }, 'email'],
+    ['a role that does not exist', { email: 'someone@example.test', role: 'GOD' }, 'role'],
+  ])('400 for %s, naming the field', async (_name, body, path) => {
+    const { as, workspaceId } = await ownerOfNewWorkspace();
+
+    const res = await api
+      .http()
+      .post(`${workspacePath(workspaceId)}/members`)
+      .set(as)
+      .send(body)
+      .expect(400);
+    expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(
+      (res.body as { details: { fields: { path: string }[] } }).details.fields.map((f) => f.path),
+    ).toContain(path);
+  });
+
   it('404 USER_NOT_FOUND for an email nobody registered', async () => {
     const { as, workspaceId } = await ownerOfNewWorkspace();
 
