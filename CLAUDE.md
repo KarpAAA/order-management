@@ -97,11 +97,9 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
 
 ## Deviations from the conventions templates
 
-- `eslint.config.mjs` (not `.js`, package is CJS); `eslint-plugin-boundaries` pinned to 5.x
-  (the template uses its API); `interface`/`read` may import own `domain`; L1 `read` may
-  import its module root; `max-params` replaced by selectors (4 for functions, 6 for
-  constructors); an `entry` element for `src/entrypoints`; `test/factories`, `test/doubles`,
-  `test/helpers` and `*.int-spec.ts` may import module internals. Details at the top of the file.
+- `eslint.config.mjs` is the template plus two additions: the generated Prisma client,
+  `prisma/` and root tool files are outside the layer map; `test/factories`, `test/doubles`
+  and `test/helpers` may import module internals. Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
   transport modules (Nest needs them exported to inject them into controllers/consumers).
 - Stryker also mutates `src/shared/domain/money.ts`, runs a unit-only vitest config, and the

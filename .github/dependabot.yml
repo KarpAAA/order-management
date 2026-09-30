@@ -17,7 +17,7 @@ updates:
       # patched for Vitest 5 (patches/, pnpm-workspace.yaml): a new version would not match the
       # patch. Upgrade by hand when upstream supports Vitest 5 and the patch goes.
       - dependency-name: '@stryker-mutator/vitest-runner'
-      # pinned to 5.x on purpose: the conventions template uses its 5.x API (CLAUDE.md → Deviations)
+      # pinned to 5.x on purpose: the conventions template uses its 5.x API (its Requires line)
       - dependency-name: eslint-plugin-boundaries
         update-types: [version-update:semver-major]
       # follows the runtime major (Node 24 LTS, .nvmrc, engines): moved together with Node
