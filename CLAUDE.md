@@ -38,7 +38,7 @@ metrics-endpoint: none          # Step 4
 tracker: none
 merge: merge-commit
 testing: vitest                 # projects unit + e2e; test levels per requirement in docs/requirements.md
-ci: github-actions              # PR + main: static, unit, e2e, migrations, audit, commits; main + nightly: mutation, contract
+ci: github-actions              # PR + main: static, unit, e2e, migrations, audit; PR: commits; main + nightly: mutation, contract
 hooks: husky                    # pre-commit: lint-staged; commit-msg: commitlint + no AI trailers; pre-push: typecheck + unit
 ```
 
@@ -56,7 +56,7 @@ pnpm db:seed           # fixed-id dev data (README → Seeded data)
 pnpm db:reset          # drop, migrate, seed
 pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
-pnpm test              # Vitest project unit: domain, VOs, policies, architecture tests (no Docker)
+pnpm test              # Vitest project unit: domain, VOs, policies, use cases, adapters (MSW), architecture (no Docker)
 pnpm test:e2e          # Vitest project e2e: *.int-spec.ts + *.e2e-spec.ts (Testcontainers)
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
 pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
@@ -106,3 +106,18 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   vitest runner is patched for Vitest 5. Details: `.claude/rules/project/testing.md`.
 - `pnpm audit` exceptions live in `package.json` → `pnpm.auditConfig`, the reason next to the
   `overrides` in `pnpm-workspace.yaml` (JSON has no comments).
+- No `docs-json` diff in CI yet (`git-pr.md` §5): the nightly Schemathesis run checks the API
+  against its own OpenAPI document; a committed `openapi.json` diff comes when a client does.
+- `tsconfig.json` sets `strictPropertyInitialization: false`: DTO classes are filled by
+  class-transformer and Nest, never by a constructor.
+- `register` and `login` take no `Actor` (the caller is anonymous); `createWorkspace` has no
+  policy call, because any signed-in user may create one (`principles.md` §2.2).
+- `SchedulePaymentChargeHandler` calls the scheduler port, not a use case (`events.md` §3): it
+  only enqueues, and the Step 3 outbox replaces it.
+- Orders has a repository port although Postgres is the only implementation
+  (`architecture.md` §4): it lets the use-case unit tests run on the in-memory repository in
+  `application/__test__/`. Details: `.claude/rules/project/testing.md`.
+- `DiscountInputDto` fields carry no `@ApiProperty`: the OpenAPI shape of `discount` is the
+  `oneOf` of the `Discount*Dto` doc models (`order-input.dto.ts`).
+- `/workspaces/{id}` is the tenant prefix and does not count as a nesting level, so
+  `/workspaces/{id}/orders/{orderId}/events` is one level deep (`api-conventions.md` §1).

@@ -42,7 +42,7 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   /**
    * Subscribes to every SQL statement. Only fires with DATABASE_LOG_QUERIES=true; used for the
-   * debug log and by the e2e N+1 guard (test/helpers/queries.ts).
+   * debug log and by the e2e N+1 guard (`countQueries` in test/helpers/api-app.ts).
    */
   onQuery(listener: (event: Prisma.QueryEvent) => void): void {
     // the class is declared without log generics, so `query` is not in its $on signature

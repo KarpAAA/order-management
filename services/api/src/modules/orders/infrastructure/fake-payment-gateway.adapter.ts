@@ -5,7 +5,8 @@ import type { ChargeRequest, ChargeResult, PaymentGateway } from '../ports/payme
 /**
  * Deterministic, in-process gateway (`PAYMENT_GATEWAY=fake`): no network, idempotent by key.
  * Amounts ending in 13 minor units are declined, so a decline can be produced on purpose.
- * Step 1 uses it for e2e tests and may script it further.
+ * Local development runs on it; the e2e suite scripts outcomes with test/doubles/test-psp.ts
+ * instead, and the adapter spec runs this one through the same cases as the HTTP adapter.
  */
 @Injectable()
 export class FakePaymentGateway implements PaymentGateway {
