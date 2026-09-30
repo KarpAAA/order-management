@@ -37,7 +37,10 @@ export class HttpPaymentGateway implements PaymentGateway {
     const durationMs = Math.round(performance.now() - startedAt);
     this.logger.log(`psp charge status=${response.status} durationMs=${durationMs}`);
 
-    // 5xx and 429 are transient; any other non-2xx means our request is wrong.
+    // 5xx and 429 are transient; any other non-2xx means our request is wrong. The body is
+    // not read there: release it, or the connection stays taken until garbage collection.
+    // Not awaited: the error must not wait on the stream.
+    if (!response.ok) void response.body?.cancel().catch(() => undefined);
     if (response.status >= 500 || response.status === 429) {
       throw new PaymentGatewayError(`PSP responded ${response.status}`, true);
     }

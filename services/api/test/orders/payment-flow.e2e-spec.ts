@@ -178,6 +178,14 @@ describe('two workers in the same charge at once (PAY-010, layer 3)', () => {
 });
 
 describe('PSP failures (PAY-005…008)', () => {
+  // the defaults (5 attempts, 1 s) are pinned in env.schema.spec.ts; here: the queue uses them
+  it('retries a charge with exponential backoff, attempts and base delay from config (PAY-006)', () => {
+    expect(queue.defaultJobOptions).toMatchObject({
+      attempts: 3, // CHARGE_ATTEMPTS in .env.test
+      backoff: { type: 'exponential', delay: 10 }, // CHARGE_BACKOFF_MS in .env.test
+    });
+  });
+
   it('retries transient failures: 503, 503, then 200 on the last attempt → PAID (PAY-006)', async () => {
     const { id } = await orderFactory.create();
     psp.script(id, 'unavailable', 'unavailable', 'ok');
