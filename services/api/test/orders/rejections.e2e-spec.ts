@@ -111,9 +111,22 @@ describe('validation → 400 VALIDATION_FAILED (ORD-002, ORD-003, ORD-007, VAL-0
     await api.http().get(orderPath(WS_ACME, 'not-a-uuid')).set(member).expect(400);
   });
 
-  it('requires version on every action (ORD-009)', async () => {
+  it.each([
+    [
+      'PATCH',
+      (id: string) =>
+        api
+          .http()
+          .patch(orderPath(WS_ACME, id))
+          .set(member)
+          .send({ items: [], discount: { type: 'NONE' } }),
+    ],
+    ['place', (id: string) => action(id, 'place', {})],
+    ['cancel', (id: string) => action(id, 'cancel', {})],
+    ['fulfill', (id: string) => action(id, 'fulfill', {}, admin)],
+  ])('requires version on %s (ORD-009)', async (_name, send) => {
     const { id } = await orderFactory.create();
-    const res = await action(id, 'place', {}).expect(400);
+    const res = await send(id).expect(400);
     expect(fieldsOf(res.body)).toContainEqual(expect.objectContaining({ path: 'version' }));
   });
 
@@ -174,11 +187,13 @@ describe('stale version → 409 STALE_VERSION, nothing written (ORD-009, ORD-022
           .patch(orderPath(WS_ACME, id))
           .set(member)
           .send({ version: 3, items: [], discount: { type: 'NONE' } }),
+      'DRAFT',
     ],
-    ['place', (id: string) => action(id, 'place', { version: 3 })],
-    ['cancel', (id: string) => action(id, 'cancel', { version: 3 })],
-  ])('%s with a version the order does not have', async (_name, send) => {
-    const { id } = await orderFactory.create();
+    ['place', (id: string) => action(id, 'place', { version: 3 }), 'DRAFT'],
+    ['cancel', (id: string) => action(id, 'cancel', { version: 3 }), 'DRAFT'],
+    ['fulfill', (id: string) => action(id, 'fulfill', { version: 3 }, admin), 'PAID'],
+  ] as const)('%s with a version the order does not have', async (_name, send, status) => {
+    const { id } = await orderFactory.create({ status });
     const before = await snapshot(id);
 
     const res = await send(id).expect(409);
