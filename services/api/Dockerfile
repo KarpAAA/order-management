@@ -11,6 +11,8 @@ WORKDIR /repo
 # Also used as-is by the one-shot `migrate` compose service (it has the Prisma CLI).
 FROM base AS build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+# patchedDependencies in pnpm-workspace.yaml: the install fails when a patch file is missing
+COPY patches patches
 COPY services/api/package.json services/api/
 RUN pnpm install --frozen-lockfile --filter @oms/api...
 COPY services/api services/api
