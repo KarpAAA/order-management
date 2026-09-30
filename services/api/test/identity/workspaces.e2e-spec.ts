@@ -2,7 +2,7 @@
 // Who may add whom is the role matrix of 1.8.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { userFactory } from '../factories';
+import { membershipFactory, userFactory, workspaceFactory } from '../factories';
 import { createApiApp, type ApiApp } from '../helpers/api-app';
 import { asUser } from '../helpers/auth';
 import { V1, workspacePath } from '../helpers/paths';
@@ -157,5 +157,59 @@ describe('members (WS-003, WS-004)', () => {
       role: 'OWNER',
       createdAt: expect.any(String),
     });
+  });
+});
+
+describe('query count (N+1 guard)', () => {
+  it('lists 1 and 20 workspaces of a user with the same number of queries (WS-004, TEN-008)', async () => {
+    const one = await userFactory.create();
+    const twenty = await userFactory.create();
+    for (const [user, count] of [
+      [one, 1],
+      [twenty, 20],
+    ] as const) {
+      for (const workspace of await workspaceFactory.createList(count)) {
+        await membershipFactory.create({
+          workspaceId: workspace.id,
+          userId: user.id,
+          role: 'VIEWER',
+        });
+      }
+    }
+    const list = (userId: string) =>
+      api.http().get(`${V1}/workspaces`).query({ limit: 20 }).set(asUser(userId)).expect(200);
+
+    const forOne = await api.countQueries(() => list(one.id));
+    const forTwenty = await api.countQueries(() => list(twenty.id));
+
+    expect(forOne).toBeGreaterThan(0);
+    expect(forTwenty).toBe(forOne);
+    expect(forTwenty).toBeLessThanOrEqual(3);
+  });
+
+  it('lists 1 and 20 members with the same number of queries (WS-004)', async () => {
+    const small = await ownerOfNewWorkspace();
+    const large = await ownerOfNewWorkspace();
+    for (const user of await userFactory.createList(19)) {
+      await membershipFactory.create({
+        workspaceId: large.workspaceId,
+        userId: user.id,
+        role: 'VIEWER',
+      });
+    }
+    const members = (t: { as: { Authorization: string }; workspaceId: string }) =>
+      api
+        .http()
+        .get(`${workspacePath(t.workspaceId)}/members`)
+        .query({ limit: 20 })
+        .set(t.as)
+        .expect(200);
+
+    const forOne = await api.countQueries(() => members(small));
+    const forTwenty = await api.countQueries(() => members(large));
+
+    expect(forOne).toBeGreaterThan(0);
+    expect(forTwenty).toBe(forOne);
+    expect(forTwenty).toBeLessThanOrEqual(3);
   });
 });

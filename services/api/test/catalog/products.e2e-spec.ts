@@ -263,6 +263,7 @@ describe('GET /products (CAT-006)', () => {
     const forOne = await api.countQueries(() => list(one));
     const forTwenty = await api.countQueries(() => list(twenty));
 
+    expect(forOne).toBeGreaterThan(0);
     expect(forTwenty).toBe(forOne);
     expect(forTwenty).toBeLessThanOrEqual(3);
   });
