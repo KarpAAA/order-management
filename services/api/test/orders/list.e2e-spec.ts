@@ -6,7 +6,7 @@ import type { OrderStatus } from '@infra/database/generated/prisma/client';
 
 import { orderFactory } from '../factories';
 import { createApiApp, type ApiApp } from '../helpers/api-app';
-import { ordersPath } from '../helpers/paths';
+import { orderPath, ordersPath } from '../helpers/paths';
 import { createTenant, type Tenant } from '../helpers/tenant';
 
 let api: ApiApp;
@@ -118,6 +118,25 @@ describe('GET /orders (ORD-023)', () => {
 });
 
 describe('query count (N+1 guard)', () => {
+  it('lists the history of 1 event and of 4 events with the same number of queries', async () => {
+    const t = await createTenant();
+    const draft = await orderFactory.create(t.order); // ORDER_CREATED
+    const fulfilled = await orderFactory.create({ ...t.order, status: 'FULFILLED' }); // + placed, paid, fulfilled
+    const events = (id: string) =>
+      api
+        .http()
+        .get(`${orderPath(t.workspaceId, id)}/events`)
+        .set(t.as)
+        .expect(200);
+
+    const forOne = await api.countQueries(() => events(draft.id));
+    const forFour = await api.countQueries(() => events(fulfilled.id));
+
+    expect(forOne).toBeGreaterThan(0);
+    expect(forFour).toBe(forOne);
+    expect(forFour).toBeLessThanOrEqual(3);
+  });
+
   it('lists 1 order and 20 orders with the same, small number of queries', async () => {
     const one = await createTenant();
     const twenty = await createTenant();
@@ -127,6 +146,7 @@ describe('query count (N+1 guard)', () => {
     const forOne = await api.countQueries(() => list(one));
     const forTwenty = await api.countQueries(() => list(twenty));
 
+    expect(forOne).toBeGreaterThan(0); // query events are on: the guard cannot pass empty
     expect(forTwenty).toBe(forOne); // does not grow with the page
     expect(forTwenty).toBeLessThanOrEqual(3); // membership check + the list
   });

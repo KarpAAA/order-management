@@ -102,6 +102,22 @@ describe('POST /auth/login (AUTH-004, AUTH-005)', () => {
     expect(wrongPassword.body).toMatchObject({ code: 'INVALID_CREDENTIALS' });
     expect(unknownEmail.body).toEqual(wrongPassword.body);
   });
+
+  it.each([
+    ['an invalid email', { email: 'not-an-email', password: PASSWORD }, 'email'],
+    ['no password', { email: 'both@example.test' }, 'password'],
+    [
+      'an unknown field',
+      { email: 'both@example.test', password: PASSWORD, remember: true },
+      'remember',
+    ],
+  ])('400 for %s, naming the field', async (_name, body, path) => {
+    const res = await login(body).expect(400);
+    expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED' });
+    expect(
+      (res.body as { details: { fields: { path: string }[] } }).details.fields.map((f) => f.path),
+    ).toContain(path);
+  });
 });
 
 describe('the token check (AUTH-006)', () => {

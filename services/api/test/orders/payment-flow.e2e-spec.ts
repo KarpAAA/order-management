@@ -30,9 +30,13 @@ beforeAll(async () => {
   worker = await createWorkerApp(psp);
   queue = api.get<Queue>(getQueueToken(ORDERS_QUEUE));
 });
+// the API app holds a Prisma pool and Redis: it closes even when closing the worker fails
 afterAll(async () => {
-  await worker.close();
-  await api.close();
+  try {
+    await worker.close();
+  } finally {
+    await api.close();
+  }
 });
 
 const member = asUser(USER_ACME_MEMBER);
