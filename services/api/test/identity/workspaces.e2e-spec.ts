@@ -66,6 +66,7 @@ describe('POST /workspaces (WS-001, WS-002)', () => {
   it.each([
     ['name empty', { name: '' }, 'name'],
     ['name of 101 chars', { name: 'n'.repeat(101) }, 'name'],
+    ['name with a NUL character', { name: 'Ini\u0000tech' }, 'name'],
     ['slug of 2 chars', { slug: 'ab' }, 'slug'],
     ['slug with capitals', { slug: 'Initech' }, 'slug'],
     ['currency not ISO 4217', { currency: 'eur' }, 'currency'],

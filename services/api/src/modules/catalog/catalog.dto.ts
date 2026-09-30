@@ -14,6 +14,7 @@ import {
 import { CursorPageQueryDto, MoneyDto } from '@common/dto/common.dto';
 import { CursorPageDto } from '@common/dto/cursor-page.dto';
 import { IsOmittable } from '@common/validation/is-omittable.decorator';
+import { NO_NUL_PATTERN, NoNulChar } from '@common/validation/no-nul-char.decorator';
 
 import { ProductStatus } from './product-status';
 
@@ -29,15 +30,17 @@ export class CreateProductDto {
   @Matches(/^[A-Za-z0-9._-]+$/)
   sku: string;
 
-  @ApiProperty({ minLength: 1, maxLength: 200, example: 'Coffee mug' })
+  @ApiProperty({ minLength: 1, maxLength: 200, pattern: NO_NUL_PATTERN, example: 'Coffee mug' })
   @IsString()
   @Length(1, 200)
+  @NoNulChar()
   name: string;
 
-  @ApiPropertyOptional({ type: String, maxLength: 2000, nullable: true })
+  @ApiPropertyOptional({ type: String, maxLength: 2000, pattern: NO_NUL_PATTERN, nullable: true })
   @IsOptional()
   @IsString()
   @MaxLength(2000)
+  @NoNulChar()
   description?: string | null;
 
   @ApiProperty({
@@ -55,21 +58,24 @@ export class CreateProductDto {
 
 /** Hand-written: `sku` is immutable after creation (orders snapshot it). */
 export class UpdateProductDto {
-  @ApiPropertyOptional({ minLength: 1, maxLength: 200 })
+  @ApiPropertyOptional({ minLength: 1, maxLength: 200, pattern: NO_NUL_PATTERN })
   @IsOmittable()
   @IsString()
   @Length(1, 200)
+  @NoNulChar()
   name?: string;
 
   @ApiPropertyOptional({
     type: String,
     maxLength: 2000,
+    pattern: NO_NUL_PATTERN,
     nullable: true,
     description: '`null` clears it',
   })
   @IsOptional()
   @IsString()
   @MaxLength(2000)
+  @NoNulChar()
   description?: string | null;
 
   @ApiPropertyOptional({ type: 'integer', minimum: MIN_PRICE_MINOR, maximum: MAX_PRICE_MINOR })
