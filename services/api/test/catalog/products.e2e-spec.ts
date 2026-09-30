@@ -77,6 +77,9 @@ describe('POST /products (CAT-001, CAT-003, CAT-007)', () => {
     ['name empty', { name: '' }, 'name'],
     ['name of 201 chars', { name: 'n'.repeat(201) }, 'name'],
     ['description of 2001 chars', { description: 'd'.repeat(2001) }, 'description'],
+    // found by Schemathesis: PostgreSQL text cannot hold U+0000 (22021 → 500)
+    ['name with a NUL character', { name: 'Desk\u0000lamp' }, 'name'],
+    ['description with a NUL character', { description: 'Warm\u0000light' }, 'description'],
     ['price 0', { priceMinor: 0 }, 'priceMinor'],
     ['price above 100 000 000', { priceMinor: 100_000_001 }, 'priceMinor'],
     ['price not an integer', { priceMinor: 9.99 }, 'priceMinor'],
@@ -147,6 +150,18 @@ describe('PATCH /products/{id} (CAT-004)', () => {
       expect(fieldPaths(res.body)).toContain(field);
     },
   );
+
+  // found by Schemathesis: PostgreSQL text cannot hold U+0000 (22021 → 500)
+  it.each(['name', 'description'])('refuses a NUL character in %s: 400', async (field) => {
+    const product = await productFactory.create();
+    const res = await api
+      .http()
+      .patch(productPath(WS_ACME, product.id))
+      .set(admin)
+      .send({ [field]: 'a\u0000b' })
+      .expect(400);
+    expect(fieldPaths(res.body)).toContain(field);
+  });
 
   it('refuses to change the sku: 400, nothing written', async () => {
     const product = await productFactory.create();

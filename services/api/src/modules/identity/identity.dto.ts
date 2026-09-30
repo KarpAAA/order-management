@@ -14,6 +14,7 @@ import {
 } from 'class-validator';
 
 import { CursorPageDto } from '@common/dto/cursor-page.dto';
+import { NO_NUL_PATTERN, NoNulChar } from '@common/validation/no-nul-char.decorator';
 import { WorkspaceRole } from '@shared/auth/workspace-role';
 
 // ── input ───────────────────────────────────────────────────────────────────
@@ -45,9 +46,10 @@ export class LoginDto {
 }
 
 export class CreateWorkspaceDto {
-  @ApiProperty({ minLength: 1, maxLength: 100, example: 'Acme Inc.' })
+  @ApiProperty({ minLength: 1, maxLength: 100, pattern: NO_NUL_PATTERN, example: 'Acme Inc.' })
   @IsString()
   @Length(1, 100)
+  @NoNulChar()
   name: string;
 
   @ApiProperty({
