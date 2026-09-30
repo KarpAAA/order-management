@@ -13,7 +13,7 @@ import { InfrastructureError } from '@shared/errors/infrastructure-error';
 import { VALIDATION_FAILED } from '../validation/validation-exception.factory';
 
 import type { ArgumentsHost, ExceptionFilter } from '@nestjs/common';
-import type { Response } from 'express';
+import type { Request, Response } from 'express';
 
 interface ErrorBody {
   code: string;
@@ -51,13 +51,14 @@ export class AppExceptionFilter implements ExceptionFilter {
   private readonly logger = new Logger(AppExceptionFilter.name);
 
   catch(err: unknown, host: ArgumentsHost): void {
-    const res = host.switchToHttp().getResponse<Response>();
+    const http = host.switchToHttp();
+    const res = http.getResponse<Response>();
     const { status, body, headers } = this.map(err);
 
     if (status >= 500) {
       this.logger.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
-    } else if (err instanceof ForbiddenError) {
-      this.logger.warn(`${body.code} action=${err.action}`);
+    } else {
+      this.logger.warn(clientErrorLine(err, status, body, http.getRequest<Request>()));
     }
 
     res
@@ -113,6 +114,30 @@ export class AppExceptionFilter implements ExceptionFilter {
       },
     };
   }
+}
+
+/**
+ * 4xx at warn with the code (http/error-handling.md §2). Only what is safe to log: field paths
+ * of a validation failure (never values), the policy action of a 403, the IP of a failed login
+ * (ops/security.md §3) — never the email or the password.
+ */
+function clientErrorLine(err: unknown, status: number, body: ErrorBody, req: Request): string {
+  const line = `${body.code} status=${String(status)}`;
+  if (err instanceof AuthenticationError) return `${line} ip=${req.ip ?? 'unknown'}`;
+  if (err instanceof ForbiddenError) return `${line} action=${err.action}`;
+  if (body.code === VALIDATION_FAILED)
+    return `${line} fields=${[...new Set(fieldPaths(body))].join(',')}`;
+  return line;
+}
+
+function fieldPaths(body: ErrorBody): string[] {
+  const fields = body.details?.fields;
+  if (!Array.isArray(fields)) return [];
+  return fields.flatMap((f: unknown) =>
+    typeof f === 'object' && f !== null && 'path' in f && typeof f.path === 'string'
+      ? [f.path]
+      : [],
+  );
 }
 
 function isErrorBody(value: unknown): value is ErrorBody {

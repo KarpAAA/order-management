@@ -141,6 +141,12 @@ describe('the token check (AUTH-006)', () => {
 });
 
 describe('GET /me (AUTH-007)', () => {
+  // personal data must not sit in a shared cache (http/api-conventions.md §6)
+  it('is never cached: Cache-Control: no-store', async () => {
+    const res = await api.http().get(`${V1}/me`).set(asUser(USER_BOTH)).expect(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+  });
+
   it('returns the user and every membership with its own role', async () => {
     const { body } = await api.http().get(`${V1}/me`).set(asUser(USER_BOTH)).expect(200);
 

@@ -25,7 +25,8 @@ export interface ApiApp {
 
 export async function createApiApp(): Promise<ApiApp> {
   const moduleRef = await Test.createTestingModule({ imports: [ApiModule] })
-    .setLogger(new ConsoleLogger({ logLevels: ['fatal', 'error', 'warn'] })) // quiet, not blind
+    // quiet, not blind: every 4xx is a warn by design, and the suite provokes hundreds of them
+    .setLogger(new ConsoleLogger({ logLevels: ['fatal', 'error'] }))
     .compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
   configureApi(app);

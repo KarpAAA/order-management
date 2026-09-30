@@ -9,6 +9,7 @@ import { setupQueueBoard } from '@infra/queues/queue-board';
 import { ORDERS_QUEUE } from '@modules/orders';
 
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import type { NextFunction, Request, Response } from 'express';
 
 /**
  * The HTTP pipeline of the API process, in one place: main.api.ts calls it before listen(),
@@ -21,6 +22,11 @@ export function configureApi(app: NestExpressApplication): void {
 
   app.use(helmet({ contentSecurityPolicy: false })); // JSON API; CSP would only break Swagger UI
   app.enableCors({ origin: config.corsOrigins });
+  // responses carry per-user data: no shared cache may keep them (http/api-conventions.md §6)
+  app.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
   app.useBodyParser('json', { limit: '10kb' });
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: '1' });
   app.useGlobalPipes(
