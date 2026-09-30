@@ -97,7 +97,7 @@ export class AccessTokenDto {
   @ApiProperty({ description: 'JWT access token (HS256). Send as `Authorization: Bearer …`' })
   accessToken: string;
 
-  @ApiProperty({ type: 'integer', example: 3600 })
+  @ApiProperty({ type: 'integer', example: 900 })
   expiresIn: number;
 }
 
