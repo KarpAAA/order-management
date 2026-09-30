@@ -1,29 +1,25 @@
-// Reproduced from nest-conventions/templates/eslint.config.js.
-// Project adjustments (each also listed in CLAUDE.md → "Deviations from the templates"):
-//  1. `.mjs`: the package is CommonJS, the config uses ESM imports.
-//  2. `entry` element for src/entrypoints (process roots: may import anything).
-//  3. `interface` and `read` may import their own module's `domain`; `read` of a level-1
-//     module may import its module root (errors.ts, *.dto.ts live there at L1) — DTOs use the domain
-//     enums and limits (http/dto-validation.md §3 requires it; the template forgot it).
-//  4. `max-params` is replaced by two selectors: 4 for functions, 6 for constructors
-//     (Nest DI constructors; code-style.md §2 allows ≤ 6 dependencies).
-//  5. eslint-plugin-boundaries pinned to 5.x: the template uses its API (mode, element-types).
-//  6. Prisma-generated client and the prisma/ scripts are outside the layer map.
-//  7. Test infrastructure (test/factories, test/doubles, test/helpers) and int tests
-//     (*.int-spec.ts) may import module internals: a factory persists through the domain and
-//     OrderMapper, a double implements a port, the worker app overrides PAYMENT_GATEWAY, an
-//     int test assembles a slice of a module. API specs (*.e2e-spec.ts) stay behind the rule.
-//     test/setup/global.ts default-exports.
-import boundaries from 'eslint-plugin-boundaries';
-import importPlugin from 'eslint-plugin-import';
-import prettier from 'eslint-config-prettier';
+// Reproduced from nest-conventions/templates/eslint.config.mjs.
+// Project additions (each also listed in CLAUDE.md → "Deviations from the conventions templates"):
+//  1. The Prisma-generated client, prisma/ scripts and root tool files are outside the layer
+//     map; Stryker's files, reports and dist-worker/ are not linted.
+//  2. Test infrastructure (test/factories, test/doubles, test/helpers) may import module
+//     internals: a factory persists through the domain and OrderMapper, a double implements a
+//     port, the worker app overrides PAYMENT_GATEWAY. test/setup/global.ts default-exports.
+// `.mjs`: a Nest package is CommonJS, and this config uses ESM imports and import.meta.
+// Requires: eslint@9, typescript-eslint, eslint-plugin-import, eslint-import-resolver-typescript,
+//           eslint-plugin-boundaries@5 (the element-types API below), eslint-config-prettier
+
 import tseslint from 'typescript-eslint';
+import importPlugin from 'eslint-plugin-import';
+import boundaries from 'eslint-plugin-boundaries';
+import prettier from 'eslint-config-prettier';
 
 const RESTRICTED_SYNTAX = [
   {
     selector: "CallExpression[callee.property.name='queryRawUnsafe']",
     message: 'Use $queryRaw tagged template.',
   },
+  // max-params would count DI constructors too; code-style.md §2 allows 6 dependencies there
   {
     selector:
       ":function[params.length>4]:not(MethodDefinition[kind='constructor'] > FunctionExpression)",
@@ -35,6 +31,7 @@ const RESTRICTED_SYNTAX = [
   },
 ];
 
+// own domain: DTOs use the domain enums and limits (dto-validation.md §3)
 const INTERFACE_ALLOW = [
   'shared',
   'common',
@@ -48,7 +45,7 @@ const INTERFACE_ALLOW = [
   'modindex',
 ];
 
-// no `interface`, no `entryclass`: only `transport` wires those
+// the core module and other root files: no `interface`, no `entryclass`; only `transport` wires those
 const MODROOT_ALLOW = [
   'shared',
   'common',
@@ -66,14 +63,16 @@ const MODROOT_ALLOW = [
 ];
 
 export default tseslint.config(
+  // eslint.config.mjs: outside the tsconfig program, so type-aware parsing cannot load it
   {
     ignores: [
       'dist/**',
-      'dist-worker/**',
       'node_modules/**',
       'prisma/migrations/**',
-      'src/infrastructure/database/generated/**',
       'eslint.config.mjs',
+      // project: addition 1
+      'dist-worker/**',
+      'src/infrastructure/database/generated/**',
       'stryker.config.mjs',
       'stryker.ignorers.mjs',
       'reports/**',
@@ -93,13 +92,14 @@ export default tseslint.config(
       'import/resolver': { typescript: { project: './tsconfig.json' } },
       // ── layers, matched by path ─────────────────────────────────────────────
       'boundaries/elements': [
+        // process roots (project-structure.md §1): they wire everything
         { type: 'entry', pattern: 'src/entrypoints/**' },
         { type: 'shared', pattern: 'src/shared/**' },
         { type: 'common', pattern: 'src/common/**' },
         { type: 'config', pattern: 'src/config/**' },
         { type: 'infra', pattern: 'src/infrastructure/**' },
-        // classes that start working on their own (principles #12), wired by transport modules
-        // only; listed before `interface` and `modroot`, the first match wins
+        // classes that start working on their own (principles #12) and the transport modules that
+        // wire them (project-structure.md §2); before `interface` and `modroot`: the first match wins
         {
           type: 'entryclass',
           pattern: 'src/modules/*/**/*.{controller,consumer,job,gateway}.ts',
@@ -124,15 +124,16 @@ export default tseslint.config(
         { type: 'modindex', pattern: 'src/modules/*/index.ts', capture: ['module'], mode: 'file' },
         { type: 'modroot', pattern: 'src/modules/*/*.ts', capture: ['module'], mode: 'file' },
       ],
+      // __test__/: builders and arbitraries next to the code (testing.md §2); they import fast-check
       'boundaries/ignore': [
         '**/*.spec.ts',
         '**/*.e2e-spec.ts',
-        '**/__test__/**', // unit-test helpers next to the code (fast-check arbitraries, in-memory doubles)
+        '**/__test__/**',
         'test/**',
         'prisma/**',
         '*.ts',
         '*.mts',
-      ],
+      ], // project: addition 1
     },
 
     rules: {
@@ -142,8 +143,8 @@ export default tseslint.config(
       '@typescript-eslint/consistent-type-imports': ['error', { prefer: 'type-imports' }],
       '@typescript-eslint/explicit-member-accessibility': ['error', { accessibility: 'no-public' }],
       '@typescript-eslint/prefer-readonly': 'error',
-      '@typescript-eslint/no-extraneous-class': ['error', { allowWithDecorator: true }], // Nest modules
-      '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }],
+      '@typescript-eslint/no-extraneous-class': ['error', { allowWithDecorator: true }], // @Module classes are empty
+      '@typescript-eslint/restrict-template-expressions': ['error', { allowNumber: true }], // `status=${status}`
 
       // ── async ─────────────────────────────────────────────────────────────
       '@typescript-eslint/no-floating-promises': 'error',
@@ -230,6 +231,7 @@ export default tseslint.config(
                 'modindex',
               ],
             },
+            // own domain: errors and enums (query-service.md); own root: the L1 *.dto.ts and errors.ts
             {
               from: 'read',
               allow: [
@@ -237,9 +239,9 @@ export default tseslint.config(
                 'common',
                 'infra',
                 ['domain', { module: '${from.module}' }],
-                ['modroot', { module: '${from.module}' }],
                 ['app', { module: '${from.module}' }],
                 ['read', { module: '${from.module}' }],
+                ['modroot', { module: '${from.module}' }],
                 'modindex',
               ],
             },
@@ -256,15 +258,12 @@ export default tseslint.config(
               ],
             },
             { from: 'interface', allow: INTERFACE_ALLOW },
-            // a controller/consumer/job reaches what interface/ reaches, plus its own DTOs
             {
               from: 'entryclass',
               allow: [...INTERFACE_ALLOW, ['interface', { module: '${from.module}' }]],
             },
             { from: 'events', allow: ['shared'] },
-            // the core module and other root files: no controllers, consumers or jobs
             { from: 'modroot', allow: MODROOT_ALLOW },
-            // only a transport module wires the classes that start working on their own
             {
               from: 'transport',
               allow: [...MODROOT_ALLOW, ['entryclass', { module: '${from.module}' }]],
@@ -286,12 +285,10 @@ export default tseslint.config(
         {
           default: 'allow',
           rules: [
-            // allow-list: domain/ imports no package at all, only @shared/* and itself
+            // allow-list: domain/ imports no package at all, only @shared/* and itself (principles #4)
             { from: 'domain', disallow: ['*', '@*/*'] },
-            {
-              from: 'ports',
-              disallow: ['@nestjs/*', '@prisma/*', 'typeorm', 'stripe', 'openai'],
-            },
+            // @prisma/*, not @prisma/client: Prisma 7 generates the client into src/infrastructure
+            { from: 'ports', disallow: ['@nestjs/*', '@prisma/*', 'typeorm', 'stripe', 'openai'] },
             { from: 'app', disallow: ['@prisma/*', 'typeorm', 'stripe', 'openai', 'axios'] },
             { from: 'events', disallow: ['@nestjs/*', '@prisma/*'] },
           ],
@@ -318,21 +315,28 @@ export default tseslint.config(
     },
   },
 
-  // Prisma CLI and Vitest require a default export from their config files (and globalSetup)
+  // tool configs whose loader requires a default export
   {
-    files: [
-      'prisma.config.ts',
-      'vitest.config.mts',
-      'vitest.stryker.config.mts',
-      'test/setup/global.ts',
-    ],
+    files: ['*.config.{ts,mts,js,mjs}'],
     rules: { 'import/no-default-export': 'off' },
   },
 
-  // test infrastructure and int tests are built from module internals (ports, domain, mapper…)
+  // architecture tests (test/architecture/) prove the rules above fire: testing.md §6
+
+  // int tests assemble a slice of one module from its internals (testing.md §3)
   {
-    files: ['test/factories/**', 'test/doubles/**', 'test/helpers/**', 'test/**/*.int-spec.ts'],
+    files: ['**/*.int-spec.ts'],
     rules: { 'no-restricted-imports': 'off' },
+  },
+
+  // project: addition 2
+  {
+    files: ['test/factories/**', 'test/doubles/**', 'test/helpers/**'],
+    rules: { 'no-restricted-imports': 'off' },
+  },
+  {
+    files: ['test/setup/global.ts'],
+    rules: { 'import/no-default-export': 'off' },
   },
 
   // tests: relax size and assertion rules

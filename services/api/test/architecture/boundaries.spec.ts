@@ -92,12 +92,14 @@ describe('violations fail lint', () => {
 // guards against a rule that forbids everything: the real wiring passes
 describe('the real wiring passes', () => {
   it.each([
+    'src/entrypoints/api.module.ts',
     'src/modules/orders/domain/order.ts',
     'src/modules/orders/application/place-order.service.ts',
     'src/modules/orders/orders.module.ts',
     'src/modules/orders/orders.http.module.ts',
     'src/modules/orders/orders.worker.module.ts',
     'src/modules/orders/interface/worker/orders.consumer.ts',
+    'src/modules/orders/read/orders.query.service.ts',
     'src/modules/orders/index.ts',
     'src/modules/catalog/catalog.http.module.ts',
     'src/modules/catalog/catalog.controller.ts',
