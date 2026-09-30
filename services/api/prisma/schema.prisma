@@ -69,7 +69,9 @@ model Membership {
 
   @@id([workspaceId, id])
   @@unique([workspaceId, userId])
-  @@index([userId])
+  // keyset lists: members of a workspace, workspaces of a user (newest first, id tiebreak)
+  @@index([workspaceId, createdAt(sort: Desc), id(sort: Desc)])
+  @@index([userId, createdAt(sort: Desc), id(sort: Desc)])
   @@map("memberships")
 }
 
@@ -206,6 +208,7 @@ model OrderEvent {
   order     Order     @relation(fields: [workspaceId, orderId], references: [workspaceId, id], onDelete: Cascade)
 
   @@id([workspaceId, id, createdAt])
-  @@index([workspaceId, orderId, createdAt])
+  // keyset history: oldest first with the id tiebreak (read/query-service.md §4)
+  @@index([workspaceId, orderId, createdAt, id])
   @@map("order_events")
 }
