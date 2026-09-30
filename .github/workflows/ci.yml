@@ -11,9 +11,10 @@ on:
 permissions:
   contents: read
 
+# a new push supersedes a PR run; on main every commit keeps its own result
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   static:
