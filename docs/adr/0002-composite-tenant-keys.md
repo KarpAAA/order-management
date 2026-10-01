@@ -28,3 +28,5 @@ RLS a codebase-wide change.
 - The few cross-tenant reads (membership lookup, "my workspaces") use the unscoped client
   and are listed in `docs/architecture.md` → Tenancy.
 - Step 2 changes the body of one file (to `SET LOCAL` + RLS); nothing in modules changes.
+  As built (ADR 0006): the extension and the transaction adapter in `infrastructure/database/`,
+  plus the three documented exceptions in `identity` and the partition adapter in `orders`.

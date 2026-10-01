@@ -6,16 +6,20 @@ import {
 import { Prisma, type PrismaClient } from './generated/prisma/client';
 
 /**
- * THE tenant choke point (docs/adr/0002-composite-tenant-keys.md).
+ * THE tenant choke point (docs/adr/0002-composite-tenant-keys.md, 0006-row-level-security.md).
  *
- * Every query on a tenant-scoped model gets `workspace_id = <tenant from context>` added to
- * its filter, and every write is checked to carry that same workspace. No tenant in context
- * → the query never runs. Step 2 replaces the body of this file with `SET LOCAL` + RLS;
- * nothing outside `infrastructure/database/` changes.
+ * Two layers on every query on a tenant-scoped model:
+ *  1. here: `workspace_id = <tenant from context>` is added to the filter and every write is
+ *     checked to carry that same workspace. No tenant in context → the query never runs.
+ *  2. in Postgres: Row-Level Security compares `workspace_id` with `app.workspace_id`, which
+ *     must be set in the transaction of the query. Inside `@Transactional()` the adapter set it
+ *     when the transaction began (transactional.adapter.ts); outside one, the query is wrapped
+ *     in its own transaction here. The setting is transaction-local on purpose: a pooled
+ *     connection never carries a tenant over to the next query.
  *
- * Not covered, by design of Prisma extensions: `$queryRaw`, and nested reads/writes that
- * enter a tenant model through a relation of a global model (`workspace.create({ memberships })`).
- * Both are allowed only in the places documented in docs/architecture.md → "Tenancy".
+ * Not covered by layer 1, by design of Prisma extensions: `$queryRaw`, and nested reads/writes
+ * that enter a tenant model through a relation of a global model
+ * (`workspace.create({ memberships })`). Layer 2 covers both.
  */
 export const TENANT_MODELS: ReadonlySet<string> = new Set([
   'Membership',
@@ -29,6 +33,18 @@ type Args = Record<string, unknown>;
 
 export interface TenantSource {
   workspaceId(): string | undefined;
+}
+
+/**
+ * Whether Prisma runs this very operation inside a transaction (the `tx` of `@Transactional()`,
+ * or a `$transaction([...])` batch). Asked per operation, not per request: the root client
+ * used while a transaction is open (a query service called from a use case) is NOT in it.
+ * `__internalParams` is not public API; test/tenancy/tenant-scope.int-spec.ts fails if a
+ * Prisma upgrade drops it.
+ */
+function runsInTransaction(params: object): boolean {
+  const internal = (params as { __internalParams?: { transaction?: unknown } }).__internalParams;
+  return internal?.transaction !== undefined;
 }
 
 const isRecord = (value: unknown): value is Args =>
@@ -91,19 +107,30 @@ function guardUpdate(data: unknown, workspaceId: string, model: string, op: stri
 }
 
 export const tenantScope = (tenant: TenantSource) =>
-  Prisma.defineExtension({
-    name: 'tenant-scope',
-    query: {
-      $allModels: {
-        async $allOperations({ model, operation, args, query }) {
-          if (!TENANT_MODELS.has(model)) return query(args);
-          const workspaceId = tenant.workspaceId();
-          if (!workspaceId) throw new TenantContextMissingError(model, operation);
-          return query(scopeArgs(args, workspaceId, model, operation));
+  Prisma.defineExtension((client) =>
+    client.$extends({
+      name: 'tenant-scope',
+      query: {
+        $allModels: {
+          async $allOperations(params) {
+            const { model, operation, args, query } = params;
+            if (!TENANT_MODELS.has(model)) return query(args);
+            const workspaceId = tenant.workspaceId();
+            if (!workspaceId) throw new TenantContextMissingError(model, operation);
+            const scoped = scopeArgs(args, workspaceId, model, operation);
+            // Already in a transaction: its first statement set the tenant, and one of our
+            // own here would run on another connection.
+            if (runsInTransaction(params)) return query(scoped);
+            const [, result] = await client.$transaction([
+              client.$executeRaw`SELECT set_config('app.workspace_id', ${workspaceId}, true)`,
+              query(scoped),
+            ]);
+            return result;
+          },
         },
       },
-    },
-  });
+    }),
+  );
 
 export const createScopedClient = (prisma: PrismaClient, tenant: TenantSource) =>
   prisma.$extends(tenantScope(tenant));

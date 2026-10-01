@@ -7,6 +7,8 @@ try {
   // env comes from the shell or the container
 }
 
+// The CLI migrates as the owner of the tables; the application connects as `oms_app` through
+// DATABASE_URL and cannot run DDL (docs/adr/0006-row-level-security.md).
 export default defineConfig({
   schema: 'prisma/schema.prisma',
   migrations: {
@@ -14,6 +16,6 @@ export default defineConfig({
     seed: 'tsx prisma/seed.ts',
   },
   datasource: {
-    url: env('DATABASE_URL'),
+    url: env('DATABASE_ADMIN_URL'),
   },
 });

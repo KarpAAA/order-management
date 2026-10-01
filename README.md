@@ -51,6 +51,12 @@ pnpm dev
 ```
 
 - `pnpm infra:up`: Postgres, Redis and fake-psp, waits until healthy.
+- Two database roles (ADR 0006): `pnpm db:*` connect as the owner `oms`
+  (`DATABASE_ADMIN_URL`); api and worker connect as `oms_app` (`DATABASE_URL`), which sees only
+  the rows of the current workspace (Row-Level Security). A fresh Postgres volume gets the
+  login of `oms_app` from `devtools/postgres/init`. A volume created earlier needs it once,
+  after `pnpm db:migrate`:
+  `docker compose exec postgres psql -U oms -d oms -c "ALTER ROLE oms_app LOGIN PASSWORD 'oms_app'"`
 - `pnpm dev`: api and worker in watch mode, side by side.
 - Then open `docs/requests.http` in WebStorm and run it top to bottom.
 
@@ -150,8 +156,10 @@ SELECT relname, n_live_tup,
 FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC;
 ```
 
-Plans on this data: `pnpm db:explain` (lists, `docs/perf/2.2-indexes-explain.md`) and
-`pnpm db:explain:partitions` (pruning, DROP vs DELETE, `docs/perf/2.3-partitioning.md`).
+Plans on this data: `pnpm db:explain` (lists, `docs/perf/2.2-indexes-explain.md`),
+`pnpm db:explain:partitions` (pruning, DROP vs DELETE, `docs/perf/2.3-partitioning.md`) and
+`pnpm db:explain:rls` (what the application role sees, plans under the policy,
+`docs/perf/2.4-rls.md`).
 
 ## Simulating the payment provider
 
@@ -220,7 +228,8 @@ first failure stops the run:
 - **fresh**: `prisma migrate deploy` of every migration on an empty database.
 - **drift**: `prisma migrate diff` of that database against `schema.prisma`; on a
   difference it prints the SQL still missing (a forgotten `prisma migrate dev`). The
-  hand-written CHECKs are invisible to it; the `*.int-spec.ts` tests cover them.
+  hand-written CHECKs, roles, grants, policies and functions are invisible to it; the
+  `*.int-spec.ts` tests cover them.
 - **upgrade**, only when the branch adds migrations: a git worktree of the base installs,
   migrates and runs its own `prisma/seed.ts`, then this branch's new migrations run on top.
   Catches SQL that passes on an empty table and fails on data (`ADD COLUMN … NOT NULL`

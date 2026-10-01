@@ -8,8 +8,9 @@ const MEMBERSHIP = Symbol('tenant.membership');
 
 /**
  * The tenant of the current request or job, held in CLS. Written in exactly two places —
- * the workspace access guard (HTTP) and `runInWorkspace` (worker) — and read by the tenant
- * scope in `infrastructure/database/`, which fails closed when it is missing.
+ * the workspace access guard (HTTP) and `runInWorkspace` (worker, and the creation of a
+ * workspace) — and read by the tenant scope in `infrastructure/database/`, which fails closed
+ * when it is missing.
  */
 @Injectable()
 export class TenantContext {
@@ -32,7 +33,7 @@ export class TenantContext {
     this.cls.set(MEMBERSHIP, membership);
   }
 
-  /** Worker: runs `work` in a fresh CLS scope bound to `workspaceId`, with no membership. */
+  /** Runs `work` in a fresh CLS scope bound to `workspaceId`, with no membership. */
   runInWorkspace<T>(workspaceId: string, work: () => Promise<T>): Promise<T> {
     return this.cls.run(() => {
       this.cls.set(WORKSPACE_ID, workspaceId);

@@ -11,7 +11,7 @@ import { PrismaClient } from '@infra/database/generated/prisma/client';
 
 import { seedTest } from '../seed/seed-test';
 
-import { adminQuery, databaseUrl, TEMPLATE_DB } from './database-url';
+import { adminQuery, APP_ROLE, databaseUrl, TEMPLATE_DB } from './database-url';
 import { startPostgres } from './postgres';
 
 import type { TestProject } from 'vitest/node';
@@ -27,11 +27,14 @@ export default async function setup(project: TestProject): Promise<() => Promise
   await adminQuery(serverUrl, `CREATE DATABASE ${TEMPLATE_DB}`);
 
   // The same command the Docker image runs: a broken or missing migration fails here.
-  // An explicit DATABASE_URL wins over .env (process.loadEnvFile never overrides).
+  // An explicit URL wins over .env (process.loadEnvFile never overrides).
   execSync('pnpm exec prisma migrate deploy', {
-    env: { ...process.env, DATABASE_URL: templateUrl },
+    env: { ...process.env, DATABASE_ADMIN_URL: templateUrl },
     stdio: 'pipe',
   });
+  // The migrations create the application role without a login; the environment adds it,
+  // as devtools/postgres/init does for the dev stack.
+  await adminQuery(serverUrl, `ALTER ROLE ${APP_ROLE} LOGIN PASSWORD '${APP_ROLE}'`);
 
   const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: templateUrl }) });
   try {

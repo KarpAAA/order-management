@@ -1,9 +1,14 @@
 // Tenant isolation below the HTTP layer, in its two lines of defence:
 //  - TEN-006: the tenant-scope extension (the single choke point) on the real scoped client;
 //  - TEN-005: the composite foreign keys of the schema, even for a raw write that bypasses it.
+import { TransactionHost } from '@nestjs-cls/transactional';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { SCOPED_PRISMA, type ScopedPrismaClient } from '@infra/database/database.tokens';
+import {
+  SCOPED_PRISMA,
+  type ScopedPrismaClient,
+  type WriteDb,
+} from '@infra/database/database.tokens';
 import { newId } from '@shared/domain/id';
 import {
   TenantContextMissingError,
@@ -46,6 +51,31 @@ describe('tenant-scope extension (TEN-006)', () => {
     const ids = await inAcme(async () => (await scoped.product.findMany()).map((p) => p.id));
     expect(ids).toContain(PRODUCT_ACME_ACTIVE);
     expect(ids).not.toContain(PRODUCT_GLOBEX_ACTIVE);
+  });
+
+  it('reads through the root client while a transaction is open: a query service in a use case', async () => {
+    // not `txHost.tx`: this query runs outside the open transaction, in one of its own
+    const ids = await inAcme(async () => (await scoped.product.findMany()).map((p) => p.id));
+
+    expect(ids).toContain(PRODUCT_ACME_ACTIVE);
+  });
+
+  it('reads through the transaction client what the transaction wrote', async () => {
+    const sku = 'IN-TX';
+    const seen = await inAcme(async () => {
+      const tx = app.get<WriteDb>(TransactionHost).tx;
+      await tx.product.create({
+        data: { workspaceId: WS_ACME, id: newId(), sku, name: 'x', priceMinor: 1n },
+      });
+      // the root client is another connection: the uncommitted row is not there yet
+      return [
+        await tx.product.count({ where: { sku } }),
+        await scoped.product.count({ where: { sku } }),
+      ];
+    });
+
+    expect(seen).toEqual([1, 0]);
+    await testDb().product.deleteMany({ where: { sku } });
   });
 
   it("cannot reach another tenant's row even by its id", async () => {

@@ -24,8 +24,8 @@ export interface PartitionMaintenanceResult {
  * Keeps the order history writable and bounded: creates the partitions of the coming months,
  * drops the ones past the retention. Safe to run any number of times.
  *
- * No `@Transactional()`: the work is DDL, one statement at a time, and detaching a partition
- * concurrently cannot run inside a transaction.
+ * No `@Transactional()`: the work is DDL, one month at a time, so a drop that gives up on its
+ * lock leaves the months before it done.
  */
 @UseCase()
 export class MaintainOrderEventPartitionsService {
