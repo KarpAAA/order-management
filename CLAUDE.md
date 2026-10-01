@@ -109,11 +109,9 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
 
 ## Deviations from the conventions templates
 
-- `eslint.config.mjs` is the template plus three additions: the generated Prisma client,
+- `eslint.config.mjs` is the template plus two additions: the generated Prisma client,
   `prisma/` and root tool files are outside the layer map; `test/factories`, `test/doubles`
-  and `test/helpers` may import module internals; an entry class may import another entry
-  class of its module (the consumer calls `job.run()`, `queues.md` §3). Details at the top of
-  the file.
+  and `test/helpers` may import module internals. Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
   transport modules (Nest needs them exported to inject them into controllers/consumers).
   Orders also exports `OrdersQueue`: its worker module registers the cron scheduler on it.
