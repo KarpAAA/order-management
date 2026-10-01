@@ -138,6 +138,30 @@ describe('GET /orders (ORD-023)', () => {
   });
 });
 
+describe('GET /orders/{id}/events (ORD-018)', () => {
+  it('pages the history by cursor, oldest first, no event repeated or skipped', async () => {
+    const t = await createTenant();
+    const order = await orderFactory.create({ ...t.order, status: 'FULFILLED' });
+
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const { body } = await api
+        .http()
+        .get(`${orderPath(t.workspaceId, order.id)}/events`)
+        .query({ limit: 1, ...(cursor && { cursor }) })
+        .set(t.as)
+        .expect(200);
+      const page = body as { items: { type: string }[]; nextCursor: string | null };
+      seen.push(...page.items.map((e) => e.type));
+      cursor = page.nextCursor;
+    } while (cursor);
+
+    // the time range that prunes partitions and the cursor both bound created_at
+    expect(seen).toEqual(['ORDER_CREATED', 'ORDER_PLACED', 'PAYMENT_SUCCEEDED', 'ORDER_FULFILLED']);
+  });
+});
+
 describe('query count (N+1 guard)', () => {
   it('lists the history of 1 event and of 4 events with the same number of queries', async () => {
     const t = await createTenant();

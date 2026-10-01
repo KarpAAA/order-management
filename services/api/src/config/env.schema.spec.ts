@@ -33,6 +33,19 @@ describe('validateEnv: safe defaults (ops/config-env.md §1)', () => {
     expect(env.CHARGE_ATTEMPTS).toBe(5);
     expect(env.CHARGE_BACKOFF_MS).toBe(1000);
   });
+
+  it('keeps three history partitions ahead and never drops history by default', () => {
+    const env = validateEnv(minimal);
+    expect(env.ORDER_EVENTS_PARTITIONS_AHEAD).toBe(3);
+    expect(env.ORDER_EVENTS_RETENTION_MONTHS).toBe(0);
+    expect(env.ORDER_EVENTS_PARTITIONS_ENABLED).toBe(true);
+  });
+
+  it('refuses a look-ahead of zero: the next month would have no partition', () => {
+    expect(() => validateEnv({ ...minimal, ORDER_EVENTS_PARTITIONS_AHEAD: '0' })).toThrow(
+      /ORDER_EVENTS_PARTITIONS_AHEAD/,
+    );
+  });
 });
 
 describe('validateEnv: access token TTL ≤ 15 min (ops/security.md §3)', () => {

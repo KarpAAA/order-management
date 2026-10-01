@@ -133,11 +133,14 @@ Flags: `--seed 42`, `--until <ISO date>` (default today 00:00 UTC, printed at st
   Ids are UUIDv7 stamped with the row's own `created_at`.
 - **Users**: `owner@gen-001.datagen.local`, `user-01@gen-001.datagen.local`, … with the seed
   password. The last user of each tenant is a VIEWER.
+- `order_events` is partitioned by month: the script creates the partitions of the whole
+  window before loading (the migration and the worker job only cover the months around today).
 - Loaded with `COPY` in 5000-order transactions, then `VACUUM ANALYZE`; the script prints
-  table and index sizes, the top tenants and the status mix. It refuses production, a non-local
+  table and index sizes (partitions summed into `order_events`, then one line per partition),
+  the top tenants and the status mix. It refuses production, a non-local
   host, and a database that already has `gen-*` tenants.
 
-Sizes later on:
+Sizes later on (every `order_events_YYYY_MM` partition is its own line):
 
 ```sql
 SELECT relname, n_live_tup,
@@ -146,6 +149,9 @@ SELECT relname, n_live_tup,
        pg_size_pretty(pg_total_relation_size(relid)) AS total
 FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC;
 ```
+
+Plans on this data: `pnpm db:explain` (lists, `docs/perf/2.2-indexes-explain.md`) and
+`pnpm db:explain:partitions` (pruning, DROP vs DELETE, `docs/perf/2.3-partitioning.md`).
 
 ## Simulating the payment provider
 

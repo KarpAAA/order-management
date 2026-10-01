@@ -127,7 +127,9 @@ SELECT relname,
        pg_size_pretty(pg_indexes_size(relid)) AS indexes
 FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC;
 
+-- order_events is partitioned since 2.3: its indexes live on the partitions
+-- (pnpm db:explain:partitions sums them up)
 SELECT relname, indexrelname, pg_size_pretty(pg_relation_size(indexrelid)) AS size, idx_scan
 FROM pg_stat_user_indexes
-WHERE relname IN ('orders', 'order_events', 'order_items')
+WHERE relname IN ('orders', 'order_items')
 ORDER BY pg_relation_size(indexrelid) DESC;

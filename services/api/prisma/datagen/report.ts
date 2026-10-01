@@ -31,31 +31,58 @@ async function print(pool: Pool, title: string, sql: string): Promise<void> {
   process.stdout.write(`\n${title}\n${formatTable(rows)}`);
 }
 
-export async function analyzeAndReport(pool: Pool): Promise<void> {
-  // without ANALYZE the planner works from empty-table statistics and EXPLAIN lies
-  await pool.query(`VACUUM (ANALYZE) ${TENANT_TABLES.map((t) => `"${t}"`).join(', ')}`);
-
+/** A partition counts towards its parent: order_events is one line, like before partitioning. */
+async function reportSizes(pool: Pool): Promise<void> {
   await print(
     pool,
     'Table sizes',
-    `SELECT relname AS table,
-            n_live_tup AS rows,
-            pg_size_pretty(pg_relation_size(relid)) AS heap,
-            pg_size_pretty(pg_indexes_size(relid)) AS indexes,
-            pg_size_pretty(pg_total_relation_size(relid)) AS total
-       FROM pg_stat_user_tables
-      WHERE schemaname = 'public' AND relname <> '_prisma_migrations'
-      ORDER BY pg_total_relation_size(relid) DESC`,
+    `SELECT coalesce(parent.relname, t.relname) AS table,
+            sum(t.n_live_tup) AS rows,
+            pg_size_pretty(sum(pg_relation_size(t.relid))) AS heap,
+            pg_size_pretty(sum(pg_indexes_size(t.relid))) AS indexes,
+            pg_size_pretty(sum(pg_total_relation_size(t.relid))) AS total,
+            count(parent.oid) AS partitions
+       FROM pg_stat_user_tables t
+       LEFT JOIN pg_inherits i ON i.inhrelid = t.relid
+       LEFT JOIN pg_class parent ON parent.oid = i.inhparent
+      WHERE t.schemaname = 'public' AND t.relname <> '_prisma_migrations'
+      GROUP BY 1
+      ORDER BY sum(pg_total_relation_size(t.relid)) DESC`,
   );
   await print(
     pool,
     'Index sizes',
-    `SELECT relname AS table, indexrelname AS index,
-            pg_size_pretty(pg_relation_size(indexrelid)) AS size
-       FROM pg_stat_user_indexes
-      WHERE schemaname = 'public' AND relname <> '_prisma_migrations'
-      ORDER BY pg_relation_size(indexrelid) DESC`,
+    `SELECT coalesce(ptable.relname, s.relname) AS table,
+            coalesce(pindex.relname, s.indexrelname) AS index,
+            pg_size_pretty(sum(pg_relation_size(s.indexrelid))) AS size
+       FROM pg_stat_user_indexes s
+       LEFT JOIN pg_inherits ti ON ti.inhrelid = s.relid
+       LEFT JOIN pg_class ptable ON ptable.oid = ti.inhparent
+       LEFT JOIN pg_inherits ii ON ii.inhrelid = s.indexrelid
+       LEFT JOIN pg_class pindex ON pindex.oid = ii.inhparent
+      WHERE s.schemaname = 'public' AND s.relname <> '_prisma_migrations'
+      GROUP BY 1, 2
+      ORDER BY sum(pg_relation_size(s.indexrelid)) DESC`,
   );
+  await print(
+    pool,
+    'order_events partitions (non-empty)',
+    `SELECT t.relname AS partition,
+            t.n_live_tup AS rows,
+            pg_size_pretty(pg_relation_size(t.relid)) AS heap,
+            pg_size_pretty(pg_indexes_size(t.relid)) AS indexes
+       FROM pg_stat_user_tables t
+       JOIN pg_inherits i ON i.inhrelid = t.relid
+      WHERE i.inhparent = 'order_events'::regclass AND t.n_live_tup > 0
+      ORDER BY t.relname`,
+  );
+}
+
+export async function analyzeAndReport(pool: Pool): Promise<void> {
+  // without ANALYZE the planner works from empty-table statistics and EXPLAIN lies
+  await pool.query(`VACUUM (ANALYZE) ${TENANT_TABLES.map((t) => `"${t}"`).join(', ')}`);
+
+  await reportSizes(pool);
   await print(
     pool,
     'Top 10 tenants by orders',

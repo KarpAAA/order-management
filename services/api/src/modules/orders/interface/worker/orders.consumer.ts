@@ -11,13 +11,16 @@ import { InfrastructureError } from '@shared/errors/infrastructure-error';
 import { ProcessOrderPaymentService } from '../../application/process-order-payment.service';
 import { ORDERS_QUEUE, type OrdersJobs } from '../../infrastructure/orders.queue';
 
+import { MaintainOrderEventPartitionsJob } from './maintain-order-event-partitions.job';
+
 import type { OnApplicationBootstrap } from '@nestjs/common';
 import type { Job } from 'bullmq';
 
 const ACTOR = systemActor('consumer:orders');
 
 /**
- * Thin: route by job name, bind the tenant from the job, build the actor, call one use case.
+ * Thin: route by job name, bind the tenant from the job, build the actor, call one use case
+ * or one cron job's `run()`.
  * Concurrency comes from config via the worker module (`ORDERS_WORKER_CONCURRENCY`).
  */
 @Processor(ORDERS_QUEUE)
@@ -27,6 +30,7 @@ export class OrdersConsumer extends WorkerHost implements OnApplicationBootstrap
   constructor(
     private readonly tenant: TenantContext,
     private readonly processPayment: ProcessOrderPaymentService,
+    private readonly partitionsJob: MaintainOrderEventPartitionsJob,
     @Inject(ordersQueueConfig.KEY) private readonly config: OrdersQueueConfig,
   ) {
     super();
@@ -36,8 +40,19 @@ export class OrdersConsumer extends WorkerHost implements OnApplicationBootstrap
     this.worker.concurrency = this.config.concurrency;
   }
 
-  async process(job: Job<OrdersJobs['charge-order']>): Promise<void> {
-    if (job.name !== 'charge-order') throw new UnrecoverableError(`unknown job ${job.name}`);
+  async process(job: Job): Promise<void> {
+    switch (job.name) {
+      case 'charge-order':
+        return this.charge(job as Job<OrdersJobs['charge-order']>);
+      case MaintainOrderEventPartitionsJob.QUEUE_JOB:
+        // no workspace: partitions belong to the table, not to a tenant
+        return this.partitionsJob.run();
+      default:
+        throw new UnrecoverableError(`unknown job ${job.name}`);
+    }
+  }
+
+  private async charge(job: Job<OrdersJobs['charge-order']>): Promise<void> {
     const { workspaceId, orderId, paymentAttempt } = job.data;
     const maxAttempts = job.opts.attempts ?? 1;
     try {

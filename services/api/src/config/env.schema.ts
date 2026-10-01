@@ -38,6 +38,13 @@ export const envSchema = z.object({
   CHARGE_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
   CHARGE_BACKOFF_MS: z.coerce.number().int().positive().default(1000),
 
+  /** Monthly `order_events` partitions kept ready after the current month. */
+  ORDER_EVENTS_PARTITIONS_AHEAD: z.coerce.number().int().min(1).max(12).default(3),
+  /** Full months of order history kept besides the current one; 0 keeps everything. */
+  ORDER_EVENTS_RETENTION_MONTHS: z.coerce.number().int().min(0).default(0),
+  /** Switches the partition maintenance job off without a deploy (transport/cron.md §3). */
+  ORDER_EVENTS_PARTITIONS_ENABLED: booleanString.default(true),
+
   // off unless enabled: bull-board has no auth and can retry or remove jobs (.env.example turns both on)
   SWAGGER_ENABLED: booleanString.default(false),
   BULL_BOARD_ENABLED: booleanString.default(false),

@@ -28,7 +28,7 @@ outbox: no                      # Step 0; Step 3 adds reliable events + outbox
 queue: bullmq
 processes: api+worker
 dlq: alert                      # dead job → Logger.error in OrdersConsumer (Step 4: metric)
-cron: none                      # Step 0; BullMQ repeatable jobs when needed
+cron: bullmq                    # job schedulers on the module's queue; first: maintain-order-event-partitions
 validation: class-validator
 swagger-prod: off
 async-push: poll
@@ -55,6 +55,8 @@ pnpm db:migrate        # prisma migrate dev
 pnpm db:seed           # fixed-id dev data (README → Seeded data)
 pnpm db:reset          # drop, migrate, seed
 pnpm db:datagen        # Step 2 volume data after db:reset: 100 tenants, 2M orders (--scale smoke)
+pnpm db:explain        # plans of the list queries on the datagen data (docs/perf/2.2-indexes-explain.md)
+pnpm db:explain:partitions   # order_events pruning, DROP vs DELETE (docs/perf/2.3-partitioning.md)
 pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
 pnpm test              # Vitest project unit: domain, VOs, policies, use cases, adapters (MSW), architecture (no Docker)
@@ -84,7 +86,16 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
   Tenant models (Membership, Product, Order, OrderItem, OrderEvent) are filtered by the
   workspace in CLS; a query without a tenant throws. Never inject `PrismaService` for tenant
-  data: its only users are the extension and identity's documented cross-tenant reads.
+  data: its only users are the extension, identity's documented cross-tenant reads, and the
+  partition DDL adapter in orders (table structure, no tenant rows).
+- **`order_events` is partitioned by month** (`created_at`, UTC, no DEFAULT partition): an
+  event dated in a month without a partition fails the whole write. The migration creates the
+  months around its run; the worker job `maintain-order-event-partitions` (boot + daily) keeps
+  `ORDER_EVENTS_PARTITIONS_AHEAD` months ready; `db:datagen` creates its own window. A test or
+  script that writes events with a far date creates the partition first (`createPartitionSql`).
+  Retention is off by default (`ORDER_EVENTS_RETENTION_MONTHS=0`).
+- A query on `order_events` without a `created_at` range probes every partition: bound it,
+  as `OrdersQueryService.listEvents` does with the order's `createdAt … updatedAt`.
 - Workspace routes use `@WorkspaceScoped()` (membership guard → 404 for non-members) and their
   HTTP module must import `IdentityModule` (it provides `MEMBERSHIP_READER`).
 - Invalid state transitions are `InvalidStateError` → **422** (conventions), not 409.
@@ -103,6 +114,14 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   and `test/helpers` may import module internals. Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
   transport modules (Nest needs them exported to inject them into controllers/consumers).
+  Orders also exports `OrdersQueue`: its worker module registers the cron scheduler on it.
+- `MaintainOrderEventPartitionsService` is a use case with no `@Transactional()` and no domain
+  object: partition DDL runs statement by statement (`DETACH … CONCURRENTLY` cannot run in a
+  transaction). Its adapter uses `$executeRawUnsafe`: identifiers and partition bounds cannot
+  be bind parameters; both are built from two integers.
+- The migration that partitions `order_events` copies the rows inside the migration
+  (`migrations.md` §5 asks for a backfill job above ~100 k rows): the table is only that large
+  in a regenerable datagen database. The production-size alternative is noted in the migration.
 - Stryker also mutates `src/shared/domain/money.ts`, runs a unit-only vitest config, and the
   vitest runner is patched for Vitest 5. Details: `.claude/rules/project/testing.md`.
 - `pnpm audit` exceptions live in `package.json` → `pnpm.auditConfig`, the reason next to the

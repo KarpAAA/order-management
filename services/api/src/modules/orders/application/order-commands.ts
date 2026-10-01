@@ -46,3 +46,10 @@ export interface FailOrderPaymentCommand {
   paymentAttempt: number;
   reason: string;
 }
+
+export interface MaintainOrderEventPartitionsCommand {
+  /** Partitions kept ready after the current month. */
+  monthsAhead: number;
+  /** Full months of history kept besides the current one; 0 keeps everything. */
+  retentionMonths: number;
+}

@@ -61,7 +61,9 @@ service.
 - Every business module is a **core module** (domain, application, persistence, read side)
   plus one **transport module** per transport (`*.http.module.ts`, `*.worker.module.ts`).
   Only transport modules reach an entrypoint; anything that starts on its own (the
-  `@Processor`) lives only in `orders.worker.module.ts`, imported only by `WorkerModule`.
+  `@Processor`, the cron schedule) lives only in `orders.worker.module.ts`, imported only by
+  `WorkerModule`. Cron is a BullMQ job scheduler on the module's queue: the consumer routes
+  the tick to a `*.job.ts` class.
 - Migrations are a separate one-shot step (`migrate` compose service), never part of `CMD`.
 
 ## 3. Modules and allowed dependencies
@@ -119,8 +121,14 @@ erDiagram
 - **Global tables** `users`, `workspaces` (future Citus reference tables).
 - **Tenant tables** have `workspace_id`, PK `(workspace_id, id)`, and FKs between them
   include `workspace_id`, so a row can never point into another tenant.
-- `order_events` is append-only with PK `(workspace_id, id, created_at)` so Step 2 can
-  range-partition it by `created_at` without changing the key. Not partitioned now.
+- `order_events` is append-only with PK `(workspace_id, id, created_at)` and is partitioned
+  `BY RANGE (created_at)`, one partition per UTC month (`order_events_YYYY_MM`, Step 2.3,
+  ADR 0005). There is no DEFAULT partition: a month without one rejects the write. The worker
+  job `maintain-order-event-partitions` (daily and at boot) keeps
+  `ORDER_EVENTS_PARTITIONS_AHEAD` months ready and drops months past
+  `ORDER_EVENTS_RETENTION_MONTHS` (0 = keep everything, the default). A read by `order_id`
+  alone probes every partition, so the history query bounds `created_at` by the order's
+  `created_at … updated_at`.
 - Money is `BIGINT` minor units; ids are UUIDv7 from the application; timestamps `timestamptz(3)`.
 - Invariants the schema can express are `CHECK` constraints (hand-written in the first
   migration): price range, quantity range, line total, totals equation, discount shape.
@@ -202,21 +210,26 @@ transaction; `CompleteOrderPayment` / `FailOrderPayment` each open their own.
   before a tenant exists, (2) "my workspaces" and `/me` (cross-tenant by nature), both via
   the unscoped `PrismaService`; (3) creating a workspace writes its OWNER membership as a
   nested create (the workspace does not exist before). Not covered by the extension:
-  `$queryRaw` (none in the code base) and nested relation writes from global models.
+  raw SQL and nested relation writes from global models.
+- Raw SQL exists in one place: `orders/infrastructure/postgres-order-event-partitions.adapter.ts`
+  runs partition DDL on `order_events` (and reads the catalog) through the unscoped
+  `PrismaService`. It touches the table's structure, never a tenant's rows, and runs from a
+  job with no workspace bound.
 - Step 2 replaces the extension's body with `SET LOCAL app.workspace_id` + Row-Level
   Security, and then schema-per-tenant; nothing outside `infrastructure/database/` changes.
 
 ## 8. Known gaps
 
-| Gap                                                | Consequence today                                                                                                                                                      | Closed in                                               |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| Enqueue after commit is not atomic with the commit | If Redis is down or the process dies between commit and enqueue, the order stays `PENDING_PAYMENT` with no job                                                         | Step 3 (transactional outbox)                           |
-| `PENDING_PAYMENT` cannot be cancelled              | A stuck order (see above) cannot be cancelled by users                                                                                                                 | Step 3 (saga with compensation)                         |
-| Tenant isolation only in the application layer     | A bug that bypasses the scoped client (raw SQL, unscoped handle) could cross tenants                                                                                   | Step 2 (RLS, schema-per-tenant)                         |
-| No caching, no rate limiting                       | Every request hits Postgres; brute force on `/auth/login` is not throttled                                                                                             | Step 2                                                  |
-| Default Nest logger only                           | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                              | Step 4 (pino, OpenTelemetry)                            |
-| No health checks, no graceful shutdown             | Compose/k8s cannot tell "started" from "ready"; in-flight jobs are cut on stop                                                                                         | Step 5                                                  |
-| `Location` on two 201s points nowhere              | `POST /auth/register` and `POST /workspaces/{id}/members` return a `Location` without a GET route behind it                                                            | open: a GET route or another URL, decided with the API  |
-| No `Idempotency-Key` on HTTP writes                | A retried `POST /orders` creates a second draft (place is protected by `version`)                                                                                      | Step 3 (with the saga)                                  |
-| No reconciliation with the PSP                     | If every attempt times out after the PSP already charged (e.g. latency > 3 s), the order ends `PAYMENT_FAILED psp_unavailable` while the PSP holds a successful charge | Step 3 (payments-service reconciles by idempotency key) |
-| Seeded `PENDING_PAYMENT` orders have no job        | They stay pending forever: a fixture that shows the first gap                                                                                                          | Step 3                                                  |
+| Gap                                                   | Consequence today                                                                                                                                                      | Closed in                                               |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| Enqueue after commit is not atomic with the commit    | If Redis is down or the process dies between commit and enqueue, the order stays `PENDING_PAYMENT` with no job                                                         | Step 3 (transactional outbox)                           |
+| `PENDING_PAYMENT` cannot be cancelled                 | A stuck order (see above) cannot be cancelled by users                                                                                                                 | Step 3 (saga with compensation)                         |
+| Tenant isolation only in the application layer        | A bug that bypasses the scoped client (raw SQL, unscoped handle) could cross tenants                                                                                   | Step 2 (RLS, schema-per-tenant)                         |
+| No caching, no rate limiting                          | Every request hits Postgres; brute force on `/auth/login` is not throttled                                                                                             | Step 2                                                  |
+| Default Nest logger only                              | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                              | Step 4 (pino, OpenTelemetry)                            |
+| No health checks, no graceful shutdown                | Compose/k8s cannot tell "started" from "ready"; in-flight jobs are cut on stop                                                                                         | Step 5                                                  |
+| `Location` on two 201s points nowhere                 | `POST /auth/register` and `POST /workspaces/{id}/members` return a `Location` without a GET route behind it                                                            | open: a GET route or another URL, decided with the API  |
+| No `Idempotency-Key` on HTTP writes                   | A retried `POST /orders` creates a second draft (place is protected by `version`)                                                                                      | Step 3 (with the saga)                                  |
+| No reconciliation with the PSP                        | If every attempt times out after the PSP already charged (e.g. latency > 3 s), the order ends `PAYMENT_FAILED psp_unavailable` while the PSP holds a successful charge | Step 3 (payments-service reconciles by idempotency key) |
+| Partition DDL runs as the application's database user | The app role owns the tables, so it may create and drop partitions; with RLS the app role stops being the owner                                                        | Step 2.4 (a separate owner connection for maintenance)  |
+| Seeded `PENDING_PAYMENT` orders have no job           | They stay pending forever: a fixture that shows the first gap                                                                                                          | Step 3                                                  |

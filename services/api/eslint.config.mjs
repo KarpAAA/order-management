@@ -258,9 +258,14 @@ export default tseslint.config(
               ],
             },
             { from: 'interface', allow: INTERFACE_ALLOW },
+            // own entry classes: the consumer routes a cron tick to `job.run()` (transport/queues.md §3)
             {
               from: 'entryclass',
-              allow: [...INTERFACE_ALLOW, ['interface', { module: '${from.module}' }]],
+              allow: [
+                ...INTERFACE_ALLOW,
+                ['interface', { module: '${from.module}' }],
+                ['entryclass', { module: '${from.module}' }],
+              ],
             },
             { from: 'events', allow: ['shared'] },
             { from: 'modroot', allow: MODROOT_ALLOW },

@@ -87,4 +87,21 @@ describe('OrdersPolicy', () => {
       }).toThrow(forbidden('orders.settle-payment'));
     });
   });
+
+  describe('OPS-003 maintaining the history partitions', () => {
+    it('is allowed to system:job:maintain-order-event-partitions', () => {
+      expect(() => {
+        policy.assertCanMaintainPartitions(systemActor('job:maintain-order-event-partitions'));
+      }).not.toThrow();
+    });
+
+    it.each<[string, Actor]>([
+      ['another system source', systemActor('consumer:orders')],
+      ['a user', user],
+    ])('is forbidden to %s', (_case, actor) => {
+      expect(() => {
+        policy.assertCanMaintainPartitions(actor);
+      }).toThrow(forbidden('orders.maintain-event-partitions'));
+    });
+  });
 });

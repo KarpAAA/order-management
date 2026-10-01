@@ -8,6 +8,7 @@ import { ForbiddenError } from '@shared/errors/forbidden-error';
 const ORDER_WRITERS = [WorkspaceRole.Owner, WorkspaceRole.Admin, WorkspaceRole.Member] as const;
 const ORDER_FULFILLERS = [WorkspaceRole.Owner, WorkspaceRole.Admin] as const;
 const PAYMENT_SETTLER_SOURCE = 'consumer:orders';
+const PARTITION_MAINTAINER_SOURCE = 'job:maintain-order-event-partitions';
 
 /**
  * Who may do what to an order (docs/requirements.md → Permissions). Reading needs only
@@ -31,5 +32,11 @@ export class OrdersPolicy {
   assertCanSettlePayment(actor: Actor): void {
     if (actor.kind === 'system' && actor.source === PAYMENT_SETTLER_SOURCE) return;
     throw new ForbiddenError('orders.settle-payment');
+  }
+
+  /** Creating and dropping history partitions is the maintenance job's work, nobody else's. */
+  assertCanMaintainPartitions(actor: Actor): void {
+    if (actor.kind === 'system' && actor.source === PARTITION_MAINTAINER_SOURCE) return;
+    throw new ForbiddenError('orders.maintain-event-partitions');
   }
 }

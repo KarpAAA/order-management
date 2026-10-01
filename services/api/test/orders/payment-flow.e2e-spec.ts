@@ -135,7 +135,9 @@ describe('a charge is never made twice (PAY-002, PAY-009, PAY-010)', () => {
 
     expect(again.id).toBe(jobId);
     expect(await again.getState()).toBe('completed'); // the existing job, not a new one
-    expect(await queue.getJobCountByTypes('waiting', 'active', 'delayed')).toBe(0);
+    // by name: the cron scheduler always keeps its next tick in the queue as a delayed job
+    const pending = await queue.getJobs(['waiting', 'active', 'delayed']);
+    expect(pending.filter((job) => job.name === 'charge-order')).toEqual([]);
     expect(psp.calls(id)).toHaveLength(1);
   });
 

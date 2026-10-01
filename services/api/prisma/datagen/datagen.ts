@@ -1,18 +1,21 @@
 // Step 2 data generator (docs/ROADMAP.md 2.1): ~100 tenants with a Zipf size distribution,
 // ~2M orders with items and history, loaded with COPY, then VACUUM ANALYZE and a size report.
+// order_events is partitioned by month: the partitions of the whole window are created first.
 // Deterministic: the same --seed and --until give the same data. Run after `pnpm db:reset`.
 // Writes directly, outside the app's tenant-scope extension, like prisma/seed.ts.
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 
 import { PrismaClient } from '../../src/infrastructure/database/generated/prisma/client';
+import { createPartitionSql } from '../../src/modules/orders/infrastructure/order-event-partitions.sql';
+import { addMonths, monthIndex, yearMonthOf } from '../../src/shared/domain/year-month';
 
 import { seedCatalog } from './catalog';
 import { copyRows } from './copy';
 import { seedPeople } from './identity';
 import { parseOptions } from './options';
 import { buildOrder } from './orders';
-import { planTenants } from './plan';
+import { planTenants, windowStart } from './plan';
 import { Rng } from './random';
 import { analyzeAndReport } from './report';
 
@@ -154,6 +157,20 @@ async function seedTenants(
   return contexts;
 }
 
+/**
+ * COPY into a month without a partition fails the whole chunk. The migration and the worker
+ * job only cover the months around today; the generated history goes `months` back.
+ */
+async function ensureEventPartitions(pool: Pool, options: DatagenOptions): Promise<void> {
+  const last = yearMonthOf(options.until);
+  let month = yearMonthOf(windowStart(options));
+  let count = 0;
+  for (; monthIndex(month) <= monthIndex(last); month = addMonths(month, 1), count++) {
+    await pool.query(createPartitionSql(month));
+  }
+  log(`order_events partitions: ${String(count)} months ready`);
+}
+
 /** One transaction per chunk: a failure loses at most this chunk. */
 async function writeChunk(client: PoolClient, chunk: readonly OrderRows[]): Promise<Counts> {
   const items = chunk.flatMap((r) =>
@@ -255,6 +272,7 @@ async function main(): Promise<void> {
   const pool = new Pool({ connectionString: databaseUrl, max: 1 });
   try {
     const contexts = await seedTenants(prisma, options, rng);
+    await ensureEventPartitions(pool, options);
     await loadOrders(pool, contexts, options, rng);
     log('VACUUM ANALYZE…');
     await analyzeAndReport(pool);
