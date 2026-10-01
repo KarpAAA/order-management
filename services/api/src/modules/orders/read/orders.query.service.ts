@@ -134,6 +134,15 @@ const toSummaryDto = (row: SummaryRow): OrderSummaryDto => ({
   updatedAt: row.updatedAt,
 });
 
+// The api and the worker stamp events with their own clocks: an event may be dated slightly
+// outside [createdAt, updatedAt] of its order. An hour of slack costs at most one more partition.
+const EVENT_WINDOW_SLACK_MS = 60 * 60 * 1000;
+
+const eventWindow = (order: { createdAt: Date; updatedAt: Date }) => ({
+  gte: new Date(order.createdAt.getTime() - EVENT_WINDOW_SLACK_MS),
+  lte: new Date(order.updatedAt.getTime() + EVENT_WINDOW_SLACK_MS),
+});
+
 const isJsonObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -172,15 +181,28 @@ export class OrdersQueryService {
     return toOrderDto(row);
   }
 
-  /** History, oldest first. */
+  /**
+   * History, oldest first. `order_events` is partitioned by month on `created_at`, and
+   * `order_id` alone tells Postgres nothing about the month: without a time range it probes
+   * every partition. An order's events lie between its creation and its last change, so that
+   * range prunes the scan to the partitions the order lived in.
+   */
   async listEvents(
     orderId: string,
     page: { cursor?: string; limit: number },
   ): Promise<PaginatedByCursor<OrderEventDto>> {
-    const exists = await this.db.order.count({ where: { id: orderId } });
-    if (exists === 0) throw new OrderNotFoundError(orderId);
+    const order = await this.db.order.findFirst({
+      where: { id: orderId },
+      select: { createdAt: true, updatedAt: true },
+    });
+    if (!order) throw new OrderNotFoundError(orderId);
     const rows = await this.db.orderEvent.findMany({
-      where: { orderId, ...afterCursorAsc(page.cursor) },
+      where: {
+        orderId,
+        // AND, not a second `createdAt` key: the cursor sets its own and would replace this one
+        AND: [{ createdAt: eventWindow(order) }],
+        ...afterCursorAsc(page.cursor),
+      },
       select: eventSelect,
       orderBy: oldestFirst(),
       take: page.limit + 1,

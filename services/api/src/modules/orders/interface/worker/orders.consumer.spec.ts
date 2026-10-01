@@ -9,6 +9,7 @@ import { InfrastructureError } from '@shared/errors/infrastructure-error';
 
 import { OrdersConsumer } from './orders.consumer';
 
+import type { MaintainOrderEventPartitionsJob } from './maintain-order-event-partitions.job';
 import type { ProcessOrderPaymentService } from '../../application/process-order-payment.service';
 import type { OrdersJobs } from '../../infrastructure/orders.queue';
 import type { Job } from 'bullmq';
@@ -39,12 +40,19 @@ const fakeJob = (overrides: Partial<ChargeJob> = {}): ChargeJob =>
     ...overrides,
   }) as ChargeJob;
 
-/** The consumer with its use case replaced by `execute`; the tenant runs the work directly. */
-function consumerWith(execute: ProcessOrderPaymentService['execute']) {
+/**
+ * The consumer with its use case replaced by `execute` and the cron job by `run`; the tenant
+ * runs the work directly.
+ */
+function consumerWith(
+  execute: ProcessOrderPaymentService['execute'],
+  run: MaintainOrderEventPartitionsJob['run'] = vi.fn(),
+) {
   const runInWorkspace = vi.fn((_workspaceId: string, work: () => Promise<unknown>) => work());
   const consumer = new OrdersConsumer(
     { runInWorkspace } as unknown as TenantContext,
     { execute } as ProcessOrderPaymentService,
+    { run } as MaintainOrderEventPartitionsJob,
     { concurrency: 1 } as OrdersQueueConfig,
   );
   return { consumer, runInWorkspace };
@@ -77,6 +85,29 @@ describe('OrdersConsumer routing (transport/queues.md §3)', () => {
       expect.objectContaining({ isFinalAttempt: true }),
       expect.anything(),
     );
+  });
+
+  it('runs the partition maintenance job on its cron tick, outside any workspace', async () => {
+    const execute = vi.fn();
+    const run = vi.fn().mockResolvedValue(undefined);
+    const { consumer, runInWorkspace } = consumerWith(execute, run);
+
+    await consumer.process(
+      fakeJob({ name: 'cron:maintain-order-event-partitions', data: {} as never }),
+    );
+
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(runInWorkspace).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('lets a failed maintenance run fail the job, so BullMQ retries it', async () => {
+    const error = new Error('database is down');
+    const { consumer } = consumerWith(vi.fn(), vi.fn().mockRejectedValue(error));
+
+    await expect(
+      consumer.process(fakeJob({ name: 'cron:maintain-order-event-partitions' })),
+    ).rejects.toBe(error);
   });
 
   it('fails an unknown job name for good', async () => {

@@ -25,14 +25,14 @@ A rule is tested in full at the **lowest** level where it lives. A higher level 
 what the lower one cannot see (HTTP mapping, guards, transactions, "nothing was written"),
 with one or two representative cases, not the whole matrix again.
 
-Distribution (89 requirements; one with two levels counts in both):
+Distribution (95 requirements; one with two levels counts in both):
 
 | Level     | Requirements | Only this level |
 | --------- | -----------: | --------------: |
-| `unit`    |           33 |              10 |
+| `unit`    |           37 |              13 |
 | `adapter` |            4 |               1 |
-| `int`     |            7 |               2 |
-| `api`     |           75 |              46 |
+| `int`     |            9 |               4 |
+| `api`     |           76 |              46 |
 
 Most requirements need the running API: the "testing trophy", not the pyramid.
 
@@ -201,3 +201,17 @@ Allowed transitions (anything else is `422 ORDER_INVALID_TRANSITION`):
 | VAL-003 | Every documented status code in `/docs-json` is the only set of codes an operation returns (Schemathesis).                                                               | `api` |
 | VAL-004 | Responses match their documented schema: all declared fields present, `null` where absent; dates ISO-8601 UTC.                                                           | `api` |
 | VAL-005 | `Location` header on every 201 (new resource) and 202 (the order).                                                                                                       | `api` |
+
+## OPS: order history partitions (Step 2.3)
+
+`order_events` is partitioned by month on `created_at` (UTC). The worker job
+`maintain-order-event-partitions` keeps it writable and, when a retention is set, bounded.
+
+| Id      | Requirement                                                                                                                                                                             | Level        |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| OPS-001 | After a maintenance run the current month and `ORDER_EVENTS_PARTITIONS_AHEAD` months after it have a partition; existing ones are left alone. A worker runs it at boot and daily.       | `unit + api` |
+| OPS-002 | With `ORDER_EVENTS_RETENTION_MONTHS = N > 0`, partitions older than N full months are dropped, after the coming months exist; `0` keeps everything; the current month is never dropped. | `unit`       |
+| OPS-003 | Only `system:job:maintain-order-event-partitions` may run the maintenance.                                                                                                              | `unit`       |
+| OPS-004 | A run fails (and is retried, then alerted as a dead job) when a required month still has no partition.                                                                                  | `unit`       |
+| OPS-005 | An event is stored in the partition of its UTC month; a month without a partition rejects the write (there is no DEFAULT partition).                                                    | `int`        |
+| OPS-006 | Dropping a partition removes the events of that month and nothing else; a repeated drop is a no-op.                                                                                     | `int`        |

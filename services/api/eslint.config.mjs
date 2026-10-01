@@ -5,6 +5,9 @@
 //  2. Test infrastructure (test/factories, test/doubles, test/helpers) may import module
 //     internals: a factory persists through the domain and OrderMapper, a double implements a
 //     port, the worker app overrides PAYMENT_GATEWAY. test/setup/global.ts default-exports.
+//  3. An entry class may import another entry class of its module: the consumer routes a
+//     cron tick to `job.run()` (transport/queues.md §3), and the template allowed only the
+//     transport module to see a `*.job.ts`.
 // `.mjs`: a Nest package is CommonJS, and this config uses ESM imports and import.meta.
 // Requires: eslint@9, typescript-eslint, eslint-plugin-import, eslint-import-resolver-typescript,
 //           eslint-plugin-boundaries@5 (the element-types API below), eslint-config-prettier
@@ -260,7 +263,11 @@ export default tseslint.config(
             { from: 'interface', allow: INTERFACE_ALLOW },
             {
               from: 'entryclass',
-              allow: [...INTERFACE_ALLOW, ['interface', { module: '${from.module}' }]],
+              allow: [
+                ...INTERFACE_ALLOW,
+                ['interface', { module: '${from.module}' }],
+                ['entryclass', { module: '${from.module}' }],
+              ],
             },
             { from: 'events', allow: ['shared'] },
             { from: 'modroot', allow: MODROOT_ALLOW },

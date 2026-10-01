@@ -20,6 +20,8 @@ export function tenantAs(role: WorkspaceRole | null): TenantContext {
 export const member = userActor(USER);
 /** The only actor allowed to settle payments (`OrdersPolicy.assertCanSettlePayment`). */
 export const paymentConsumer = systemActor('consumer:orders');
+/** The only actor allowed to maintain partitions (`OrdersPolicy.assertCanMaintainPartitions`). */
+export const partitionMaintainer = systemActor('job:maintain-order-event-partitions');
 
 /** A transport failure as a gateway adapter reports it. */
 export class TestGatewayError extends InfrastructureError {

@@ -24,6 +24,7 @@
     "db:seed": "pnpm --filter @oms/api db:seed",
     "db:datagen": "pnpm --filter @oms/api db:datagen",
     "db:explain": "docker compose exec -T postgres psql -U oms -d oms -f - < services/api/prisma/explain/lists.sql",
+    "db:explain:partitions": "docker compose exec -T postgres psql -U oms -d oms -f - < services/api/prisma/explain/partitions.sql",
     "db:reset": "pnpm --filter @oms/api db:reset",
     "infra:up": "docker compose up -d --wait",
     "infra:down": "docker compose down"

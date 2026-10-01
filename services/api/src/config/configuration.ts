@@ -48,6 +48,13 @@ export const ordersQueueConfig = registerAs('ordersQueue', () => ({
 }));
 export type OrdersQueueConfig = ConfigType<typeof ordersQueueConfig>;
 
+export const orderEventsConfig = registerAs('orderEvents', () => ({
+  partitionsAhead: env().ORDER_EVENTS_PARTITIONS_AHEAD,
+  retentionMonths: env().ORDER_EVENTS_RETENTION_MONTHS,
+  partitionsEnabled: env().ORDER_EVENTS_PARTITIONS_ENABLED,
+}));
+export type OrderEventsConfig = ConfigType<typeof orderEventsConfig>;
+
 export const allConfigs = [
   appConfig,
   databaseConfig,
@@ -55,4 +62,5 @@ export const allConfigs = [
   authConfig,
   paymentsConfig,
   ordersQueueConfig,
+  orderEventsConfig,
 ];
