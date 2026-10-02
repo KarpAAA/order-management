@@ -17,6 +17,11 @@ export const envSchema = z.object({
     ),
 
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
+  /**
+   * Connections one process keeps open. Behind PgBouncer they are client connections: cheap,
+   * and the server side is capped by its `default_pool_size` (docs/adr/0008).
+   */
+  DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
   /** Emit Prisma `query` events (debug log; the e2e suite counts queries with them). */
   DATABASE_LOG_QUERIES: booleanString.default(false),
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),

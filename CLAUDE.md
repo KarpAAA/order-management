@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 1: testing** (see `docs/ROADMAP.md`; Step 0 foundation: `docs/architecture.md`).
+Current step: **Step 2: databases and scaling** (see `docs/ROADMAP.md`; Step 0 foundation: `docs/architecture.md`).
 
 ## Conventions
 
@@ -50,7 +50,7 @@ Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces)
 ## Commands (CMD-friendly, from the repo root)
 
 ```
-pnpm infra:up          # postgres, redis, fake-psp (healthy)
+pnpm infra:up          # postgres, pgbouncer, redis, fake-psp (healthy)
 pnpm db:migrate        # prisma migrate dev
 pnpm db:seed           # fixed-id dev data (README → Seeded data)
 pnpm db:reset          # drop, migrate, seed
@@ -58,6 +58,7 @@ pnpm db:datagen        # Step 2 volume data after db:reset: 100 tenants, 2M orde
 pnpm db:explain        # plans of the list queries on the datagen data (docs/perf/2.2-indexes-explain.md)
 pnpm db:explain:partitions   # order_events pruning, DROP vs DELETE (docs/perf/2.3-partitioning.md)
 pnpm db:explain:rls    # what oms_app sees, plans under the RLS policy (docs/perf/2.4-rls.md)
+pnpm db:explain:pgbouncer    # 500 clients on 20 server connections, limits, the leak (docs/perf/2.7-pgbouncer.md)
 pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
 pnpm test              # Vitest project unit: domain, VOs, policies, use cases, adapters (MSW), architecture (no Docker)
@@ -103,6 +104,13 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
     `ENABLE ROW LEVEL SECURITY` + the `tenant_isolation` policy (`migrate diff` sees neither;
     `test/tenancy/row-level-security.int-spec.ts` fails without them);
   - the app cannot run DDL: partitions go through `create_/drop_order_events_partition()`.
+- **PgBouncer in transaction mode sits in front of `oms_app`** (ADR 0008; `pnpm dev`, the
+  compose `app` profile and the nightly contract run; the e2e suite connects directly). A server
+  connection serves another client after every `COMMIT`, so nothing may outlive a transaction
+  on it: no session-level `SET` / `set_config(…, false)`, no `pg_advisory_lock` (use
+  `pg_advisory_xact_lock`), no `LISTEN`, no `statementNameGenerator` on `PrismaPg`. A
+  session-level tenant setting would leak to the next tenant without an error
+  (`test/tenancy/pgbouncer.int-spec.ts`). The owner URL never points at PgBouncer.
 - **`order_events` is partitioned by month** (`created_at`, UTC, no DEFAULT partition): an
   event dated in a month without a partition fails the whole write. The migration creates the
   months around its run; the worker job `maintain-order-event-partitions` (boot + daily) keeps

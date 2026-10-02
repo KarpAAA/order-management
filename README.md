@@ -50,13 +50,16 @@ pnpm db:seed
 pnpm dev
 ```
 
-- `pnpm infra:up`: Postgres, Redis and fake-psp, waits until healthy.
+- `pnpm infra:up`: Postgres, PgBouncer, Redis and fake-psp, waits until healthy.
 - Two database roles (ADR 0006): `pnpm db:*` connect as the owner `oms`
   (`DATABASE_ADMIN_URL`); api and worker connect as `oms_app` (`DATABASE_URL`), which sees only
   the rows of the current workspace (Row-Level Security). A fresh Postgres volume gets the
   login of `oms_app` from `devtools/postgres/init`. A volume created earlier needs it once,
   after `pnpm db:migrate`:
   `docker compose exec postgres psql -U oms -d oms -c "ALTER ROLE oms_app LOGIN PASSWORD 'oms_app'"`
+- PgBouncer (ADR 0008) pools the connections of `oms_app` in transaction mode on port 6432.
+  api and worker connect through it, under `pnpm dev` and in the containers alike
+  (`DATABASE_URL`); the owner (`DATABASE_ADMIN_URL`, port 5432) never does.
 - `pnpm dev`: api and worker in watch mode, side by side.
 - Then open `docs/requests.http` in WebStorm and run it top to bottom.
 
@@ -79,6 +82,7 @@ Other scripts: `pnpm build`, `pnpm lint`, `pnpm format`, `pnpm typecheck`, `pnpm
 | OpenAPI JSON                  | http://localhost:3000/docs-json                                                   |
 | bull-board (queues, dev only) | http://localhost:3000/admin/queues                                                |
 | fake-psp                      | http://localhost:4010 (`GET /charges`, `POST /admin/config`, `POST /admin/reset`) |
+| PgBouncer console             | `psql postgresql://stats:stats@localhost:6432/pgbouncer -c "SHOW POOLS"`          |
 
 ## Seeded data
 
@@ -157,9 +161,10 @@ FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC;
 ```
 
 Plans on this data: `pnpm db:explain` (lists, `docs/perf/2.2-indexes-explain.md`),
-`pnpm db:explain:partitions` (pruning, DROP vs DELETE, `docs/perf/2.3-partitioning.md`) and
+`pnpm db:explain:partitions` (pruning, DROP vs DELETE, `docs/perf/2.3-partitioning.md`),
 `pnpm db:explain:rls` (what the application role sees, plans under the policy,
-`docs/perf/2.4-rls.md`).
+`docs/perf/2.4-rls.md`) and `pnpm db:explain:pgbouncer` (500 clients on 20 server connections,
+the two connection limits, a session-level setting leaking, `docs/perf/2.7-pgbouncer.md`).
 
 ## Simulating the payment provider
 

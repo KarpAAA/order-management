@@ -7,5 +7,7 @@ declare module 'vitest' {
     /** Postgres server URL on its maintenance database; test files CREATE DATABASE through it. */
     pgServerUrl: string;
     redisUrl: string;
+    /** The same server through PgBouncer (transaction mode), as the application role. */
+    pgBouncerUrl: string;
   }
 }
