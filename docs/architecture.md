@@ -232,6 +232,10 @@ transaction; `CompleteOrderPayment` / `FailOrderPayment` each open their own.
   `workspace_id`, its policy; `test/tenancy/row-level-security.int-spec.ts` fails otherwise.
 - Shared tables + RLS is the project's one tenancy mode. Schema-per-tenant and
   database-per-tenant were compared and not built (ADR 0007).
+- **Connection pooling (Step 2.7, ADR 0008):** PgBouncer in transaction mode stands between
+  `oms_app` and Postgres in the compose `app` profile; the owner connects directly. A server
+  connection changes hands at every `COMMIT`, which is why the tenant setting is
+  transaction-local: a session-level one would reach the next client.
 
 ## 8. Known gaps
 
