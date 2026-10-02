@@ -29,6 +29,8 @@ beforeAll(async () => {
   const url = databaseUrl(serverUrl, dbName);
   // the app under test boots against this database as the application role, like production
   process.env.DATABASE_URL = appRoleUrl(url);
+  // no read replica unless the file asks for one (test/replica/read-replica.e2e-spec.ts)
+  delete process.env.DATABASE_REPLICA_URL;
   process.env.REDIS_URL = inject('redisUrl');
   // own BullMQ namespace too: a worker in one file never takes the jobs of another
   process.env.QUEUE_PREFIX = dbName;

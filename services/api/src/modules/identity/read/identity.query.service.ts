@@ -42,7 +42,9 @@ export class IdentityQueryService {
   ) {}
 
   async me(actor: UserActor): Promise<MeDto> {
-    const user = await this.db.user.findUnique({
+    // The primary, not the read handle: "who am I" follows register and login, which are
+    // anonymous writes that no read-your-writes marker covers (docs/adr/0009).
+    const user = await this.unscoped.user.findUnique({
       where: { id: actor.userId },
       select: { id: true, email: true, createdAt: true },
     });
