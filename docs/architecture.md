@@ -236,6 +236,11 @@ transaction; `CompleteOrderPayment` / `FailOrderPayment` each open their own.
   `oms_app` and Postgres, under `pnpm dev` and in the containers; the owner connects directly. A server
   connection changes hands at every `COMMIT`, which is why the tenant setting is
   transaction-local: a session-level one would reach the next client.
+- **Read replica (Step 2.8, ADR 0009):** an asynchronous streaming standby serves `GET`
+  requests; mutating requests and the worker read the primary. The request decides, not the
+  query: `READ_DB` forwards to the replica or the primary by a flag the read-routing
+  interceptor sets. After a write the primary's WAL position is kept for the user in Redis,
+  and their next reads go to the replica only once it has replayed that position.
 
 ## 8. Known gaps
 

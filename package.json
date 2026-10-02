@@ -27,6 +27,7 @@
     "db:explain:partitions": "docker compose exec -T postgres psql -U oms -d oms -f - < services/api/prisma/explain/partitions.sql",
     "db:explain:rls": "docker compose exec -T postgres psql -U oms -d oms -f - < services/api/prisma/explain/rls.sql",
     "db:explain:pgbouncer": "pnpm --filter @oms/api exec tsx prisma/explain/pgbouncer.ts",
+    "db:explain:replica": "pnpm --filter @oms/api exec tsx prisma/explain/replica.ts",
     "db:reset": "pnpm --filter @oms/api db:reset",
     "infra:up": "docker compose up -d --wait",
     "infra:down": "docker compose down"

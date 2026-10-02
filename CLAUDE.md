@@ -50,7 +50,7 @@ Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces)
 ## Commands (CMD-friendly, from the repo root)
 
 ```
-pnpm infra:up          # postgres, pgbouncer, redis, fake-psp (healthy)
+pnpm infra:up          # postgres, postgres-replica, pgbouncer, redis, fake-psp (healthy)
 pnpm db:migrate        # prisma migrate dev
 pnpm db:seed           # fixed-id dev data (README → Seeded data)
 pnpm db:reset          # drop, migrate, seed
@@ -59,6 +59,7 @@ pnpm db:explain        # plans of the list queries on the datagen data (docs/per
 pnpm db:explain:partitions   # order_events pruning, DROP vs DELETE (docs/perf/2.3-partitioning.md)
 pnpm db:explain:rls    # what oms_app sees, plans under the RLS policy (docs/perf/2.4-rls.md)
 pnpm db:explain:pgbouncer    # 500 clients on 20 server connections, limits, the leak (docs/perf/2.7-pgbouncer.md)
+pnpm db:explain:replica      # replication lag, read-your-writes with a 5 s delay (docs/perf/2.8-read-replica.md)
 pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
 pnpm test              # Vitest project unit: domain, VOs, policies, use cases, adapters (MSW), architecture (no Docker)
@@ -111,6 +112,18 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   `pg_advisory_xact_lock`), no `LISTEN`, no `statementNameGenerator` on `PrismaPg`. A
   session-level tenant setting would leak to the next tenant without an error
   (`test/tenancy/pgbouncer.int-spec.ts`). The owner URL never points at PgBouncer.
+- **`READ_DB` may be the read replica** (ADR 0009; `DATABASE_REPLICA_URL`, unset in the e2e
+  suite except `test/replica/read-replica.e2e-spec.ts`). The request decides, never the query:
+  `ReadRoutingInterceptor` allows the replica for `GET` only, and only once the replica has
+  replayed the caller's last write (its WAL position, `ryw:<userId>` in Redis). Consequences:
+  - a query service keeps using `READ_DB` and never chooses a server; a read that a write
+    depends on is safe because it runs in a mutating request or a job, which read the primary;
+  - a `GET` handler must not write, and a row written by the worker or by another user shows
+    up in a `GET` only after the replication lag;
+  - `PrismaService` and `txHost.tx` are always the primary; `GET /me` uses `PrismaService`
+    because register and login are anonymous and leave no marker;
+  - the replica is read-only and a copy of everything, roles and policies included: nothing is
+    migrated or granted there.
 - **`order_events` is partitioned by month** (`created_at`, UTC, no DEFAULT partition): an
   event dated in a month without a partition fails the whole write. The migration creates the
   months around its run; the worker job `maintain-order-event-partitions` (boot + daily) keeps
