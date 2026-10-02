@@ -26,10 +26,11 @@ every tenant query is a transaction of four statements, so a connection is held 
   `statementNameGenerator` is configured, and `PrismaService` configures none. The one new
   setting is `DATABASE_POOL_MAX`, the size of a process's pool.
 - **Sizes of the local stack**: `max_client_conn = 500`, `default_pool_size = 20`.
-- **Where it runs.** In compose it starts with the infra; the containers of the `app` profile
-  (and so the nightly contract run) connect through it. `pnpm dev` on the host and the e2e
-  suite keep connecting to Postgres directly; one int test file runs the application through
-  a PgBouncer in Testcontainers (TEN-013).
+- **Where it runs.** In compose it starts with the infra, and the application connects through
+  it everywhere it runs for real: `pnpm dev` on the host, the containers of the `app` profile
+  and the nightly contract run. The e2e suite connects to Postgres directly (a database per
+  test file, and no pool to share); one int test file runs the application through a
+  PgBouncer in Testcontainers (TEN-013).
 
 ## Consequences
 
@@ -42,7 +43,7 @@ every tenant query is a transaction of four statements, so a connection is held 
   connections for everybody. The rule that adapters are never called inside a transaction
   matters more than before.
 - PgBouncer's server connections count against `max_connections`: direct connections (the
-  owner, a host `pnpm dev`) share what is left.
+  owner, a measuring script) share what is left.
 - One more hop per statement, about 0.2 ms per tenant query on one host.
 - One more thing to run and to watch: `SHOW POOLS` on the console database `pgbouncer`
   (user `stats` locally), `cl_waiting` being the number to alert on (Step 4).

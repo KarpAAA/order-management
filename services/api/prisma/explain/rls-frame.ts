@@ -38,7 +38,11 @@ async function measure(work: () => Promise<number>): Promise<{ p50: string; p95:
 
 async function main(): Promise<void> {
   const owner = await connect(process.env.DATABASE_ADMIN_URL, 'DATABASE_ADMIN_URL');
-  const app = await connect(process.env.DATABASE_URL, 'DATABASE_URL');
+  // past PgBouncer (2.7), so the frame is measured without the pooler's hop
+  const app = await connect(
+    process.env.DATABASE_DIRECT_URL ?? process.env.DATABASE_URL,
+    'DATABASE_DIRECT_URL',
+  );
   try {
     const big = await owner.query<{ id: string }>(
       'SELECT workspace_id AS id FROM orders GROUP BY 1 ORDER BY count(*) DESC LIMIT 1',

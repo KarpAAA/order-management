@@ -23,8 +23,8 @@ services:
       retries: 10
 
   # Transaction-mode pooler in front of postgres, for the application role only (ADR 0008).
-  # The containers of the `app` profile go through it; `pnpm dev` on the host connects to
-  # postgres directly unless DATABASE_URL points at 6432.
+  # api and worker go through it, in the `app` profile and under `pnpm dev` on the host alike;
+  # the owner (migrations, seed, datagen) connects to postgres directly.
   pgbouncer:
     image: edoburu/pgbouncer:v1.25.2-p0
     volumes:

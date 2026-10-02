@@ -58,8 +58,8 @@ pnpm dev
   after `pnpm db:migrate`:
   `docker compose exec postgres psql -U oms -d oms -c "ALTER ROLE oms_app LOGIN PASSWORD 'oms_app'"`
 - PgBouncer (ADR 0008) pools the connections of `oms_app` in transaction mode on port 6432.
-  The containers of the `app` profile connect through it; `pnpm dev` connects to Postgres
-  directly unless `DATABASE_URL` in `.env` points at 6432. The owner never goes through it.
+  api and worker connect through it, under `pnpm dev` and in the containers alike
+  (`DATABASE_URL`); the owner (`DATABASE_ADMIN_URL`, port 5432) never does.
 - `pnpm dev`: api and worker in watch mode, side by side.
 - Then open `docs/requests.http` in WebStorm and run it top to bottom.
 

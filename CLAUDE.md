@@ -104,8 +104,8 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
     `ENABLE ROW LEVEL SECURITY` + the `tenant_isolation` policy (`migrate diff` sees neither;
     `test/tenancy/row-level-security.int-spec.ts` fails without them);
   - the app cannot run DDL: partitions go through `create_/drop_order_events_partition()`.
-- **PgBouncer in transaction mode sits in front of `oms_app`** (ADR 0008; compose `app` profile
-  and the nightly contract run; `pnpm dev` and the e2e suite connect directly). A server
+- **PgBouncer in transaction mode sits in front of `oms_app`** (ADR 0008; `pnpm dev`, the
+  compose `app` profile and the nightly contract run; the e2e suite connects directly). A server
   connection serves another client after every `COMMIT`, so nothing may outlive a transaction
   on it: no session-level `SET` / `set_config(…, false)`, no `pg_advisory_lock` (use
   `pg_advisory_xact_lock`), no `LISTEN`, no `statementNameGenerator` on `PrismaPg`. A

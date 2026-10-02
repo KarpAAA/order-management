@@ -25,7 +25,8 @@ try {
 
 const urls = {
   owner: process.env.DATABASE_ADMIN_URL,
-  direct: process.env.DATABASE_URL,
+  // the application role past the pooler: DATABASE_URL itself points at PgBouncer
+  direct: process.env.DATABASE_DIRECT_URL ?? 'postgresql://oms_app:oms_app@localhost:5432/oms',
   pooled: process.env.PGBOUNCER_URL ?? 'postgresql://oms_app:oms_app@localhost:6432/oms',
   stats: process.env.PGBOUNCER_STATS_URL ?? 'postgresql://stats:stats@localhost:6432/pgbouncer',
 };
@@ -163,7 +164,7 @@ async function load(
 const end = (clients: Client[]) => Promise.all(clients.map((client) => client.end()));
 
 async function hop(workspaceId: string): Promise<void> {
-  const direct = await connect(urls.direct, 'DATABASE_URL');
+  const direct = await connect(urls.direct, 'DATABASE_DIRECT_URL');
   const pooled = await connect(urls.pooled, 'PGBOUNCER_URL');
   try {
     print(`A. one connection, ${String(ROUNDS)} rounds of BEGIN + set_config + list + COMMIT, ms`);
@@ -181,9 +182,9 @@ async function manyClients(workspaceId: string, owner: Client, stats: Client): P
   // the console connection of this script is a client of PgBouncer too
   for (const [target, url, name, count] of [
     ['through PgBouncer', urls.pooled, 'PGBOUNCER_URL', CLIENTS - 1],
-    ['direct', urls.direct, 'DATABASE_URL', 20],
+    ['direct', urls.direct, 'DATABASE_DIRECT_URL', 20],
     // as many as Postgres still takes beside the server connections PgBouncer keeps open
-    ['direct', urls.direct, 'DATABASE_URL', 90],
+    ['direct', urls.direct, 'DATABASE_DIRECT_URL', 90],
   ] as const) {
     const { clients } = await connectMany(url, name, count);
     const label = `${String(clients.length)} clients ${target}`;
@@ -205,7 +206,7 @@ async function limits(owner: Client): Promise<void> {
   const limit = await owner.query<{ max: string }>(
     `SELECT current_setting('max_connections') AS max`,
   );
-  const direct = await connectMany(urls.direct, 'DATABASE_URL', CLIENTS);
+  const direct = await connectMany(urls.direct, 'DATABASE_DIRECT_URL', CLIENTS);
   print(`  direct, max_connections ${limit.rows[0]?.max ?? '?'}: ${outcome(direct)}`);
   await end(direct.clients);
 }
