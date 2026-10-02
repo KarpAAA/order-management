@@ -30,7 +30,8 @@ const workspaceSelect = {
  * - `db` (tenant-scoped) for everything inside the current workspace;
  * - `unscoped` ONLY for the questions that are cross-tenant by nature — "which workspaces
  *   am I in" and the membership lookup the access guard runs before a tenant exists.
- *   These are the documented exceptions to the tenant choke point.
+ *   These are the documented exceptions to the tenant choke point. They run `asUser`: the
+ *   database shows a user their own memberships and no one else's (Row-Level Security).
  */
 @Injectable()
 export class IdentityQueryService {
@@ -46,12 +47,15 @@ export class IdentityQueryService {
       select: { id: true, email: true, createdAt: true },
     });
     if (!user) throw new UserNotFoundError();
-    const memberships = await this.unscoped.membership.findMany({
-      where: { userId: actor.userId },
-      select: { role: true, workspace: { select: { id: true, name: true, slug: true } } },
-      orderBy: { createdAt: 'asc' },
-      take: MAX_MEMBERSHIPS_ON_ME,
-    });
+    const memberships = await this.unscoped.asUser(
+      actor.userId,
+      this.unscoped.membership.findMany({
+        where: { userId: actor.userId },
+        select: { role: true, workspace: { select: { id: true, name: true, slug: true } } },
+        orderBy: { createdAt: 'asc' },
+        take: MAX_MEMBERSHIPS_ON_ME,
+      }),
+    );
     return {
       ...user,
       memberships: memberships.map((m) => ({
@@ -67,12 +71,15 @@ export class IdentityQueryService {
     actor: UserActor,
     page: { cursor?: string; limit: number },
   ): Promise<PaginatedByCursor<WorkspaceDto>> {
-    const rows = await this.unscoped.membership.findMany({
-      where: { userId: actor.userId, ...afterCursor(page.cursor) },
-      select: { id: true, createdAt: true, role: true, workspace: { select: workspaceSelect } },
-      orderBy: newestFirst(),
-      take: page.limit + 1,
-    });
+    const rows = await this.unscoped.asUser(
+      actor.userId,
+      this.unscoped.membership.findMany({
+        where: { userId: actor.userId, ...afterCursor(page.cursor) },
+        select: { id: true, createdAt: true, role: true, workspace: { select: workspaceSelect } },
+        orderBy: newestFirst(),
+        take: page.limit + 1,
+      }),
+    );
     return toCursorPage(rows, page.limit, (row) => ({
       ...row.workspace,
       myRole: row.role as WorkspaceRole,
@@ -117,10 +124,13 @@ export class IdentityQueryService {
 
   /** Cross-tenant by nature: runs before the tenant context exists. */
   async findMembership(workspaceId: string, userId: string): Promise<WorkspaceMembership | null> {
-    const row = await this.unscoped.membership.findUnique({
-      where: { workspaceId_userId: { workspaceId, userId } },
-      select: { workspaceId: true, userId: true, role: true },
-    });
+    const row = await this.unscoped.asUser(
+      userId,
+      this.unscoped.membership.findUnique({
+        where: { workspaceId_userId: { workspaceId, userId } },
+        select: { workspaceId: true, userId: true, role: true },
+      }),
+    );
     return row ? { ...row, role: row.role as WorkspaceRole } : null;
   }
 

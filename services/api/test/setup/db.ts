@@ -12,7 +12,7 @@ import { PrismaClient } from '@infra/database/generated/prisma/client';
 
 import { seedTest } from '../seed/seed-test';
 
-import { adminQuery, databaseUrl, TEMPLATE_DB } from './database-url';
+import { adminQuery, appRoleUrl, databaseUrl, TEMPLATE_DB } from './database-url';
 
 let prisma: PrismaClient | undefined;
 let dbName: string | undefined;
@@ -27,7 +27,8 @@ beforeAll(async () => {
   );
 
   const url = databaseUrl(serverUrl, dbName);
-  process.env.DATABASE_URL = url; // the app under test (1.7+) boots against this database
+  // the app under test boots against this database as the application role, like production
+  process.env.DATABASE_URL = appRoleUrl(url);
   process.env.REDIS_URL = inject('redisUrl');
   // own BullMQ namespace too: a worker in one file never takes the jobs of another
   process.env.QUEUE_PREFIX = dbName;
@@ -43,8 +44,9 @@ afterAll(async () => {
 });
 
 /**
- * The file's database WITHOUT tenant scoping — for factories and assertions, like
- * prisma/seed.ts. The app itself still goes through the scoped client.
+ * The file's database as its owner, WITHOUT tenant scoping or Row-Level Security — for
+ * factories and assertions, like prisma/seed.ts. The app itself goes through the scoped
+ * client, as the application role.
  */
 export function testDb(): PrismaClient {
   if (!prisma) throw new Error('testDb() is available from beforeAll on (test/setup/db.ts)');

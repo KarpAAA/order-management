@@ -15,13 +15,18 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 
 export interface ApiApp {
   http(): ReturnType<typeof request>;
-  /** Runs `work` and returns how many SQL statements the app sent meanwhile. */
+  /**
+   * Runs `work` and returns how many data statements the app sent meanwhile. The frame around
+   * a tenant query (BEGIN, set_config, COMMIT) is not counted: it is constant per query.
+   */
   countQueries(work: () => Promise<unknown>): Promise<number>;
   get<T>(token: Type<T> | string | symbol): T;
   /** Every route the app registered, as `GET /v1/workspaces/:workspaceId/orders`. */
   routes(): string[];
   close(): Promise<void>;
 }
+
+const TRANSACTION_FRAME = /^\s*(BEGIN|COMMIT|ROLLBACK|SELECT set_config\()/i;
 
 export async function createApiApp(): Promise<ApiApp> {
   const moduleRef = await Test.createTestingModule({ imports: [ApiModule] })
@@ -33,8 +38,8 @@ export async function createApiApp(): Promise<ApiApp> {
   await app.init();
 
   let queries = 0;
-  app.get(PrismaService).onQuery(() => {
-    queries += 1;
+  app.get(PrismaService).onQuery((event) => {
+    if (!TRANSACTION_FRAME.test(event.query)) queries += 1;
   });
 
   return {

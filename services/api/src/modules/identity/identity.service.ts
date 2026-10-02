@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { Transactional, TransactionHost } from '@nestjs-cls/transactional';
+import { TransactionHost } from '@nestjs-cls/transactional';
 import * as argon2 from 'argon2';
 
 import { TenantContext } from '@common/tenancy/tenant-context';
@@ -86,23 +86,30 @@ export class IdentityService {
     return { accessToken, expiresIn };
   }
 
-  /** The creator becomes OWNER in the same transaction. */
-  @Transactional()
+  /**
+   * The creator becomes OWNER in the same transaction. The transaction runs as the new
+   * workspace: its id is ours to choose, and the database accepts a membership only from the
+   * tenant it belongs to (Row-Level Security), so the tenant is bound before it begins.
+   */
   async createWorkspace(cmd: CreateWorkspaceCommand, actor: UserActor): Promise<{ id: string }> {
     const id = newId();
     try {
-      // Nested create: the only write into a tenant table that enters through a global model
-      // (docs/architecture.md → Tenancy). There is no tenant context yet: the workspace is new.
-      await this.txHost.tx.workspace.create({
-        data: {
-          id,
-          name: cmd.name,
-          slug: cmd.slug,
-          currency: cmd.currency,
-          taxRateBps: cmd.taxRateBps,
-          memberships: { create: { id: newId(), userId: actor.userId, role: 'OWNER' } },
-        },
-      });
+      await this.tenant.runInWorkspace(id, () =>
+        this.txHost.withTransaction(() =>
+          // Nested create: the only write into a tenant table that enters through a global
+          // model (docs/architecture.md → Tenancy).
+          this.txHost.tx.workspace.create({
+            data: {
+              id,
+              name: cmd.name,
+              slug: cmd.slug,
+              currency: cmd.currency,
+              taxRateBps: cmd.taxRateBps,
+              memberships: { create: { id: newId(), userId: actor.userId, role: 'OWNER' } },
+            },
+          }),
+        ),
+      );
     } catch (err: unknown) {
       if (isUniqueViolation(err)) throw new WorkspaceSlugTakenError(cmd.slug);
       throw err;

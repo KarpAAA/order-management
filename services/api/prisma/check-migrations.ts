@@ -36,8 +36,9 @@ function isShellError(err: unknown): err is ShellError {
 
 /** Runs a command, returns stdout; a non-zero exit throws with stdout/stderr attached. */
 function sh(cmd: string, { cwd = API_DIR, databaseUrl: url }: ShellOptions = {}): string {
-  // An explicit DATABASE_URL wins over .env (process.loadEnvFile never overrides).
-  const env = url ? { ...process.env, DATABASE_URL: url } : process.env;
+  // An explicit URL wins over .env (process.loadEnvFile never overrides). Both names: a base
+  // older than the two-role setup still migrates and seeds through DATABASE_URL.
+  const env = url ? { ...process.env, DATABASE_ADMIN_URL: url, DATABASE_URL: url } : process.env;
   return execSync(cmd, { cwd, env, encoding: 'utf8', stdio: 'pipe' });
 }
 

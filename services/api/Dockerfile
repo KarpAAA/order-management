@@ -16,8 +16,8 @@ COPY patches patches
 COPY services/api/package.json services/api/
 RUN pnpm install --frozen-lockfile --filter @oms/api...
 COPY services/api services/api
-# prisma.config.ts resolves DATABASE_URL even for `generate`; any syntactically valid URL works.
-ENV DATABASE_URL=postgresql://build:build@localhost:5432/build
+# prisma.config.ts resolves DATABASE_ADMIN_URL even for `generate`; any syntactically valid URL works.
+ENV DATABASE_ADMIN_URL=postgresql://build:build@localhost:5432/build
 RUN pnpm --filter @oms/api build \
  && pnpm --filter @oms/api deploy --prod --legacy /out
 

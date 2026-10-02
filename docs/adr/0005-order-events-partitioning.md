@@ -41,6 +41,7 @@ range partitioning in ADR 0002, and no table references `order_events`.
   instead of 5 for one order's history, and planning time grows with the number of partitions.
 - An event dated outside the months that have a partition cannot be written. Scripts that
   write old dates (datagen, a test) create the partition themselves.
-- The job runs DDL as the application's database user, which owns the tables. Step 2.4 (RLS,
-  the app role is no longer the owner) needs a separate owner connection for maintenance.
+- The job ran DDL as the application's database user, which owned the tables. Since Step 2.4
+  (ADR 0006) the role owns nothing: the job calls two `SECURITY DEFINER` functions, and old
+  months are dropped with a plain `DROP` under a lock timeout, not detached `CONCURRENTLY`.
 - Numbers: `docs/perf/2.3-partitioning.md`.

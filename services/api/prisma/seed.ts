@@ -33,8 +33,9 @@ try {
 if (process.env.NODE_ENV === 'production') {
   throw new Error('Refusing to seed a production database');
 }
-const databaseUrl = process.env.DATABASE_URL;
-if (!databaseUrl) throw new Error('DATABASE_URL is not set');
+// the owner's connection: the seed writes every tenant, Row-Level Security would hide them
+const databaseUrl = process.env.DATABASE_ADMIN_URL;
+if (!databaseUrl) throw new Error('DATABASE_ADMIN_URL is not set');
 
 const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: databaseUrl }) });
 

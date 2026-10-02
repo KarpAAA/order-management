@@ -11,7 +11,9 @@ import type { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 /**
  * The single PrismaClient of the process, WITHOUT tenant scoping. Modules never inject it
  * for tenant data: they get the scoped handles from `database.tokens.ts`. The only consumers
- * are the scoped client factory and identity's documented cross-tenant reads.
+ * are the scoped client factory, identity's documented cross-tenant reads (`asUser`) and the
+ * partition adapter of orders. Row-Level Security still applies to it: a tenant table read
+ * through this client with no context returns nothing.
  */
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
@@ -38,6 +40,19 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
 
   async onModuleDestroy(): Promise<void> {
     await this.$disconnect();
+  }
+
+  /**
+   * Runs one query as `userId`: `app.user_id` is set for the transaction of that query, and the
+   * `own_memberships` policy lets the user's memberships through, in any workspace. For the
+   * reads that are cross-tenant by nature; the query is built on this client and not awaited.
+   */
+  async asUser<T>(userId: string, query: Prisma.PrismaPromise<T>): Promise<T> {
+    const [, result] = await this.$transaction([
+      this.$executeRaw`SELECT set_config('app.user_id', ${userId}, true)`,
+      query,
+    ]);
+    return result;
   }
 
   /**

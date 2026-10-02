@@ -143,16 +143,20 @@ Allowed transitions (anything else is `422 ORDER_INVALID_TRANSITION`):
 
 ## TEN: tenancy and isolation
 
-| Id      | Requirement                                                                                                                                              | Level       |
-| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
-| TEN-001 | A caller who is not a member of `{workspaceId}` gets `404 WORKSPACE_NOT_FOUND` on every workspace route, for existing and non-existing workspaces alike. | `api`       |
-| TEN-002 | A non-UUID `{workspaceId}` → 404 (never 500).                                                                                                            | `api`       |
-| TEN-003 | A member of workspace A requesting a product/order id that belongs to workspace B under A's path → 404 (`PRODUCT_NOT_FOUND` / `ORDER_NOT_FOUND`).        | `api`       |
-| TEN-004 | Lists (`products`, `orders`, `members`, `events`) never contain rows of another workspace.                                                               | `api`       |
-| TEN-005 | An order cannot reference a product of another workspace (TEN-003 + DB composite FK).                                                                    | `int + api` |
-| TEN-006 | Any query on a tenant table without a tenant in context fails (500), never returns data.                                                                 | `int`       |
-| TEN-007 | The user who belongs to both seeded workspaces sees each with its own role.                                                                              | `api`       |
-| TEN-008 | `GET /workspaces` lists only the caller's workspaces, with `myRole`.                                                                                     | `api`       |
+| Id      | Requirement                                                                                                                                                                            | Level       |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
+| TEN-001 | A caller who is not a member of `{workspaceId}` gets `404 WORKSPACE_NOT_FOUND` on every workspace route, for existing and non-existing workspaces alike.                               | `api`       |
+| TEN-002 | A non-UUID `{workspaceId}` → 404 (never 500).                                                                                                                                          | `api`       |
+| TEN-003 | A member of workspace A requesting a product/order id that belongs to workspace B under A's path → 404 (`PRODUCT_NOT_FOUND` / `ORDER_NOT_FOUND`).                                      | `api`       |
+| TEN-004 | Lists (`products`, `orders`, `members`, `events`) never contain rows of another workspace.                                                                                             | `api`       |
+| TEN-005 | An order cannot reference a product of another workspace (TEN-003 + DB composite FK).                                                                                                  | `int + api` |
+| TEN-006 | Any query on a tenant table without a tenant in context fails (500), never returns data.                                                                                               | `int`       |
+| TEN-007 | The user who belongs to both seeded workspaces sees each with its own role.                                                                                                            | `api`       |
+| TEN-008 | `GET /workspaces` lists only the caller's workspaces, with `myRole`.                                                                                                                   | `api`       |
+| TEN-009 | As the application's database role, without a tenant in the transaction, a tenant table returns no row and refuses every write; the tenant ends with the transaction.                  | `int`       |
+| TEN-010 | With a tenant in the transaction the database returns, updates, deletes and accepts only that tenant's rows, with no filter in the query.                                              | `int`       |
+| TEN-011 | With a user in the transaction the database returns that user's memberships in every workspace and nobody else's; it accepts no membership write.                                      | `int`       |
+| TEN-012 | The application role is no superuser, cannot bypass row security and owns no table; every table with `workspace_id` has a policy; partitions and the migration history carry no grant. | `int`       |
 
 ## PERM: permissions (member of the workspace)
 
@@ -214,4 +218,4 @@ Allowed transitions (anything else is `422 ORDER_INVALID_TRANSITION`):
 | OPS-003 | Only `system:job:maintain-order-event-partitions` may run the maintenance.                                                                                                              | `unit`       |
 | OPS-004 | A run fails (and is retried, then alerted as a dead job) when a required month still has no partition.                                                                                  | `unit`       |
 | OPS-005 | An event is stored in the partition of its UTC month; a month without a partition rejects the write (there is no DEFAULT partition).                                                    | `int`        |
-| OPS-006 | Dropping a partition removes the events of that month and nothing else; a repeated drop is a no-op.                                                                                     | `int`        |
+| OPS-006 | Dropping a partition removes the events of that month and nothing else; a repeated drop is a no-op. The application role does it through a function and cannot run the DDL itself.      | `int`        |

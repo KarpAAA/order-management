@@ -1,6 +1,9 @@
 import type { createScopedClient } from './tenant-scope.extension';
 import type { TransactionalAdapter, TransactionHost } from '@nestjs-cls/transactional';
-import type { PrismaTransactionalClient } from '@nestjs-cls/transactional-adapter-prisma';
+import type {
+  PrismaTransactionalClient,
+  PrismaTransactionOptions,
+} from '@nestjs-cls/transactional-adapter-prisma';
 
 /** The tenant-scoped Prisma client. */
 export type ScopedPrismaClient = ReturnType<typeof createScopedClient>;
@@ -18,15 +21,11 @@ export const READ_DB = SCOPED_PRISMA;
 
 export type ReadDb = ScopedPrismaClient;
 
-/**
- * Structural twin of `TransactionalAdapterPrisma<ScopedPrismaClient>`. The library class
- * declares `defaultTxOptions` as possibly `undefined`, which `exactOptionalPropertyTypes`
- * rejects, so the host is typed through this shape instead (see transactional.adapter.ts).
- */
+/** The shape of the adapter in transactional.adapter.ts; `tx` is the scoped client's transaction. */
 export type DbTransactionAdapter = TransactionalAdapter<
   ScopedPrismaClient,
   PrismaTransactionalClient<ScopedPrismaClient>,
-  Record<string, unknown>
+  PrismaTransactionOptions<ScopedPrismaClient>
 >;
 
 export type WriteDb = TransactionHost<DbTransactionAdapter>;

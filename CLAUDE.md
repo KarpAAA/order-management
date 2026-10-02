@@ -57,6 +57,7 @@ pnpm db:reset          # drop, migrate, seed
 pnpm db:datagen        # Step 2 volume data after db:reset: 100 tenants, 2M orders (--scale smoke)
 pnpm db:explain        # plans of the list queries on the datagen data (docs/perf/2.2-indexes-explain.md)
 pnpm db:explain:partitions   # order_events pruning, DROP vs DELETE (docs/perf/2.3-partitioning.md)
+pnpm db:explain:rls    # what oms_app sees, plans under the RLS policy (docs/perf/2.4-rls.md)
 pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
 pnpm test              # Vitest project unit: domain, VOs, policies, use cases, adapters (MSW), architecture (no Docker)
@@ -86,13 +87,28 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
   Tenant models (Membership, Product, Order, OrderItem, OrderEvent) are filtered by the
   workspace in CLS; a query without a tenant throws. Never inject `PrismaService` for tenant
-  data: its only users are the extension, identity's documented cross-tenant reads, and the
-  partition DDL adapter in orders (table structure, no tenant rows).
+  data: its only users are the extension, identity's documented cross-tenant reads
+  (`asUser`), and the partition adapter in orders (table structure, no tenant rows).
+- **Row-Level Security is the second layer** (ADR 0006). Two database roles: `DATABASE_URL` is
+  `oms_app` (api + worker: owns nothing, sees only rows of `app.workspace_id`),
+  `DATABASE_ADMIN_URL` is the owner (Prisma CLI, seed, datagen, `testDb()` in tests; not in
+  `env.schema.ts`). `app.workspace_id` is transaction-local and set in two places only:
+  `transactional.adapter.ts` (first statement of `@Transactional()`) and the extension (wraps
+  a query outside a transaction). Consequences:
+  - bind the tenant BEFORE the transaction begins; bound later, the database stays closed;
+  - the scoped root client (`READ_DB`) used inside `@Transactional()` runs on another
+    connection and does not see that transaction's writes: use `txHost.tx` there;
+  - raw SQL or the unscoped client on a tenant table returns nothing without `set_config`;
+  - a new table needs `GRANT … TO oms_app` in its migration, and with a `workspace_id` also
+    `ENABLE ROW LEVEL SECURITY` + the `tenant_isolation` policy (`migrate diff` sees neither;
+    `test/tenancy/row-level-security.int-spec.ts` fails without them);
+  - the app cannot run DDL: partitions go through `create_/drop_order_events_partition()`.
 - **`order_events` is partitioned by month** (`created_at`, UTC, no DEFAULT partition): an
   event dated in a month without a partition fails the whole write. The migration creates the
   months around its run; the worker job `maintain-order-event-partitions` (boot + daily) keeps
   `ORDER_EVENTS_PARTITIONS_AHEAD` months ready; `db:datagen` creates its own window. A test or
-  script that writes events with a far date creates the partition first (`createPartitionSql`).
+  script that writes events with a far date creates the partition first (`createPartitionSql`,
+  as the owner).
   Retention is off by default (`ORDER_EVENTS_RETENTION_MONTHS=0`).
 - A query on `order_events` without a `created_at` range probes every partition: bound it,
   as `OrdersQueryService.listEvents` does with the order's `createdAt … updatedAt`.
@@ -116,9 +132,15 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   transport modules (Nest needs them exported to inject them into controllers/consumers).
   Orders also exports `OrdersQueue`: its worker module registers the cron scheduler on it.
 - `MaintainOrderEventPartitionsService` is a use case with no `@Transactional()` and no domain
-  object: partition DDL runs statement by statement (`DETACH … CONCURRENTLY` cannot run in a
-  transaction). Its adapter uses `$executeRawUnsafe`: identifiers and partition bounds cannot
-  be bind parameters; both are built from two integers.
+  object: partition DDL runs month by month. Its adapter calls two `SECURITY DEFINER`
+  functions with two integers; the functions build the identifiers and bounds.
+- `createWorkspace` has no `@Transactional()` decorator: it binds the new workspace as the
+  tenant first (`runInWorkspace`) and opens the transaction inside, so Row-Level Security
+  accepts the OWNER membership.
+- `tenant-scope.extension.ts` reads Prisma's `__internalParams.transaction` (not public API)
+  to tell a query inside a transaction from one outside; `tenant-scope.int-spec.ts` guards it.
+- The N+1 guard (`countQueries`) counts data statements: `BEGIN`, `set_config` and `COMMIT`
+  around a tenant query are not counted.
 - The migration that partitions `order_events` copies the rows inside the migration
   (`migrations.md` §5 asks for a backfill job above ~100 k rows): the table is only that large
   in a regenerable datagen database. The production-size alternative is noted in the migration.

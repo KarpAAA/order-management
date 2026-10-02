@@ -14,6 +14,8 @@ services:
     volumes:
       # postgres:18 keeps PGDATA in a versioned subfolder; mount the parent
       - postgres-data:/var/lib/postgresql
+      # the application role's login, on an empty volume only
+      - ./devtools/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U oms -d oms']
       interval: 5s
@@ -68,7 +70,7 @@ services:
     working_dir: /repo/services/api
     command: ['pnpm', 'exec', 'prisma', 'migrate', 'deploy']
     environment:
-      DATABASE_URL: postgresql://oms:oms@postgres:5432/oms?schema=public
+      DATABASE_ADMIN_URL: postgresql://oms:oms@postgres:5432/oms?schema=public
     depends_on:
       postgres:
         condition: service_healthy
@@ -82,7 +84,9 @@ services:
     command: ['node', 'dist/entrypoints/main.api.js']
     env_file: services/api/.env.example
     environment: &app-env
-      DATABASE_URL: postgresql://oms:oms@postgres:5432/oms?schema=public
+      DATABASE_URL: postgresql://oms_app:oms_app@postgres:5432/oms?schema=public
+      # env_file is the dev environment; the processes themselves get no owner URL
+      DATABASE_ADMIN_URL: ''
       REDIS_URL: redis://redis:6379
       PSP_BASE_URL: http://fake-psp:4010
     ports:

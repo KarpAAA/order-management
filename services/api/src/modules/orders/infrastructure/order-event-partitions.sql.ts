@@ -1,6 +1,8 @@
-// The naming and the bounds of the monthly `order_events` partitions, in one place: the adapter
-// and prisma/datagen build the same DDL. Plain strings, no Nest and no Prisma, so a script can
-// import it. The same shape is created by the migration 20261001120000_partition_order_events.
+// The naming and the bounds of the monthly `order_events` partitions. `createPartitionSql` is
+// for the table's owner: prisma/datagen and the tests. The application is not the owner and
+// calls create_order_events_partition() instead, which builds the same name and bounds, as
+// does the migration 20261001120000_partition_order_events. Plain strings, no Nest and no
+// Prisma, so a script can import it.
 import { addMonths } from '@shared/domain/year-month';
 import type { YearMonth } from '@shared/domain/year-month';
 

@@ -16,13 +16,13 @@ runs:
 
     # For every later step of the job:
     #  - HUSKY=0: `prepare` installs git hooks; a CI checkout has no use for them;
-    #  - DATABASE_URL: prisma.config.ts requires one even for `generate` and there is no .env in
+    #  - DATABASE_ADMIN_URL: prisma.config.ts requires one even for `generate` and there is no .env in
     #    CI. Nothing connects to it: tests and migration checks pass their container's URL.
     - name: Set job environment
       shell: bash
       run: |
         echo "HUSKY=0" >> "$GITHUB_ENV"
-        echo "DATABASE_URL=postgresql://ci:ci@localhost:1/ci" >> "$GITHUB_ENV"
+        echo "DATABASE_ADMIN_URL=postgresql://ci:ci@localhost:1/ci" >> "$GITHUB_ENV"
 
     - name: Install dependencies
       shell: bash

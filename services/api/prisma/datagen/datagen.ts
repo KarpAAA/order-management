@@ -253,8 +253,9 @@ function databaseUrlFromEnv(): string {
   } catch {
     // env comes from the shell
   }
-  const databaseUrl = process.env.DATABASE_URL;
-  if (!databaseUrl) throw new Error('DATABASE_URL is not set');
+  // the owner's connection: COPY into every tenant and partition DDL
+  const databaseUrl = process.env.DATABASE_ADMIN_URL;
+  if (!databaseUrl) throw new Error('DATABASE_ADMIN_URL is not set');
   assertSafeTarget(databaseUrl);
   return databaseUrl;
 }

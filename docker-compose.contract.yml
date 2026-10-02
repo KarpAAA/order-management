@@ -18,7 +18,7 @@ services:
     working_dir: /repo/services/api
     command: ['pnpm', 'exec', 'prisma', 'db', 'seed']
     environment:
-      DATABASE_URL: postgresql://oms:oms@postgres:5432/oms?schema=public
+      DATABASE_ADMIN_URL: postgresql://oms:oms@postgres:5432/oms?schema=public
     depends_on:
       migrate:
         condition: service_completed_successfully
