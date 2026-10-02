@@ -230,7 +230,8 @@ transaction; `CompleteOrderPayment` / `FailOrderPayment` each open their own.
 - The partitions of `order_events` carry no grant: the application reaches them only through
   the parent, where the policy applies. A new table needs its own `GRANT` and, with a
   `workspace_id`, its policy; `test/tenancy/row-level-security.int-spec.ts` fails otherwise.
-- Next: schema-per-tenant (2.5) on its own branch; the main line stays on shared tables + RLS.
+- Shared tables + RLS is the project's one tenancy mode. Schema-per-tenant and
+  database-per-tenant were compared and not built (ADR 0007).
 
 ## 8. Known gaps
 
