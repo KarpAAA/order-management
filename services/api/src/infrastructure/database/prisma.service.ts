@@ -19,7 +19,9 @@ import type { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
   constructor(@Inject(databaseConfig.KEY) config: DatabaseConfig) {
     super({
-      adapter: new PrismaPg({ connectionString: config.url }),
+      // No `statementNameGenerator`: the adapter then sends unnamed statements only, which is
+      // what PgBouncer in transaction mode needs (docs/adr/0008-pgbouncer-transaction-mode.md).
+      adapter: new PrismaPg({ connectionString: config.url, max: config.poolMax }),
       log: config.logQueries
         ? ['warn', 'error', { emit: 'event', level: 'query' }]
         : ['warn', 'error'],

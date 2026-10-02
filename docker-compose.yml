@@ -1,4 +1,4 @@
-# Local environment. Infra (postgres, redis, fake-psp) starts by default;
+# Local environment. Infra (postgres, pgbouncer, redis, fake-psp) starts by default;
 # api + worker start with `docker compose --profile app up --build` from ONE image.
 name: oms
 
@@ -18,6 +18,25 @@ services:
       - ./devtools/postgres/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U oms -d oms']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Transaction-mode pooler in front of postgres, for the application role only (ADR 0008).
+  # The containers of the `app` profile go through it; `pnpm dev` on the host connects to
+  # postgres directly unless DATABASE_URL points at 6432.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.25.2-p0
+    volumes:
+      - ./devtools/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./devtools/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    ports:
+      - '6432:6432'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-h', '127.0.0.1', '-p', '6432']
       interval: 5s
       timeout: 3s
       retries: 10
@@ -83,8 +102,9 @@ services:
     image: oms-api:local
     command: ['node', 'dist/entrypoints/main.api.js']
     env_file: services/api/.env.example
-    environment: &app-env
-      DATABASE_URL: postgresql://oms_app:oms_app@postgres:5432/oms?schema=public
+    environment:
+      &app-env # through the pooler; the migrate step above goes to postgres directly, as the owner
+      DATABASE_URL: postgresql://oms_app:oms_app@pgbouncer:6432/oms?schema=public
       # env_file is the dev environment; the processes themselves get no owner URL
       DATABASE_ADMIN_URL: ''
       REDIS_URL: redis://redis:6379
@@ -94,6 +114,8 @@ services:
     depends_on: &app-deps
       migrate:
         condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
       redis:
         condition: service_healthy
       fake-psp:

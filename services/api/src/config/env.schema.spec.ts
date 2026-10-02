@@ -41,6 +41,11 @@ describe('validateEnv: safe defaults (ops/config-env.md §1)', () => {
     expect(env.ORDER_EVENTS_PARTITIONS_ENABLED).toBe(true);
   });
 
+  it('opens up to 10 database connections per process by default and refuses a pool of zero', () => {
+    expect(validateEnv(minimal).DATABASE_POOL_MAX).toBe(10);
+    expect(() => validateEnv({ ...minimal, DATABASE_POOL_MAX: '0' })).toThrow(/DATABASE_POOL_MAX/);
+  });
+
   it('refuses a look-ahead of zero: the next month would have no partition', () => {
     expect(() => validateEnv({ ...minimal, ORDER_EVENTS_PARTITIONS_AHEAD: '0' })).toThrow(
       /ORDER_EVENTS_PARTITIONS_AHEAD/,
