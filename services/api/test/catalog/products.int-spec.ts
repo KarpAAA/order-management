@@ -3,6 +3,7 @@
 // so the test goes through the real service, as an ADMIN of the workspace.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { RedisCacheModule } from '@infra/cache/redis-cache.module';
 import { userActor } from '@shared/auth/actor';
 import { WorkspaceRole } from '@shared/auth/workspace-role';
 
@@ -18,7 +19,10 @@ let app: IntModule;
 let catalog: CatalogService;
 
 beforeAll(async () => {
-  app = await createIntModule({ providers: [CatalogService, CatalogPolicy] });
+  app = await createIntModule({
+    imports: [RedisCacheModule], // every write invalidates the workspace's cache
+    providers: [CatalogService, CatalogPolicy],
+  });
   catalog = app.get(CatalogService);
 });
 afterAll(() => app.close());

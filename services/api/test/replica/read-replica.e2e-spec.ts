@@ -1,4 +1,4 @@
-// The read replica (RPL-001…006; docs/adr/0009-read-replica-routing.md): the whole API with a
+// The read replica (RPL-001…006, CCH-006; docs/adr/0009-read-replica-routing.md): the whole API with a
 // real streaming standby behind the primary. Replication lag is made on demand by pausing WAL
 // replay on the standby, so every case reads a replica that is provably in the past, with no
 // sleep. Every test gets its own tenant; rows written through factories (the owner, past the
@@ -10,7 +10,7 @@ import { ReplicaPrismaService } from '@infra/database/replica-prisma.service';
 import { membershipFactory, orderFactory, userFactory } from '../factories';
 import { createApiApp, type ApiApp } from '../helpers/api-app';
 import { asUser } from '../helpers/auth';
-import { orderPath, ordersPath, V1 } from '../helpers/paths';
+import { orderPath, ordersPath, productPath, V1 } from '../helpers/paths';
 import { createTenant, type Tenant } from '../helpers/tenant';
 import { appRoleUrl, databaseUrl } from '../setup/database-url';
 import { testDb } from '../setup/db';
@@ -186,5 +186,26 @@ describe('RPL-005 the replica isolates tenants like the primary', () => {
     const [visible] = await replicaClient.$queryRaw<{ rows: number }[]>`
       SELECT count(*)::int AS rows FROM orders`;
     expect(visible?.rows).toBe(0);
+  });
+});
+
+describe('CCH-006 the catalog cache is filled from the primary', () => {
+  it('shows a colleague the new price while the replica still has the old one, and keeps it', async () => {
+    const t = await createTenant('ADMIN');
+    const colleague = await colleagueOf(t);
+    const path = productPath(t.workspaceId, t.productId);
+    const priceFor = async (as: Headers): Promise<number> =>
+      ((await api.http().get(path).set(as).expect(200)).body as { price: { amountMinor: number } })
+        .price.amountMinor;
+    await freezeReplica();
+    expect(await priceFor(colleague)).toBe(1000);
+
+    await api.http().patch(path).set(t.as).send({ priceMinor: 2500 }).expect(204);
+
+    // no marker for the colleague: what they read past the cache still comes from the replica
+    await createOrderViaApi(t, t.as);
+    expect(await listedIds(t, colleague)).toEqual([]);
+    expect(await priceFor(colleague)).toBe(2500);
+    expect(await priceFor(colleague)).toBe(2500);
   });
 });

@@ -34,6 +34,8 @@ beforeAll(async () => {
   process.env.REDIS_URL = inject('redisUrl');
   // own BullMQ namespace too: a worker in one file never takes the jobs of another
   process.env.QUEUE_PREFIX = dbName;
+  // and its own cache keys: the seed gives every file the same workspace ids
+  process.env.CACHE_PREFIX = dbName;
   prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
   faker.seed(20260928); // generated values repeat from run to run: a failure reproduces
 });

@@ -235,3 +235,17 @@ has not replayed a commit of the primary yet.
 | RPL-004 | `GET /me` answers for a user who registered and logged in while the replica was behind.                                                                                                                                                               | `api`        |
 | RPL-005 | Through the replica a tenant still gets only its rows, and the application role sees no tenant row without a tenant.                                                                                                                                  | `api`        |
 | RPL-006 | The position of the primary unreadable → the writer reads the primary until the marker expires. Redis not answering → the read goes to the replica; the replica not answering the position check → to the primary; a write never fails on its marker. | `unit`       |
+
+## CCH: catalog cache (Step 2.9)
+
+`GET /products` and `GET /products/{id}` are served from Redis when they can be
+(`docs/adr/0010-catalog-cache.md`). A cached answer is the same body the database would give.
+
+| Id      | Requirement                                                                                                                                                                                    | Level        |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| CCH-001 | A repeated read of a product or of a list page (same status, limit, cursor) is answered from the cache, without the catalog queries. A missing product is not cached.                          | `unit + api` |
+| CCH-002 | After `POST /products`, `PATCH /products/{id}` or `POST /products/{id}/archive` the next read of that product and of every list of the workspace shows the change.                             | `unit + api` |
+| CCH-003 | The cache keeps tenants apart: a workspace gets its own lists, never a cached product of another, and a change in one workspace leaves the cache of another warm. A non-member still gets 404. | `api`        |
+| CCH-004 | Callers that miss the same key together cause one database read, across processes too; a lock is released by its holder only, and a lock nobody releases delays a read and never blocks it.    | `unit + int` |
+| CCH-005 | Redis not answering: the read is served from the database and a write succeeds; nothing fails on the cache.                                                                                    | `unit`       |
+| CCH-006 | The cache is filled from the primary: after a change, a user whose other reads still come from a replica that is behind gets the new product, and keeps getting it.                            | `unit + api` |

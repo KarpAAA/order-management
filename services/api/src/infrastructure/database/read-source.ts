@@ -22,6 +22,14 @@ export class ReadSource {
   allowReplica(): void {
     this.cls.set(FROM_REPLICA, true);
   }
+
+  /**
+   * Takes the replica away again for the rest of the request: what is read from here on is
+   * stored (a cache fill), and a stored row must not come from the past.
+   */
+  requirePrimary(): void {
+    if (this.cls.isActive()) this.cls.set(FROM_REPLICA, false);
+  }
 }
 
 /**

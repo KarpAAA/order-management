@@ -44,6 +44,17 @@ export const envSchema = z.object({
     .string()
     .regex(/^[A-Za-z0-9_-]+$/)
     .default('bull'),
+  /** Namespace of every cache key in Redis; the e2e suite gives each test file its own. */
+  CACHE_PREFIX: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]+$/)
+    .default('cache'),
+  /**
+   * How long a cached product or list page lives, before jitter. A change through the API
+   * invalidates at once; this bounds what a write past the API (seed, datagen) or a lost
+   * invalidation leaves behind. 0 switches the catalog cache off (docs/adr/0010).
+   */
+  CATALOG_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(3600).default(300),
 
   JWT_SECRET: z.string().min(32),
   // ≤ 15 min (ops/security.md §3); with refresh: none a leaked token lives this long
