@@ -46,6 +46,20 @@ describe('validateEnv: safe defaults (ops/config-env.md §1)', () => {
     expect(() => validateEnv({ ...minimal, DATABASE_POOL_MAX: '0' })).toThrow(/DATABASE_POOL_MAX/);
   });
 
+  it('has no read replica unless one is configured, and takes an empty value as none', () => {
+    expect(validateEnv(minimal).DATABASE_REPLICA_URL).toBeUndefined();
+    expect(
+      validateEnv({ ...minimal, DATABASE_REPLICA_URL: '' }).DATABASE_REPLICA_URL,
+    ).toBeUndefined();
+    expect(() => validateEnv({ ...minimal, DATABASE_REPLICA_URL: 'redis://localhost' })).toThrow(
+      /DATABASE_REPLICA_URL/,
+    );
+  });
+
+  it('checks a writer against the replica for 60 s after a write by default', () => {
+    expect(validateEnv(minimal).READ_YOUR_WRITES_TTL_SECONDS).toBe(60);
+  });
+
   it('refuses a look-ahead of zero: the next month would have no partition', () => {
     expect(() => validateEnv({ ...minimal, ORDER_EVENTS_PARTITIONS_AHEAD: '0' })).toThrow(
       /ORDER_EVENTS_PARTITIONS_AHEAD/,

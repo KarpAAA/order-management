@@ -116,8 +116,10 @@ describe('OrdersRepository.save — lost update', () => {
       await repo.save(order); // blocks on A's lock, then matches 0 rows
     });
 
+    // both settle at A's commit, in either order: B's rejection needs its handler before then
+    const rejectedB = expect(txB).rejects.toBeInstanceOf(ConcurrencyError);
     await expect(txA).resolves.toBeUndefined();
-    await expect(txB).rejects.toBeInstanceOf(ConcurrencyError);
+    await rejectedB;
     expect(await stored(id)).toMatchObject({ status: 'PENDING_PAYMENT', version: 1 });
     expect(await historyOf(id)).toEqual(['ORDER_CREATED', 'ORDER_PLACED']);
   });

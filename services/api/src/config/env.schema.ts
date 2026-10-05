@@ -22,6 +22,20 @@ export const envSchema = z.object({
    * and the server side is capped by its `default_pool_size` (docs/adr/0008).
    */
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
+  /**
+   * The read replica, as the application role. Unset or empty: there is no replica and every
+   * read goes to the primary (docs/adr/0009-read-replica-routing.md).
+   */
+  DATABASE_REPLICA_URL: z
+    .union([z.literal(''), z.url({ protocol: /^postgres(ql)?$/ })])
+    .optional()
+    .transform((v) => (v === '' ? undefined : v)),
+  /**
+   * How long after a write the writer's reads are checked against the replica's position. A
+   * replica that lags longer than this serves the writer stale rows again: set it above the
+   * lag you accept.
+   */
+  READ_YOUR_WRITES_TTL_SECONDS: z.coerce.number().int().min(1).max(600).default(60),
   /** Emit Prisma `query` events (debug log; the e2e suite counts queries with them). */
   DATABASE_LOG_QUERIES: booleanString.default(false),
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),

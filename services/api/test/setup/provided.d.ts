@@ -9,5 +9,7 @@ declare module 'vitest' {
     redisUrl: string;
     /** The same server through PgBouncer (transaction mode), as the application role. */
     pgBouncerUrl: string;
+    /** A hot standby of the same server, on its maintenance database, as the superuser. */
+    pgReplicaUrl: string;
   }
 }

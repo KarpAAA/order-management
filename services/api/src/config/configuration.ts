@@ -19,6 +19,8 @@ export type AppConfig = ConfigType<typeof appConfig>;
 export const databaseConfig = registerAs('database', () => ({
   url: env().DATABASE_URL,
   poolMax: env().DATABASE_POOL_MAX,
+  replicaUrl: env().DATABASE_REPLICA_URL,
+  readYourWritesTtlSeconds: env().READ_YOUR_WRITES_TTL_SECONDS,
   logQueries: env().DATABASE_LOG_QUERIES,
 }));
 export type DatabaseConfig = ConfigType<typeof databaseConfig>;

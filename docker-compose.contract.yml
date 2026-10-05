@@ -6,6 +6,8 @@
 services:
   postgres:
     ports: !reset []
+  postgres-replica:
+    ports: !reset []
   pgbouncer:
     ports: !reset []
   redis:

@@ -25,14 +25,14 @@ A rule is tested in full at the **lowest** level where it lives. A higher level 
 what the lower one cannot see (HTTP mapping, guards, transactions, "nothing was written"),
 with one or two representative cases, not the whole matrix again.
 
-Distribution (95 requirements; one with two levels counts in both):
+Distribution (106 requirements; one with two levels counts in both):
 
 | Level     | Requirements | Only this level |
 | --------- | -----------: | --------------: |
-| `unit`    |           37 |              13 |
+| `unit`    |           39 |              14 |
 | `adapter` |            4 |               1 |
-| `int`     |            9 |               4 |
-| `api`     |           76 |              46 |
+| `int`     |           14 |               9 |
+| `api`     |           81 |              50 |
 
 Most requirements need the running API: the "testing trophy", not the pyramid.
 
@@ -220,3 +220,18 @@ Allowed transitions (anything else is `422 ORDER_INVALID_TRANSITION`):
 | OPS-004 | A run fails (and is retried, then alerted as a dead job) when a required month still has no partition.                                                                                  | `unit`       |
 | OPS-005 | An event is stored in the partition of its UTC month; a month without a partition rejects the write (there is no DEFAULT partition).                                                    | `int`        |
 | OPS-006 | Dropping a partition removes the events of that month and nothing else; a repeated drop is a no-op. The application role does it through a function and cannot run the DDL itself.      | `int`        |
+
+## RPL: read replica and read-your-writes (Step 2.8)
+
+With `DATABASE_REPLICA_URL` set, reads are routed between the primary and an asynchronous
+streaming replica (`docs/adr/0009-read-replica-routing.md`). "Behind" below means the replica
+has not replayed a commit of the primary yet.
+
+| Id      | Requirement                                                                                                                                                                                                                                           | Level        |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
+| RPL-001 | A `GET` of a user who has written nothing lately is served by the replica: it shows what the replica has replayed, and the newer rows once it caught up.                                                                                              | `api`        |
+| RPL-002 | After a mutating request, successful or failed, the caller's `GET`s are served by the primary while the replica is behind that request, and by the replica again once it has replayed it. Other users are not affected.                               | `unit + api` |
+| RPL-003 | A mutating request reads the primary: an order snapshots the price the primary has, whatever the replica still shows.                                                                                                                                 | `api`        |
+| RPL-004 | `GET /me` answers for a user who registered and logged in while the replica was behind.                                                                                                                                                               | `api`        |
+| RPL-005 | Through the replica a tenant still gets only its rows, and the application role sees no tenant row without a tenant.                                                                                                                                  | `api`        |
+| RPL-006 | The position of the primary unreadable → the writer reads the primary until the marker expires. Redis not answering → the read goes to the replica; the replica not answering the position check → to the primary; a write never fails on its marker. | `unit`       |
