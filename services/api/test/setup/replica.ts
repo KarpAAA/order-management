@@ -17,10 +17,9 @@ const ENTRYPOINT = resolve(__dirname, '../../../../devtools/postgres/replica-ent
  * replication carries every database, so the database of each test file appears here by
  * itself, a moment after it was created on the primary.
  */
-export async function startReplica(network: StartedNetwork): Promise<StartedTestContainer> {
-  const log: string[] = [];
-  try {
-    return await new GenericContainer('postgres:18')
+export function startReplica(network: StartedNetwork): Promise<StartedTestContainer> {
+  return (
+    new GenericContainer('postgres:18')
       .withNetwork(network)
       .withCopyFilesToContainer([
         { source: ENTRYPOINT, target: '/usr/local/bin/replica-entrypoint.sh' },
@@ -29,15 +28,11 @@ export async function startReplica(network: StartedNetwork): Promise<StartedTest
       .withEnvironment({ PRIMARY_HOST: POSTGRES_ALIAS, REPLICATION_PASSWORD: 'replicator' })
       .withTmpFs({ '/var/lib/postgresql': 'rw' })
       .withExposedPorts(PORT)
-      .withLogConsumer((stream) => stream.on('data', (line: string) => log.push(line)))
       .withWaitStrategy(Wait.forLogMessage(/ready to accept read-only connections/))
       // it waits for the primary first, then copies it: on a busy machine a minute was too little
       .withStartupTimeout(180_000)
-      .start();
-  } catch (error) {
-    // the reason is in the container's own output (pg_basebackup, recovery), not in the timeout
-    throw new Error(`the replica did not start:\n${log.join('')}`, { cause: error });
-  }
+      .start()
+  );
 }
 
 /** The replica's maintenance database as the superuser of the primary (`serverUrl`). */
