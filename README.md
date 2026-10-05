@@ -61,6 +61,11 @@ pnpm dev
 - PgBouncer (ADR 0008) pools the connections of `oms_app` in transaction mode on port 6432.
   api and worker connect through it, under `pnpm dev` and in the containers alike
   (`DATABASE_URL`); the owner (`DATABASE_ADMIN_URL`, port 5432) never does.
+- The catalog's product and list reads are cached in Redis (ADR 0010) for
+  `CATALOG_CACHE_TTL_SECONDS` (300; 0 switches the cache off). A change through the API is
+  visible at once; `pnpm db:seed`, `db:reset` and `db:datagen` write past the API, so after
+  them a product read before may show its old row until the TTL. To clear the cache now:
+  `docker compose exec redis sh -c "redis-cli --scan --pattern 'cache:*' | xargs -r redis-cli del"`
 - A streaming read replica (ADR 0009) on port 5433 serves `GET` requests
   (`DATABASE_REPLICA_URL`, through PgBouncer's `oms_replica` pool); a user who has just written
   reads the primary until the replica has replayed that write. Without the variable every read
@@ -174,9 +179,11 @@ Plans on this data: `pnpm db:explain` (lists, `docs/perf/2.2-indexes-explain.md`
 `pnpm db:explain:partitions` (pruning, DROP vs DELETE, `docs/perf/2.3-partitioning.md`),
 `pnpm db:explain:rls` (what the application role sees, plans under the policy,
 `docs/perf/2.4-rls.md`), `pnpm db:explain:pgbouncer` (500 clients on 20 server connections,
-the two connection limits, a session-level setting leaking, `docs/perf/2.7-pgbouncer.md`) and
+the two connection limits, a session-level setting leaking, `docs/perf/2.7-pgbouncer.md`),
 `pnpm db:explain:replica` (replication lag, the same read on both servers, read-your-writes
-with a replica 5 s behind, `docs/perf/2.8-read-replica.md`).
+with a replica 5 s behind, `docs/perf/2.8-read-replica.md`) and `pnpm db:explain:cache` (the
+catalog cache: a hit against a database read, hit ratio, 200 callers on an empty key,
+`docs/perf/2.9-cache.md`).
 
 ## Simulating the payment provider
 
