@@ -22,6 +22,11 @@ paths:
   (`stryker.ignorers.mjs`): clients branch on `code` and `details`, which stay mutated and
   tested; a message rewrite is not a missing test.
 - Use cases have unit tests (`application/*.service.spec.ts`) on in-memory port doubles from
-  `application/__test__/` (repository, scripted gateway, recording publisher), beside the e2e
+  `application/__test__/` (repository, recording publisher), beside the e2e
   suite that `testing.md` asks for: they pin the load → policy → domain → save → publish order
   and the payment branches without containers. Never a `vi.mock` of our own code.
+- An adapter that publishes to the broker (`rabbit-*.adapter.spec.ts`) is tested against a
+  recording stand-in for `AmqpConnection`: what it sends must pass `parseMessage()`. The broker
+  itself is exercised by the e2e suite of each service, which stops at the service boundary:
+  the test is the other side of the broker (`test/helpers/broker.ts`), with a RabbitMQ vhost
+  per test file. The path through both services is ROADMAP 3.13.

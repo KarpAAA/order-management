@@ -213,7 +213,7 @@
   - Закласти: `packages/contracts` — схеми команд і подій (zod або JSON Schema) з версією, спільні для продюсерів і консюмерів.
   - Подивитись: одне джерело правди для всіх сервісів. Що буде, якщо змінити поле без нової версії, покаже 3.12.
 
-- [ ] **3.2 RabbitMQ і payments-service**
+- [x] **3.2 RabbitMQ і payments-service**
   - Закласти: payments-service з власною БД, логіка PSP переїжджає туди з `api`. Команда `ChargePayment` іде через RabbitMQ, відповідь — `PaymentSucceeded` або `PaymentFailed`.
   - Подивитись: RabbitMQ Management UI — exchanges, черги, повідомлення в дорозі.
 

@@ -1,7 +1,9 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers** (see `docs/ROADMAP.md`; Step 0 foundation: `docs/architecture.md`).
+Current step: **Step 3: microservices and brokers**, 3.2 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Two services: `services/api` (this file) and `services/payments` (its own decisions:
+`services/payments/CLAUDE.md`). They share `packages/contracts` and nothing else.
 The roadmap runs in two passes: Step 2 closed at 2.9, and 2.10–2.12, Kafka (3.8, 3.9, 3.14) and
 the other deferred items wait in `docs/ROADMAP.md` → «Другий прохід». Do not build a deferred
 item unless asked.
@@ -32,10 +34,11 @@ pii-encryption: no
 ids: uuid7
 cross-module-fk: yes            # identity/catalog/orders stay together in api, also in Step 3
 transactions: cls
-outbox: no                      # Step 0; Step 3 adds reliable events + outbox
+outbox: no                      # 3.4 adds reliable events + outbox; until then publishing follows the commit
+broker: rabbitmq                # between services only (ADR 0012): commands → exchange `commands`, events → `events`
 queue: bullmq
 processes: api+worker
-dlq: alert                      # dead job → Logger.error in OrdersConsumer (Step 4: metric)
+dlq: alert                      # dead job → Logger.error in OrdersConsumer (Step 4: metric); a rejected broker message → Logger.error, lost until 3.3
 cron: bullmq                    # job schedulers on the module's queue; first: maintain-order-event-partitions
 validation: class-validator
 swagger-prod: off
@@ -53,13 +56,15 @@ hooks: husky                    # pre-commit: lint-staged; commit-msg: commitlin
 ## Stack
 
 NestJS 12.1, Prisma 7.10 (+ `@prisma/adapter-pg`), PostgreSQL 18, Redis 7, BullMQ 6,
+RabbitMQ 4 (`@golevelup/nestjs-rabbitmq` 9: `AmqpConnection` + `@RabbitSubscribe`, not its module),
 Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces: `services/*`, `packages/*`, `devtools/*`)
 
 ## Commands (CMD-friendly, from the repo root)
 
 ```
-pnpm infra:up          # postgres, postgres-replica, pgbouncer, redis, fake-psp (healthy)
-pnpm db:migrate        # prisma migrate dev
+pnpm infra:up          # postgres, postgres-replica, pgbouncer, postgres-payments, redis, rabbitmq, fake-psp (healthy)
+pnpm db:migrate        # prisma migrate dev (api)
+pnpm db:migrate:payments     # prisma migrate dev (payments, its own Postgres on 5434)
 pnpm db:seed           # fixed-id dev data (README → Seeded data)
 pnpm db:reset          # drop, migrate, seed
 pnpm db:datagen        # Step 2 volume data after db:reset: 100 tenants, 2M orders (--scale smoke)
@@ -69,18 +74,21 @@ pnpm db:explain:rls    # what oms_app sees, plans under the RLS policy (docs/per
 pnpm db:explain:pgbouncer    # 500 clients on 20 server connections, limits, the leak (docs/perf/2.7-pgbouncer.md)
 pnpm db:explain:replica      # replication lag, read-your-writes with a 5 s delay (docs/perf/2.8-read-replica.md)
 pnpm db:explain:cache        # catalog cache: hit vs database, hit ratio, 200 callers on an empty key (docs/perf/2.9-cache.md)
-pnpm dev               # api + worker in watch mode
+pnpm dev               # contracts (tsc --watch) + api + worker + payments in watch mode
 pnpm lint && pnpm typecheck
-pnpm test              # every package: api Vitest project unit (domain, VOs, policies, use cases, adapters (MSW), architecture) + contracts (no Docker)
+pnpm test              # every package: Vitest project unit of api (domain, VOs, policies, use cases, adapters, architecture) and of payments (adapters (MSW), policy, architecture) + contracts (no Docker)
 pnpm --filter @oms/contracts build   # packages/contracts → dist (CommonJS + .d.ts)
-pnpm test:e2e          # Vitest project e2e: *.int-spec.ts + *.e2e-spec.ts (Testcontainers)
+pnpm test:e2e          # Vitest project e2e of api, then of payments: *.int-spec.ts + *.e2e-spec.ts (Testcontainers), each service to its boundary
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
 pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
 pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
-docker compose --profile app up --build   # migrate + api + worker from one image
+docker compose --profile app up --build   # migrate + api + worker from one image; migrate-payments + payments from another
 ```
 
-New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<object>`.
+Root `lint`, `typecheck`, `test`, `test:e2e` and `dev` build `@oms/contracts` first; run through
+a filter (`pnpm --filter @oms/api …`) they need `pnpm build:contracts` once.
+New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<object>`
+(`@oms/payments` for the payments database).
 
 ## Modules and their combinations
 
@@ -92,13 +100,14 @@ New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<ob
 | catalog  | layered (flat) | L1    | CQS            | http         |
 | orders   | layered        | L4    | CQS + EventBus | http, worker |
 
-Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
+Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image. The worker has two
+entries: the BullMQ queue `orders` (cron ticks only) and the broker queue `api.payment-events`.
 
 ## Gotchas specific to this project
 
 - **A message between services is a contract in `packages/contracts`** (`@oms/contracts`,
   ADR 0011): a zod schema from `defineMessage(name, version, payload)`, in an envelope with
-  `messageId`, `workspaceId`, `correlationId`. `@oms/api` does not import it yet (3.2).
+  `messageId`, `workspaceId`, `correlationId`. The exchange names live there too (`topology.ts`).
   Consequences:
   - an incompatible change (a removed or renamed field, a new type or meaning, a new required
     field) is a new file `<name>.v<N+1>.ts`; the old one stays and `name` never changes. Only an
@@ -112,6 +121,31 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
     with a cast;
   - a schema is never `.strict()`: a consumer must keep reading a message that gained a field;
   - the package is consumed from `dist`: build it before whatever imports it.
+
+- **Payment is a command to payments-service and an event back** (ADR 0012). `place` publishes
+  `payments.charge-payment` (`RabbitPaymentChargeAdapter`, after commit); the worker reads
+  `payments.payment-succeeded` / `-failed` from `api.payment-events` (`PaymentEventsConsumer`)
+  and calls `CompleteOrderPayment` / `FailOrderPayment`. Consequences:
+  - the api knows nothing about the PSP: no gateway port, no `PSP_*` setting. The command
+    carries the amount and the idempotency key `<orderId>:<attempt>`;
+  - the routing key of a message is its `name`; a queue is declared by the consumer that
+    reads it, never by a publisher;
+  - `@RabbitSubscribe` only in a `*.consumer.ts`, provided only by a `*.worker.module.ts`
+    (lint + `test/architecture/process-graph.spec.ts`): the api process publishes and never
+    consumes;
+  - a consumer reads with `parseMessage()`, binds the tenant from the envelope
+    (`runInWorkspace`) and calls one use case. `InvalidStateError` = already settled → return
+    (ack). A message that is not a known contract → `Nack(false)`. Anything thrown → rejected
+    without requeue by the connection (`rabbit-connection.ts`) and LOST until 3.3;
+  - no retry of a PSP failure until 3.3 / 3.11, no outbox until 3.4, no inbox until 3.5: do
+    not build them earlier, and do not "fix" a lost message with requeue (a hot loop);
+  - `MessagingModule` stands in for the library's `RabbitMQModule`, whose static state allows
+    one Nest application per process; the e2e suite runs several. Do not import
+    `RabbitMQModule`;
+  - the e2e suite has no payments-service: a test reads the command and publishes the answer
+    through `test/helpers/broker.ts`. Each test file has its own RabbitMQ vhost (`db.ts`);
+  - `RABBITMQ_PREFETCH=1` in `.env.test`: one message at a time, which is what makes "the
+    event before this one was handled" provable (`drained()` in `payment-flow.e2e-spec.ts`).
 
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
   Tenant models (Membership, Product, Order, OrderItem, OrderEvent) are filtered by the
@@ -176,16 +210,18 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   HTTP module must import `IdentityModule` (it provides `MEMBERSHIP_READER`).
 - Invalid state transitions are `InvalidStateError` → **422** (conventions), not 409.
   409 = stale `version` or duplicate.
-- Enqueue after commit is NOT atomic with the commit (Known gap → Step 3 outbox). Do not
-  "fix" it with the outbox before Step 3.
-- BullMQ 6 rejects `:` in custom job ids → `charge-<orderId>-<attempt>`.
+- Publishing the charge command after commit is NOT atomic with the commit (Known gap → 3.4
+  outbox). Do not "fix" it with the outbox before 3.4.
+- BullMQ 6 rejects `:` in custom job ids (no custom id is left since the charge job went).
 - `@nestjs-cls/transactional-adapter-prisma` types clash with `exactOptionalPropertyTypes`;
   the host is typed via `DbTransactionAdapter` (see `database.tokens.ts`).
 - Money in JSON is `{ amountMinor, currency }`; inside the code it is `bigint` (`Money` VO).
 
 ## Deviations from the conventions templates
 
-- `eslint.config.mjs` is the template plus two additions: the generated Prisma client,
+- `eslint.config.mjs` is the template plus four additions (3: `@oms/contracts` is a layer of
+  its own, importable from `infrastructure/`, a module's adapters and its consumers only;
+  4: `@RabbitSubscribe` is an entry decorator). The first two: the generated Prisma client,
   `prisma/` and root tool files are outside the layer map; `test/factories`, `test/doubles`
   and `test/helpers` may import module internals. Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
@@ -218,7 +254,9 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
 - `register` and `login` take no `Actor` (the caller is anonymous); `createWorkspace` has no
   policy call, because any signed-in user may create one (`principles.md` §2.2).
 - `SchedulePaymentChargeHandler` calls the scheduler port, not a use case (`events.md` §3): it
-  only enqueues, and the Step 3 outbox replaces it.
+  only sends the command, and the 3.4 outbox replaces it.
+- A broker consumer has no rule file of its own (`transport/queues.md` is BullMQ): ack, reject
+  and prefetch replace attempts, backoff and concurrency. What we do: `docs/conventions-backlog.md` §4.
 - Orders has a repository port although Postgres is the only implementation
   (`architecture.md` §4): it lets the use-case unit tests run on the in-memory repository in
   `application/__test__/`. Details: `.claude/rules/project/testing.md`.

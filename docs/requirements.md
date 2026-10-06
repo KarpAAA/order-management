@@ -14,18 +14,24 @@ current state.
 
 The `Level` column says where a requirement is tested (Step 1).
 
-| Level     | What runs                                                             | Vitest project | Files                             |
-| --------- | --------------------------------------------------------------------- | -------------- | --------------------------------- |
-| `unit`    | domain, value objects, policies; no Nest, no infrastructure           | `unit`         | `src/**/*.spec.ts`                |
-| `adapter` | an HTTP adapter against MSW handlers (1.10)                           | `unit`         | `src/**/infrastructure/*.spec.ts` |
-| `int`     | a repository or a DB constraint against a real Postgres (1.6)         | `e2e`          | `test/**/*.int-spec.ts`           |
-| `api`     | the whole app through Supertest, with the worker and BullMQ (1.7–1.9) | `e2e`          | `test/**/*.e2e-spec.ts`           |
+| Level     | What runs                                                          | Vitest project | Files                             |
+| --------- | ------------------------------------------------------------------ | -------------- | --------------------------------- |
+| `unit`    | domain, value objects, policies; no Nest, no infrastructure        | `unit`         | `src/**/*.spec.ts`                |
+| `adapter` | an outbound adapter: HTTP against MSW handlers (1.10), a publisher | `unit`         | `src/**/infrastructure/*.spec.ts` |
+| `int`     | a repository or a DB constraint against a real Postgres (1.6)      | `e2e`          | `test/**/*.int-spec.ts`           |
+| `api`     | the whole app through Supertest, with the worker and the broker    | `e2e`          | `test/**/*.e2e-spec.ts`           |
 
 A rule is tested in full at the **lowest** level where it lives. A higher level adds only
 what the lower one cannot see (HTTP mapping, guards, transactions, "nothing was written"),
 with one or two representative cases, not the whole matrix again.
 
-Distribution (106 requirements; one with two levels counts in both):
+Since 3.2 a level prefixed with `payments` is a test of `services/payments` (the same two
+Vitest projects there); every other level is a test of `services/api`. Each service is tested
+to its boundary: the test is the other side of the broker. The path through both is roadmap
+3.13.
+
+Distribution as counted in Step 1, before the PAY rows were split between the two services
+(106 requirements; one with two levels counts in both):
 
 | Level     | Requirements | Only this level |
 | --------- | -----------: | --------------: |
@@ -110,24 +116,29 @@ Allowed transitions (anything else is `422 ORDER_INVALID_TRANSITION`):
 | ORD-024 | `GET /orders/{id}` returns items (in the order given), discount, totals, status and all timestamps; absent values are `null`, never missing.                                                                        | `api`        |
 | ORD-025 | Non-UUID `orderId` → 400.                                                                                                                                                                                           | `api`        |
 
-## PAY: asynchronous payment (worker)
+## PAY: asynchronous payment (api → RabbitMQ → payments-service → api)
 
-| Id      | Requirement                                                                                                                                                            | Level           |
-| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------- |
-| PAY-001 | After `place` commits, a job `charge-order` with `{ workspaceId, orderId, paymentAttempt }` and job id `charge-<orderId>-<attempt>` is enqueued on queue `orders`.     | `api`           |
-| PAY-002 | The same attempt is never enqueued twice while the first job exists (deterministic job id).                                                                            | `api`           |
-| PAY-003 | The worker charges `total` in the order currency with PSP idempotency key `<orderId>:<attempt>` and reference `<orderId>`.                                             | `adapter + api` |
-| PAY-004 | PSP `succeeded` → PAID, `pspChargeId` set, `paidAt` set, history `PAYMENT_SUCCEEDED`.                                                                                  | `unit + api`    |
-| PAY-005 | PSP `declined` → PAYMENT_FAILED, `failureReason = declineCode`, history `PAYMENT_FAILED`; **no retry** of the job.                                                     | `api`           |
-| PAY-006 | Transient failure (HTTP 5xx or 429, network error, timeout > 3 s) → the job throws and BullMQ retries: 5 attempts in total, exponential backoff (base 1 s by default). | `adapter + api` |
-| PAY-007 | A transient failure on the last attempt → PAYMENT_FAILED with `failureReason = "psp_unavailable"`; the job completes (not dead).                                       | `api`           |
-| PAY-008 | A non-transient PSP failure (other 4xx, malformed body) → PAYMENT_FAILED with `failureReason = "psp_rejected"`, no retry.                                              | `adapter + api` |
-| PAY-009 | Idempotent handler: if the order is not PENDING_PAYMENT, or its `paymentAttempt` differs from the job's, the job does nothing and completes (no PSP call, no write).   | `unit + api`    |
-| PAY-010 | Re-running a job for an already settled attempt creates no second charge at the PSP (`GET /charges` on fake-psp unchanged).                                            | `api`           |
-| PAY-011 | Placing again after PAYMENT_FAILED uses a new attempt and therefore a new idempotency key (`<orderId>:2`, …).                                                          | `unit + api`    |
-| PAY-012 | The worker binds the tenant from the job's `workspaceId`; it can only read and write that workspace.                                                                   | `api`           |
-| PAY-013 | Only the actor `system:consumer:orders` may record a payment outcome (policy).                                                                                         | `unit`          |
-| PAY-014 | With `PAYMENT_GATEWAY=fake` no network is used; amounts whose minor units end in `13` are declined (`card_declined`), everything else succeeds.                        | `adapter`       |
+The api asks with the command `payments.charge-payment` and is answered with the event
+`payments.payment-succeeded` or `payments.payment-failed` (`packages/contracts`, ADR 0011,
+ADR 0012).
+
+| Id      | Requirement                                                                                                                                                                                                                                       | Level                              |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| PAY-001 | After `place` commits, the api publishes `payments.charge-payment` v1 to the exchange `commands`, routed by its name, with the order's workspace in the envelope and `{ orderId, paymentAttempt }`.                                               | `unit + adapter + api`             |
+| PAY-002 | One `place` sends one command.                                                                                                                                                                                                                    | `api`                              |
+| PAY-003 | The command carries `total` in the order currency and the idempotency key `<orderId>:<attempt>`; payments charges exactly that, with reference `<orderId>`.                                                                                       | `adapter + api`, `payments e2e`    |
+| PAY-004 | PSP `succeeded` → `payments.payment-succeeded` with the charge id → PAID, `pspChargeId` set, `paidAt` set, history `PAYMENT_SUCCEEDED`.                                                                                                           | `unit + api`, `payments e2e`       |
+| PAY-005 | PSP `declined` → `payments.payment-failed` with the decline code → PAYMENT_FAILED, `failureReason = declineCode`, history `PAYMENT_FAILED`; **no retry**.                                                                                         | `unit + api`, `payments e2e`       |
+| PAY-006 | Transient failure (HTTP 5xx or 429, network error, timeout > 3 s) is retried before the attempt is given up. **Not implemented since 3.2** (BullMQ did it): roadmap 3.3 and 3.11. The adapter still tells transient from final.                   | `payments adapter`; e2e: `it.todo` |
+| PAY-007 | A transient failure that is not retried any more → `payments.payment-failed` with `declineCode = "psp_unavailable"`, no charge id → PAYMENT_FAILED with that reason. Since 3.2: after the first call.                                             | `api`, `payments e2e`              |
+| PAY-008 | A non-transient PSP failure (other 4xx, malformed body) → `declineCode = "psp_rejected"` → PAYMENT_FAILED with that reason, no retry.                                                                                                             | `api`, `payments adapter + e2e`    |
+| PAY-009 | Idempotent consumers. api: an event for an order that is not PENDING_PAYMENT, or for another `paymentAttempt`, is acknowledged and writes nothing. payments: a command for a settled attempt calls no PSP and publishes the stored outcome again. | `unit + api`, `payments e2e`       |
+| PAY-010 | The same message handled twice, also by two processes at once, creates one charge at the PSP, one row in `payments`, one PAID and one history entry.                                                                                              | `api`, `payments e2e`              |
+| PAY-011 | Placing again after PAYMENT_FAILED uses a new attempt and therefore a new idempotency key (`<orderId>:2`, …) and a new row in `payments`; a late answer for the old attempt changes nothing.                                                      | `unit + api`, `payments e2e`       |
+| PAY-012 | The worker binds the tenant from the envelope's `workspaceId`; it can only read and write that workspace. payments stores the workspace and returns it in the answer.                                                                             | `unit + api`, `payments e2e`       |
+| PAY-013 | Only the actor `system:consumer:orders` may record a payment outcome in the api; only `system:consumer:payments` may charge in payments (policies).                                                                                               | `unit`, `payments unit`            |
+| PAY-014 | With `PAYMENT_GATEWAY=fake` (payments) no network is used; amounts whose minor units end in `13` are declined (`card_declined`), everything else succeeds.                                                                                        | `payments adapter`                 |
+| PAY-015 | A message that is not a known contract (not JSON, no name, an unknown version, a broken payload, a message of another queue) is rejected without requeue, and the consumer serves the next one.                                                   | `unit + api`, `payments e2e`       |
 
 ## AUTH: authentication
 

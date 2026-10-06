@@ -139,3 +139,113 @@ those too, and may not remove a field while `orders` reads it).
 **Proposed change:** `application/events.md` §2 ("Facade or event"): add the third case, a
 command message, as the cross-service form of a facade write; §5 (naming): commands are
 `<receiver>.<imperative>`, events `<publisher>.<fact>`, both with a `Vn` suffix on the export.
+
+## 4. A broker consumer is a transport the queue rules do not describe
+
+Step 3.2 · 2026-10-06 · Status: open
+
+**Conventions say:** `transport/queues.md` is written for BullMQ: one queue per module, a
+`@Processor` class, `attempts` and `backoff` on the queue, `UnrecoverableError` for what must
+not be retried, `concurrency` on the processor. `_core/principles.md` #12 names `@Processor`
+and `@WebSocketGateway` as the classes that start on their own.
+
+**What we did:** a class with `@RabbitSubscribe` methods in a `*.consumer.ts`, provided by the
+module's `*.worker.module.ts` only. It validates the message against its contract
+(`parseMessage`), binds the tenant from the envelope, builds the actor and calls one use
+case. Returning acknowledges; `Nack(false)` rejects what is not a known contract;
+`InvalidStateError` is "already done" and acknowledges. Concurrency is the prefetch of the
+connection, from config. The lint rule and the process-graph test that guard `@Processor`
+guard `@RabbitSubscribe` too.
+
+**Why:** the rules name the mechanisms of one backend. With a broker the vocabulary changes
+(ack / reject / requeue instead of attempts / backoff, prefetch instead of concurrency, an
+exchange and a binding instead of a queue name), and a consumer reads bytes from another
+service, so it has to validate before it trusts.
+
+**Assessment:** good. The substance of the queue rules carried over unchanged: thin entry,
+one use case, already-done is not a failure, never retry what cannot succeed, the consumer
+lives in the worker module. What is missing is the mapping, and one trap: the default of the
+library on a thrown error is requeue, which is a hot loop.
+
+**Example:**
+
+```ts
+@RabbitSubscribe({ exchange: 'events', routingKey: [PaymentSucceededV1.name], queue: 'api.payment-events' })
+async onPaymentEvent(raw: unknown): Promise<Nack | undefined> {
+  const parsed = parseMessage(raw);
+  if (!parsed.ok) return new Nack(false);              // not a contract: retrying cannot help
+  try {
+    await this.tenant.runInWorkspace(parsed.message.workspaceId, () => this.settle(parsed.message));
+  } catch (err) {
+    if (!(err instanceof InvalidStateError)) throw err; // rejected by the connection
+  }                                                      // already settled: ack
+}
+```
+
+**Proposed change:** a `transport/broker.md` beside `queues.md` (or a section in it): the
+consumer shape above; the table BullMQ term → broker term; "never requeue at once"; the
+queue is declared by its reader; prefetch from config. `_core/principles.md` #12 and the
+eslint template: add the subscribe decorator to the entry decorators.
+
+## 5. A second service in the repository: what is copied, what is shared
+
+Step 3.2 · 2026-10-06 · Status: open
+
+**Conventions say:** `_core/project-structure.md` describes one `src/`. `shared/` and
+`common/` are folders of that one service; `ops/process-model.md` assumes one image with
+several entrypoints.
+
+**What we did:** `services/payments` beside `services/api`, each with its own `src/` in the
+same layout, its own image, database, migrations, env schema, lint config and test setup.
+They share `packages/contracts` and nothing else: `shared/` (errors, actor, clock, ids) and
+`infrastructure/messaging/` exist twice.
+
+**Why:** the conventions do not say what happens to `shared/` when a second service needs
+`InfrastructureError`. The two obvious answers are a `packages/shared` and a copy, and the
+first one quietly makes two services one deployable.
+
+**Assessment:** good for two services, with a known cost: a fix in a copied file has to be
+made twice, and nothing fails when the copies drift. It stays cheap while the copies are
+small (here: six files, under 150 lines). The moment a copy holds logic worth a test, it
+wants to be a versioned library, not a workspace folder.
+
+**Example:** `src/infrastructure/messaging/rabbit-subscribers.ts` is identical in both
+services. `src/shared/auth/actor.ts` is not: payments has no users, so its `Actor` is the
+system actor only. A shared package would have forced the union on it.
+
+**Proposed change:** `_core/project-structure.md`, the "Between services" section proposed in
+§2: each service is a complete `src/` in the same layout; `shared/` is per service and copied,
+not extracted; the contracts package is the only shared code; a per-service `CLAUDE.md`
+holds that service's project decisions. `ops/process-model.md`: "one image" is per service.
+
+## 6. A level-1 module with outbound ports
+
+Step 3.2 · 2026-10-06 · Status: open
+
+**Conventions say:** `_core/architecture.md` §4: level 4 is "level 3 + ports", and ports
+exist where the implementation genuinely varies. `domain/ports-adapters.md` §7 lists
+"`ports/` in a level-3 module" under not doing. A level-1 module is a controller, a service
+and a DTO at the module root.
+
+**What we did:** payments in payments-service is level 1 (one or two rules, the service
+talks to Prisma directly) and still has `ports/` and `infrastructure/`: a `PaymentGateway`
+port with an HTTP adapter and a fake, and a publisher port whose second adapter is the
+outbox.
+
+**Why:** the ladder ties ports to the domain level, but the two questions are independent:
+"how many rules protect this data" and "does an outbound dependency have more than one
+implementation". The conventions already say so for the repository ("a gateway port and a
+repository port are separate decisions"); they do not say it for the level.
+
+**Assessment:** good. Raising the module to level 3 to be allowed a gateway port would add an
+aggregate, a mapper and a repository for a row with three states. The cost: the module no
+longer matches a row of the level table, so its first line has to be read together with its
+folders.
+
+**Example:** `// layered · L1 · together`, with `ports/payment-gateway.port.ts` and
+`infrastructure/{http,fake}-payment-gateway.adapter.ts` beside `charge-payment.service.ts`.
+
+**Proposed change:** `_core/architecture.md` §4: say that an outbound service port is
+orthogonal to the level (axis B is about where the rules live); level 4 then means "a
+repository port too". `domain/ports-adapters.md` §7: narrow the anti-pattern to "a port with
+one implementation".

@@ -5,9 +5,10 @@ users with roles, a product catalog, orders with an asynchronous payment flow) t
 area at a time: testing, database scaling, microservices and brokers, observability,
 Kubernetes, load and chaos testing, AI.
 
-**Current state: Step 0, the foundation.** One NestJS service (`services/api`) run as two
-processes from one image: an HTTP **api** and a BullMQ **worker**. A tiny **fake-psp**
-(`devtools/fake-psp`) plays an external payment provider.
+**Current state: Step 3, microservices and brokers (3.2).** Two NestJS services that talk
+through **RabbitMQ**: `services/api` (an HTTP **api** and a **worker**, two processes from one
+image) and `services/payments` (one broker consumer, its own image and database). A tiny
+**fake-psp** (`devtools/fake-psp`) plays an external payment provider.
 
 ## Architecture in one minute
 
@@ -17,10 +18,12 @@ processes from one image: an HTTP **api** and a BullMQ **worker**. A tiny **fake
 - **Tenancy**: every workspace is a tenant. Tenant tables have composite keys
   `(workspace_id, id)`; tenant filtering happens in exactly one place (a Prisma extension).
   A caller who is not a member of a workspace always gets 404.
-- **Payments**: `place` → `PENDING_PAYMENT` → `202`; after the commit a BullMQ job charges the
-  PSP (idempotency key per attempt, 3 s timeout, 5 retries with exponential backoff) and the
-  order becomes `PAID` or `PAYMENT_FAILED`. The PSP sits behind a port with an HTTP adapter
-  and an in-process fake.
+- **Payments**: `place` → `PENDING_PAYMENT` → `202`; after the commit the api publishes the
+  command `payments.charge-payment`. payments-service charges the PSP once (idempotency key
+  per attempt, 3 s timeout) and answers with `payments.payment-succeeded` or
+  `payments.payment-failed`; the worker of the api turns that into `PAID` or
+  `PAYMENT_FAILED`. The messages are versioned contracts in `packages/contracts`. In
+  payments the PSP sits behind a port with an HTTP adapter and an in-process fake.
 - Money is BigInt minor units (JSON: `{ amountMinor, currency }`), ids are UUIDv7 from the
   domain, time comes from an injected `Clock`.
 
@@ -32,7 +35,7 @@ Decisions: [`docs/adr/`](docs/adr).
 ## Stack
 
 Node.js 24 LTS · TypeScript 6 (strict) · pnpm 10 workspaces · NestJS 12 · Prisma 7 ·
-PostgreSQL 18 · Redis 7 · BullMQ 6 · class-validator · zod (env) · nestjs-cls · Swagger ·
+PostgreSQL 18 · Redis 7 · BullMQ 6 · RabbitMQ 4 · class-validator · zod (env) · nestjs-cls · Swagger ·
 bull-board · argon2 + JWT.
 
 PostgreSQL **18**, not 17: the roadmap adds Citus (2.11, deferred to the second pass), and
@@ -45,14 +48,16 @@ Prerequisites: Docker Desktop running, **Node 24** (`.node-version`), pnpm 10.
 ```cmd
 pnpm install
 copy services\api\.env.example services\api\.env
+copy services\payments\.env.example services\payments\.env
 pnpm infra:up
 pnpm db:migrate
+pnpm db:migrate:payments
 pnpm db:seed
 pnpm dev
 ```
 
-- `pnpm infra:up`: Postgres, its read replica, PgBouncer, Redis and fake-psp, waits until
-  healthy. The replica's first start copies the whole primary.
+- `pnpm infra:up`: Postgres, its read replica, PgBouncer, the Postgres of payments, Redis,
+  RabbitMQ and fake-psp, waits until healthy. The replica's first start copies the whole primary.
 - Two database roles (ADR 0006): `pnpm db:*` connect as the owner `oms`
   (`DATABASE_ADMIN_URL`); api and worker connect as `oms_app` (`DATABASE_URL`), which sees only
   the rows of the current workspace (Row-Level Security). A fresh Postgres volume gets the
@@ -75,11 +80,18 @@ pnpm dev
   commands at the top of that file once. A replica that was stopped for too long is rebuilt:
   `docker compose rm -sf postgres-replica`, `docker volume rm oms_postgres-replica-data`,
   `pnpm infra:up`.
-- `pnpm dev`: api and worker in watch mode, side by side.
+- payments-service has its own Postgres on port 5434 (ADR 0012) and two roles as well:
+  `pnpm db:migrate:payments` connects as the owner `payments`, the service as `payments_app`.
+  A fresh volume gets that login from `devtools/postgres-payments/init`.
+- RabbitMQ carries the command from the api to payments and the answer back. Its management
+  UI shows the exchanges (`commands`, `events`), the queues (`payments.commands`,
+  `api.payment-events`), their bindings and the messages on the way. Stop payments, place an
+  order and the command waits in `payments.commands`; start it and the order becomes `PAID`.
+- `pnpm dev`: the contracts in watch mode, then api, worker and payments, side by side.
 - Then open `docs/requests.http` in WebStorm and run it top to bottom.
 
-Everything in containers instead (api and worker from **one** image, migrations as a one-shot
-step before them):
+Everything in containers instead (api and worker from **one** image, payments from its own,
+migrations as a one-shot step before each):
 
 ```cmd
 docker compose --profile app up --build
@@ -96,6 +108,7 @@ Other scripts: `pnpm build`, `pnpm lint`, `pnpm format`, `pnpm typecheck`, `pnpm
 | Swagger UI                    | http://localhost:3000/docs                                                        |
 | OpenAPI JSON                  | http://localhost:3000/docs-json                                                   |
 | bull-board (queues, dev only) | http://localhost:3000/admin/queues                                                |
+| RabbitMQ management           | http://localhost:15672 (guest / guest)                                            |
 | fake-psp                      | http://localhost:4010 (`GET /charges`, `POST /admin/config`, `POST /admin/reset`) |
 | PgBouncer console             | `psql postgresql://stats:stats@localhost:6432/pgbouncer -c "SHOW POOLS"`          |
 | Replication state             | `psql postgresql://oms:oms@localhost:5432/oms -c "TABLE pg_stat_replication"`     |
@@ -201,12 +214,13 @@ curl http://localhost:4010/charges
 
 - `declineRate: 1`: every new charge is declined → `PAYMENT_FAILED` with the decline code, no
   retry. Place the order again: a new attempt, a new idempotency key.
-- `failureRate: 1`: every call returns 503 → the job is retried (watch `/admin/queues`),
-  then `PAYMENT_FAILED` with `psp_unavailable`.
-- `latencyMs` above 3000: the api's 3 s timeout fires → handled like a failure.
+- `failureRate: 1`: every call returns 503 → `PAYMENT_FAILED` with `psp_unavailable` after
+  one call. Nothing retries since payments left the BullMQ worker; retries come back with
+  roadmap 3.3 and 3.11 (`docs/architecture.md` → Known gaps).
+- `latencyMs` above 3000: the 3 s timeout of payments fires → handled like a failure.
 - The same `Idempotency-Key` always returns the same response.
 
-Set `PAYMENT_GATEWAY=fake` in `services/api/.env` to skip fake-psp entirely (in-process,
+Set `PAYMENT_GATEWAY=fake` in `services/payments/.env` to skip fake-psp entirely (in-process,
 deterministic: amounts ending in `13` minor units are declined).
 
 ## Contract fuzzing (Schemathesis)
@@ -289,9 +303,13 @@ services/api/        NestJS service: src/entrypoints/main.api.ts + main.worker.t
   src/config/        zod-validated env, typed namespaces
   src/common/        HTTP frame: guards, filter, decorators, DTOs, tenant context
   src/shared/        framework-free: errors, Actor, Money, Clock, ids, events, pagination
-  src/infrastructure/ database (tenant choke point), queues, events
+  src/infrastructure/ database (tenant choke point), queues, messaging (broker), events
   src/modules/       identity (L1), catalog (L1), orders (L4)
-packages/contracts/  message contracts between services: versioned zod schemas (ADR 0011)
+services/payments/   NestJS service: src/entrypoints/main.worker.ts, its own image and database
+  prisma/            schema and migrations of the payments database
+  src/modules/       payments (L1): one use case, the gateway and publisher ports
+packages/contracts/  message contracts between services: versioned zod schemas, exchange
+                     names (ADR 0011, ADR 0012)
 devtools/fake-psp/   external PSP simulator (not part of the system)
 docs/                architecture, requirements, ADRs, conventions backlog, requests.http
 ```
