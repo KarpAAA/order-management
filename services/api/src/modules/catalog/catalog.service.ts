@@ -2,11 +2,13 @@ import { Injectable } from '@nestjs/common';
 import { TransactionHost } from '@nestjs-cls/transactional';
 
 import { TenantContext } from '@common/tenancy/tenant-context';
+import { RedisCache } from '@infra/cache/redis-cache';
 import type { DbTransactionAdapter } from '@infra/database/database.tokens';
 import { isRecordNotFound, isUniqueViolation } from '@infra/database/prisma-errors';
 import type { Actor } from '@shared/auth/actor';
 import { newId } from '@shared/domain/id';
 
+import { catalogNamespace } from './catalog-cache';
 import { CatalogPolicy } from './catalog.policy';
 import { ProductNotFoundError, SkuTakenError } from './errors';
 import { ProductStatus } from './product-status';
@@ -27,13 +29,18 @@ export interface UpdateProductCommand {
   priceMinor?: bigint;
 }
 
-/** Write path of the catalog (level 1: two rules, both enforced by constraints). */
+/**
+ * Write path of the catalog (level 1: two rules, both enforced by constraints). Every write
+ * invalidates the workspace's cached products and lists once its row is committed (there is
+ * no surrounding transaction: each statement commits by itself).
+ */
 @Injectable()
 export class CatalogService {
   constructor(
     private readonly txHost: TransactionHost<DbTransactionAdapter>,
     private readonly policy: CatalogPolicy,
     private readonly tenant: TenantContext,
+    private readonly cache: RedisCache,
   ) {}
 
   async create(cmd: CreateProductCommand, actor: Actor): Promise<{ id: string }> {
@@ -55,6 +62,7 @@ export class CatalogService {
       if (isUniqueViolation(err)) throw new SkuTakenError(cmd.sku);
       throw err;
     }
+    await this.cache.invalidate(catalogNamespace(cmd.workspaceId));
     return { id };
   }
 
@@ -92,5 +100,6 @@ export class CatalogService {
       if (isRecordNotFound(err)) throw new ProductNotFoundError(productId);
       throw err;
     }
+    await this.cache.invalidate(catalogNamespace(workspaceId));
   }
 }

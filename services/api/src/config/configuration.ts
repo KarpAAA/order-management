@@ -31,6 +31,12 @@ export const redisConfig = registerAs('redis', () => ({
 }));
 export type RedisConfig = ConfigType<typeof redisConfig>;
 
+export const cacheConfig = registerAs('cache', () => ({
+  prefix: env().CACHE_PREFIX,
+  catalogTtlSeconds: env().CATALOG_CACHE_TTL_SECONDS,
+}));
+export type CacheConfig = ConfigType<typeof cacheConfig>;
+
 export const authConfig = registerAs('auth', () => ({
   jwtSecret: env().JWT_SECRET,
   accessTtlSeconds: env().JWT_ACCESS_TTL_SECONDS,
@@ -62,6 +68,7 @@ export const allConfigs = [
   appConfig,
   databaseConfig,
   redisConfig,
+  cacheConfig,
   authConfig,
   paymentsConfig,
   ordersQueueConfig,

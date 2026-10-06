@@ -60,6 +60,7 @@ pnpm db:explain:partitions   # order_events pruning, DROP vs DELETE (docs/perf/2
 pnpm db:explain:rls    # what oms_app sees, plans under the RLS policy (docs/perf/2.4-rls.md)
 pnpm db:explain:pgbouncer    # 500 clients on 20 server connections, limits, the leak (docs/perf/2.7-pgbouncer.md)
 pnpm db:explain:replica      # replication lag, read-your-writes with a 5 s delay (docs/perf/2.8-read-replica.md)
+pnpm db:explain:cache        # catalog cache: hit vs database, hit ratio, 200 callers on an empty key (docs/perf/2.9-cache.md)
 pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
 pnpm test              # Vitest project unit: domain, VOs, policies, use cases, adapters (MSW), architecture (no Docker)
@@ -124,6 +125,18 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
     because register and login are anonymous and leave no marker;
   - the replica is read-only and a copy of everything, roles and policies included: nothing is
     migrated or granted there.
+- **The catalog's `get` and `list` are cached in Redis** (ADR 0010; `RedisCache`, keys in
+  `catalog/catalog-cache.ts`, TTL `CATALOG_CACHE_TTL_SECONDS`, 0 = off). Consequences:
+  - Redis knows no tenant: the workspace is part of the namespace, and a key is built in
+    `catalog-cache.ts` only;
+  - every write of `CatalogService` ends with `cache.invalidate(catalogNamespace(…))`, after
+    its row is committed; a new write path that forgets it serves the old row for the TTL;
+  - a write past the API (seed, datagen, `psql`, `testDb()` in a test) invalidates nothing: a
+    test that changes a product it has already read through the API goes through the API;
+  - a fill reads the primary (`ReadSource.requirePrimary`): on the replica it would store a
+    row from before the change for everyone (`test/replica`, CCH-006);
+  - `findSnapshots` is never cached: its price is copied into an order;
+  - `CACHE_PREFIX` namespaces every cache key; the e2e suite gives each file its own.
 - **`order_events` is partitioned by month** (`created_at`, UTC, no DEFAULT partition): an
   event dated in a month without a partition fails the whole write. The migration creates the
   months around its run; the worker job `maintain-order-event-partitions` (boot + daily) keeps

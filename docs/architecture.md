@@ -241,6 +241,11 @@ transaction; `CompleteOrderPayment` / `FailOrderPayment` each open their own.
   query: `READ_DB` forwards to the replica or the primary by a flag the read-routing
   interceptor sets. After a write the primary's WAL position is kept for the user in Redis,
   and their next reads go to the replica only once it has replayed that position.
+- **Catalog cache (Step 2.9, ADR 0010):** a product and a list page are cached in Redis per
+  workspace (cache-aside). A write increments the workspace's version, which is part of
+  every key, so one `INCR` invalidates the product and all list pages. A fill reads the
+  primary, never the replica, and is guarded against a stampede by single-flight, a lock in
+  Redis and a TTL with jitter. Redis not answering means a read from the database.
 
 ## 8. Known gaps
 
