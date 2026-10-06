@@ -9,7 +9,7 @@ reports/
 .env.*
 !.env.example
 !.env.test
-services/api/src/infrastructure/database/generated/
+services/*/src/infrastructure/database/generated/
 .idea/workspace.xml
 .idea/shelf/
 .claude/settings.local.json

@@ -3,8 +3,7 @@ import { delay, http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 
-import type { PaymentsConfig } from '@config/configuration';
-import { Money } from '@shared/domain/money';
+import type { GatewayConfig } from '@config/configuration';
 
 import { FakePaymentGateway } from './fake-payment-gateway.adapter';
 import { HttpPaymentGateway } from './http-payment-gateway.adapter';
@@ -14,7 +13,7 @@ import type { ChargeRequest, PaymentGateway } from '../ports/payment-gateway.por
 
 // Small timeout so a timeout test waits milliseconds, not the production 3 s.
 const TIMEOUT_MS = 100;
-const config: PaymentsConfig = {
+const config: GatewayConfig = {
   gateway: 'http',
   pspBaseUrl: 'http://psp.test',
   pspTimeoutMs: TIMEOUT_MS,
@@ -22,7 +21,7 @@ const config: PaymentsConfig = {
 const CHARGES_URL = 'http://psp.test/charges';
 
 const request = (overrides: Partial<ChargeRequest> = {}): ChargeRequest => ({
-  amount: Money.of(12_50n, 'EUR'),
+  amount: { amountMinor: 12_50n, currency: 'EUR' },
   reference: 'order-1',
   idempotencyKey: 'order-1:1',
   ...overrides,
@@ -79,7 +78,9 @@ describe.each([
   });
 
   it('returns a decline as a result, not an error', async () => {
-    const result = await create().charge(request({ amount: Money.of(10_13n, 'EUR') }));
+    const result = await create().charge(
+      request({ amount: { amountMinor: 10_13n, currency: 'EUR' } }),
+    );
 
     expect(result).toEqual({
       status: 'declined',
@@ -122,7 +123,7 @@ describe('HttpPaymentGateway', () => {
 
     await gateway.charge(
       request({
-        amount: Money.of(99_90n, 'USD'),
+        amount: { amountMinor: 99_90n, currency: 'USD' },
         reference: 'order-7',
         idempotencyKey: 'order-7:2',
       }),

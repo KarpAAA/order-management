@@ -34,9 +34,9 @@ updates:
       actions:
         update-types: [minor, patch]
 
-  # node:24-slim of the api image and of fake-psp
+  # node:24-slim of the service images and of fake-psp
   - package-ecosystem: docker
-    directories: [/services/api, /devtools/fake-psp]
+    directories: [/services/api, /services/payments, /devtools/fake-psp]
     schedule:
       interval: weekly
     commit-message:

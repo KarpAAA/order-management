@@ -1,5 +1,6 @@
-# Local environment. Infra (postgres, postgres-replica, pgbouncer, redis, rabbitmq, fake-psp) starts by default;
-# api + worker start with `docker compose --profile app up --build` from ONE image.
+# Local environment. Infra (postgres, postgres-replica, pgbouncer, postgres-payments, redis, rabbitmq,
+# fake-psp) starts by default; `docker compose --profile app up --build` adds the services:
+# api + worker from ONE image, payments from its own.
 name: oms
 
 services:
@@ -46,6 +47,25 @@ services:
       retries: 10
       # the first start copies the whole primary before it answers
       start_period: 300s
+
+  # The database of payments-service: its own server, nothing shared with the api's (ADR 0012).
+  postgres-payments:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: payments
+      POSTGRES_PASSWORD: payments
+      POSTGRES_DB: payments
+    ports:
+      - '5434:5432'
+    volumes:
+      - postgres-payments-data:/var/lib/postgresql
+      # the application role's login, on an empty volume only
+      - ./devtools/postgres-payments/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U payments -d payments']
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   # Transaction-mode pooler in front of postgres, for the application role only (ADR 0008).
   # api and worker go through it, in the `app` profile and under `pnpm dev` on the host alike;
@@ -178,7 +198,45 @@ services:
       api:
         condition: service_started
 
+  # ── payments-service: its own image, database and migration step ───────────────
+  migrate-payments:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: services/payments/Dockerfile
+      target: build
+    image: oms-payments-build:local
+    working_dir: /repo/services/payments
+    command: ['pnpm', 'exec', 'prisma', 'migrate', 'deploy']
+    environment:
+      DATABASE_ADMIN_URL: postgresql://payments:payments@postgres-payments:5432/payments?schema=public
+    depends_on:
+      postgres-payments:
+        condition: service_healthy
+
+  payments:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: services/payments/Dockerfile
+    image: oms-payments:local
+    env_file: services/payments/.env.example
+    environment:
+      DATABASE_URL: postgresql://payments_app:payments_app@postgres-payments:5432/payments?schema=public
+      # env_file is the dev environment; the process itself gets no owner URL
+      DATABASE_ADMIN_URL: ''
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      PSP_BASE_URL: http://fake-psp:4010
+    depends_on:
+      migrate-payments:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      fake-psp:
+        condition: service_healthy
+
 volumes:
+  postgres-payments-data:
   postgres-data:
   postgres-replica-data:
   redis-data:

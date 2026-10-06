@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 
-import { paymentsConfig, type PaymentsConfig } from '@config/configuration';
+import { gatewayConfig, type GatewayConfig } from '@config/configuration';
 
 import { PaymentGatewayError } from './payment-gateway.error';
 
@@ -21,15 +21,15 @@ const isPspChargeResponse = (body: unknown): body is PspChargeResponse =>
   (body.status === 'succeeded' || body.status === 'declined');
 
 /**
- * Talks to the PSP (devtools/fake-psp locally) over plain HTTP. No retries here on purpose:
- * the charge job is retried by BullMQ (5 attempts, exponential backoff), and retrying in
- * both places would multiply the calls.
+ * Talks to the PSP (devtools/fake-psp locally) over plain HTTP. One call, no retry: a failed
+ * call ends the attempt (charge-payment.service.ts). Retries arrive with ROADMAP 3.3 (the
+ * command is redelivered with a delay) and 3.11 (timeouts, backoff, circuit breaker here).
  */
 @Injectable()
 export class HttpPaymentGateway implements PaymentGateway {
   private readonly logger = new Logger(HttpPaymentGateway.name);
 
-  constructor(@Inject(paymentsConfig.KEY) private readonly config: PaymentsConfig) {}
+  constructor(@Inject(gatewayConfig.KEY) private readonly config: GatewayConfig) {}
 
   async charge(request: ChargeRequest): Promise<ChargeResult> {
     const startedAt = performance.now();

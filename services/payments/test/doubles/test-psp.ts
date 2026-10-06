@@ -1,18 +1,18 @@
-// An in-process payment provider for the worker in e2e tests: scriptable per order, and
+// An in-process payment provider for the service in e2e tests: scriptable per order, and
 // idempotent by key like a real PSP. It replaces PAYMENT_GATEWAY (the port), so the HTTP
-// adapter is not exercised here — that is 1.10 (MSW).
-import { PaymentGatewayError } from '@modules/orders/infrastructure/payment-gateway.error';
+// adapter is not exercised here: its spec runs it against MSW.
+import { PaymentGatewayError } from '@modules/payments/infrastructure/payment-gateway.error';
 import type {
   ChargeRequest,
   ChargeResult,
   PaymentGateway,
-} from '@modules/orders/ports/payment-gateway.port';
+} from '@modules/payments/ports/payment-gateway.port';
 
 /**
  * - `ok` → succeeded;
  * - `declined:<code>` → a decline (a business result, not an error);
- * - `unavailable` → transient transport failure (503 / timeout) → the job retries;
- * - `rejected` → non-transient failure (other 4xx, malformed body) → no retry.
+ * - `unavailable` → transient transport failure (503 / timeout);
+ * - `rejected` → non-transient failure (other 4xx, malformed body).
  */
 export type PspOutcome = 'ok' | `declined:${string}` | 'unavailable' | 'rejected';
 
@@ -30,7 +30,7 @@ export class TestPsp implements PaymentGateway {
 
   /**
    * Holds every charge of `orderId` until `calls` of them have arrived (or 5 s passed): forces
-   * two workers to be inside the charge at the same time, both past the "is it still pending?"
+   * two consumers to be inside the charge at the same time, both past the "is it still pending?"
    * check — the race only the idempotency key protects against.
    */
   holdUntilConcurrent(orderId: string, calls: number): void {

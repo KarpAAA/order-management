@@ -10,6 +10,8 @@ services:
     ports: !reset []
   pgbouncer:
     ports: !reset []
+  postgres-payments:
+    ports: !reset []
   redis:
     ports: !reset []
   rabbitmq:

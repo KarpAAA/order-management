@@ -70,6 +70,7 @@
     "@testcontainers/postgresql": "12.1.0",
     "@testcontainers/rabbitmq": "12.1.0",
     "@testcontainers/redis": "12.1.0",
+    "@types/amqplib": "0.10.8",
     "@types/express": "5.0.6",
     "@types/node": "24.19.0",
     "@types/pg": "8.23.1",
