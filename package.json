@@ -14,7 +14,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm --filter @oms/api test",
+    "test": "pnpm -r run test",
     "test:e2e": "pnpm --filter @oms/api test:e2e",
     "test:mutation": "pnpm --filter @oms/api test:mutation",
     "test:migrations": "pnpm --filter @oms/api test:migrations",
