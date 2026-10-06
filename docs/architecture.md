@@ -19,25 +19,31 @@ flowchart LR
   worker --> pg
   worker -- "HTTP, idempotent" --> psp["fake-psp<br/>(external PSP simulator)"]
 
-  subgraph later["Step 3+ (not built yet)"]
+  subgraph later["Step 3 (not built yet)"]
     payments["payments-service"]
     inventory["inventory-service"]
     notifications["notifications-service"]
+    rabbit{{RabbitMQ<br/>commands + domain events}}
+  end
+
+  subgraph second["Second pass (deferred)"]
     analytics["analytics-service"]
-    rabbit{{RabbitMQ<br/>commands}}
-    kafka{{Kafka<br/>domain events}}
+    kafka{{Kafka<br/>domain event log}}
   end
 
   api -. "ChargePayment / ReserveStock" .-> rabbit
+  api -. "OrderPlaced, OrderPaid…" .-> rabbit
   rabbit -.-> payments & inventory & notifications
-  api -. "OrderPlaced, OrderPaid…" .-> kafka
-  kafka -.-> analytics & notifications
+  api -. "same events, second publisher" .-> kafka
+  kafka -.-> analytics
   payments -.-> psp
 
   classDef built fill:#d8f5d0,stroke:#3a7d2c;
   classDef future fill:#eee,stroke:#999,stroke-dasharray: 4 3;
+  classDef deferred fill:#fff,stroke:#ccc,stroke-dasharray: 2 4,color:#999;
   class api,worker,pg,psp built;
-  class payments,inventory,notifications,analytics,rabbit,kafka future;
+  class payments,inventory,notifications,rabbit future;
+  class analytics,kafka deferred;
 ```
 
 | Component               | Responsibility                                                                  | Status     |
@@ -48,11 +54,13 @@ flowchart LR
 | `payments-service`      | payments, idempotent charges and refunds against the PSP                        | Step 3     |
 | `inventory-service`     | stock levels, reservations                                                      | Step 3     |
 | `notifications-service` | emails on order events                                                          | Step 3     |
-| `analytics-service`     | read-model aggregates from Kafka events                                         | Step 3     |
+| `analytics-service`     | read-model aggregates from Kafka events                                         | deferred   |
 
-Target communication: **RabbitMQ** for commands and replies between services, **Kafka** for
-the domain event log, **BullMQ** for jobs inside one service, **PostgreSQL** database per
-service.
+Target communication: **RabbitMQ** for commands and replies between services and, in the
+first pass of the roadmap, for domain events too (topic exchange `events`, one queue per
+subscriber); **BullMQ** for jobs inside one service; **PostgreSQL** database per service.
+**Kafka** as the domain event log is deferred to the second pass (`docs/ROADMAP.md` → Другий
+прохід): the outbox relay publishes through a port, so Kafka arrives as a second adapter.
 
 ## 2. Process model
 
@@ -253,7 +261,7 @@ transaction; `CompleteOrderPayment` / `FailOrderPayment` each open their own.
 | -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------- |
 | Enqueue after commit is not atomic with the commit | If Redis is down or the process dies between commit and enqueue, the order stays `PENDING_PAYMENT` with no job                                                         | Step 3 (transactional outbox)                           |
 | `PENDING_PAYMENT` cannot be cancelled              | A stuck order (see above) cannot be cancelled by users                                                                                                                 | Step 3 (saga with compensation)                         |
-| No caching, no rate limiting                       | Every request hits Postgres; brute force on `/auth/login` is not throttled                                                                                             | Step 2                                                  |
+| No rate limiting                                   | A noisy tenant is not limited; brute force on `/auth/login` is not throttled                                                                                           | deferred: roadmap 2.10, second pass                     |
 | Default Nest logger only                           | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                              | Step 4 (pino, OpenTelemetry)                            |
 | No health checks, no graceful shutdown             | Compose/k8s cannot tell "started" from "ready"; in-flight jobs are cut on stop                                                                                         | Step 5                                                  |
 | `Location` on two 201s points nowhere              | `POST /auth/register` and `POST /workspaces/{id}/members` return a `Location` without a GET route behind it                                                            | open: a GET route or another URL, decided with the API  |
