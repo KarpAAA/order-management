@@ -83,7 +83,6 @@
     "eslint-plugin-import": "2.32.0",
     "fast-check": "4.10.2",
     "fishery": "2.4.0",
-    "msw": "2.15.0",
     "pg-copy-streams": "7.0.0",
     "prisma": "7.10.0",
     "supertest": "7.3.0",

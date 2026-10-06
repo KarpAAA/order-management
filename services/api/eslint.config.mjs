@@ -2,11 +2,11 @@
 // Project additions (each also listed in CLAUDE.md → "Deviations from the conventions templates"):
 //  1. The Prisma-generated client, prisma/ scripts and root tool files are outside the layer
 //     map; Stryker's files, reports and dist-worker/ are not linted.
-//  2. Test infrastructure (test/factories, test/doubles, test/helpers) may import module
-//     internals: a factory persists through the domain and OrderMapper, a double implements a
-//     port, the worker app overrides PAYMENT_GATEWAY. test/setup/global.ts default-exports.
+//  2. Test infrastructure (test/factories, test/helpers) may import module internals: a
+//     factory persists through the domain and OrderMapper. test/setup/global.ts default-exports.
 //  3. @oms/contracts (packages/contracts) is an element of its own: only what talks to the
 //     broker may import it: infrastructure/, a module's adapters and its consumers.
+//  4. @RabbitSubscribe is an entry decorator like @Processor: only in a *.consumer.ts.
 // `.mjs`: a Nest package is CommonJS, and this config uses ESM imports and import.meta.
 // Requires: eslint@9, typescript-eslint, eslint-plugin-import, eslint-import-resolver-typescript,
 //           eslint-plugin-boundaries@5 (the element-types API below), eslint-config-prettier
@@ -318,9 +318,9 @@ export default tseslint.config(
         ...RESTRICTED_SYNTAX,
         {
           selector:
-            'Decorator > CallExpression[callee.name=/^(Controller|Processor|WebSocketGateway)$/]',
+            'Decorator > CallExpression[callee.name=/^(Controller|Processor|WebSocketGateway|RabbitSubscribe)$/]',
           message:
-            '@Controller/@Processor/@WebSocketGateway only in *.controller|consumer|gateway.ts (principles #12).',
+            '@Controller/@Processor/@WebSocketGateway/@RabbitSubscribe only in *.controller|consumer|gateway.ts (principles #12).',
         },
       ],
     },
@@ -342,7 +342,7 @@ export default tseslint.config(
 
   // project: addition 2
   {
-    files: ['test/factories/**', 'test/doubles/**', 'test/helpers/**'],
+    files: ['test/factories/**', 'test/helpers/**'],
     rules: { 'no-restricted-imports': 'off' },
   },
   {

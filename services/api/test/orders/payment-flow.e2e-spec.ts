@@ -1,34 +1,39 @@
-// The payment path across processes (PAY-001…012): HTTP place → commit → handler enqueues
-// `charge-order` → BullMQ on the Redis container → OrdersConsumer in the WORKER app →
-// TestPsp → PAID / PAYMENT_FAILED. The API answers 202 before any of that, so the test does
-// what a client does: polls GET /orders/{id}. Every assertion is on an outcome (row, history,
-// charges at the PSP, state of the job), never on "a method was called".
-import { getQueueToken } from '@nestjs/bullmq';
+// The payment path of the api, to its boundary (PAY-001…013): HTTP place → commit → the handler
+// publishes `payments.charge-payment` to RabbitMQ; `payments.payment-succeeded` / `-failed`
+// comes back → PaymentEventsConsumer in the WORKER app → PAID / PAYMENT_FAILED.
+// payments-service is not here: the test is the other side of the broker (helpers/broker.ts),
+// and that service has the same kind of suite of its own. The full path is ROADMAP 3.13.
+// The API answers 202 before any of that, so the test does what a client does: polls
+// GET /orders/{id}. Every assertion is on an outcome (message, row, history), never on "a
+// method was called".
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import { ORDERS_QUEUE } from '@modules/orders';
-
-import { TestPsp } from '../doubles/test-psp';
 import { orderFactory } from '../factories';
 import { createApiApp, type ApiApp } from '../helpers/api-app';
 import { asUser } from '../helpers/auth';
+import {
+  connectTestBroker,
+  paymentFailed,
+  paymentSucceeded,
+  type TestBroker,
+} from '../helpers/broker';
 import { orderPath } from '../helpers/paths';
-import { waitForJob, waitForStatus } from '../helpers/waiting';
+import { waitForStatus } from '../helpers/waiting';
 import { createWorkerApp, type WorkerApp } from '../helpers/worker-app';
 import { USER_ACME_MEMBER, USER_GLOBEX_MEMBER, WS_ACME, WS_GLOBEX } from '../seed/ids';
 import { testDb } from '../setup/db';
 
-import type { Queue } from 'bullmq';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-const psp = new TestPsp();
 let api: ApiApp;
 let worker: WorkerApp;
-let queue: Queue;
+let broker: TestBroker;
 
 beforeAll(async () => {
+  // first: its queue must be bound before the api publishes anything
+  broker = await connectTestBroker();
   api = await createApiApp();
-  worker = await createWorkerApp(psp);
-  queue = api.get<Queue>(getQueueToken(ORDERS_QUEUE));
+  worker = await createWorkerApp();
 });
 // the API app holds a Prisma pool and Redis: it closes even when closing the worker fails
 afterAll(async () => {
@@ -36,12 +41,12 @@ afterAll(async () => {
     await worker.close();
   } finally {
     await api.close();
+    await broker.close();
   }
 });
 
 const member = asUser(USER_ACME_MEMBER);
 const FINAL = ['PAID', 'PAYMENT_FAILED'] as const;
-const jobIdOf = (orderId: string, attempt: number) => `charge-${orderId}-${String(attempt)}`;
 
 async function place(orderId: string, version = 0, ws = WS_ACME, as = member) {
   await api
@@ -53,6 +58,12 @@ async function place(orderId: string, version = 0, ws = WS_ACME, as = member) {
 }
 const settle = (orderId: string, ws = WS_ACME, as = member) =>
   waitForStatus(api, orderPath(ws, orderId), as, FINAL);
+
+const attempt = (orderId: string, paymentAttempt = 1, workspaceId = WS_ACME) => ({
+  workspaceId,
+  orderId,
+  paymentAttempt,
+});
 
 async function stored(orderId: string) {
   const row = await testDb().order.findFirstOrThrow({ where: { id: orderId } });
@@ -68,31 +79,68 @@ async function stored(orderId: string) {
   };
 }
 
-describe('place → the worker charges → PAID (PAY-001, PAY-003, PAY-004)', () => {
-  it('enqueues charge-<id>-1, charges the total once with key <id>:1 and records the success', async () => {
+/**
+ * Proof that every event published before this call has been handled: the worker takes one
+ * message at a time (RABBITMQ_PREFETCH=1), so an order placed and paid after them is behind
+ * them in the queue.
+ */
+async function drained(): Promise<void> {
+  const { id } = await orderFactory.create();
+  await place(id);
+  await broker.publish(paymentSucceeded(attempt(id), 'ch_marker'));
+  await settle(id);
+}
+
+describe('place → the api asks payments-service for the charge (PAY-001, PAY-003)', () => {
+  it('sends charge-payment with the total, the attempt and the key <id>:1, in the order workspace', async () => {
     const { id } = await orderFactory.create();
 
     await place(id);
+    const [command] = await broker.waitForCommands(id);
+    const { body: order } = await api.http().get(orderPath(WS_ACME, id)).set(member).expect(200);
+
+    expect(command).toMatchObject({
+      name: 'payments.charge-payment',
+      version: 1,
+      workspaceId: WS_ACME,
+      payload: {
+        orderId: id,
+        paymentAttempt: 1,
+        amount: (order as { totals: { total: unknown } }).totals.total,
+        idempotencyKey: `${id}:1`,
+      },
+    });
+    expect(command?.messageId).toMatch(UUID);
+    expect(command?.correlationId).toMatch(UUID);
+    // the answer has not come: the order waits
+    expect(order).toMatchObject({ status: 'PENDING_PAYMENT', paymentAttempt: 1 });
+  });
+
+  it('sends one command per place, in the currency of the workspace (PAY-002, PAY-012)', async () => {
+    const globexMember = asUser(USER_GLOBEX_MEMBER);
+    const { id } = await orderFactory.create({ workspaceId: WS_GLOBEX });
+
+    await place(id, 0, WS_GLOBEX, globexMember);
+    const commands = await broker.waitForCommands(id);
+    await drained();
+
+    expect(broker.commands(id)).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      workspaceId: WS_GLOBEX,
+      payload: { amount: { currency: 'USD' } },
+    });
+  });
+});
+
+describe('payment-succeeded → PAID (PAY-004)', () => {
+  it('records the charge id, the time and the history entry of the consumer', async () => {
+    const { id } = await orderFactory.create();
+    await place(id);
+
+    await broker.publish(paymentSucceeded(attempt(id), 'ch_42'));
     const order = await settle(id);
 
-    // the job, as the handler enqueued it after the commit
-    const { state, job } = await waitForJob(queue, jobIdOf(id, 1));
-    expect(state).toBe('completed');
-    expect(job.name).toBe('charge-order');
-    expect(job.data).toEqual({ workspaceId: WS_ACME, orderId: id, paymentAttempt: 1 });
-
-    // what the PSP was asked for
-    const [call] = psp.calls(id);
-    expect(psp.calls(id)).toHaveLength(1);
-    expect(call?.reference).toBe(id);
-    expect(call?.idempotencyKey).toBe(`${id}:1`);
-    expect({
-      amountMinor: Number(call?.amount.amountMinor),
-      currency: call?.amount.currency,
-    }).toEqual((order.totals as { total: unknown }).total);
-
-    // the outcome
-    expect(order).toMatchObject({ status: 'PAID', pspChargeId: `ch_${id}:1`, version: 2 });
+    expect(order).toMatchObject({ status: 'PAID', pspChargeId: 'ch_42', version: 2 });
     expect(order.paidAt).toEqual(expect.any(String));
     const { body } = await api
       .http()
@@ -104,184 +152,164 @@ describe('place → the worker charges → PAID (PAY-001, PAY-003, PAY-004)', ()
       fromStatus: 'PENDING_PAYMENT',
       toStatus: 'PAID',
       actor: 'system:consumer:orders',
-      payload: { paymentAttempt: 1, pspChargeId: `ch_${id}:1` },
-    });
-  });
-
-  it('binds the tenant from the job: a globex order is charged in USD in globex (PAY-012)', async () => {
-    const globexMember = asUser(USER_GLOBEX_MEMBER);
-    const { id } = await orderFactory.create({ workspaceId: WS_GLOBEX });
-
-    await place(id, 0, WS_GLOBEX, globexMember);
-    const order = await settle(id, WS_GLOBEX, globexMember);
-
-    expect(order.status).toBe('PAID');
-    expect(psp.calls(id)[0]?.amount.currency).toBe('USD');
-    expect((await waitForJob(queue, jobIdOf(id, 1))).job.data).toMatchObject({
-      workspaceId: WS_GLOBEX,
+      payload: { paymentAttempt: 1, pspChargeId: 'ch_42' },
     });
   });
 });
 
-describe('a charge is never made twice (PAY-002, PAY-009, PAY-010)', () => {
-  it('layer 1 — the same job id is not enqueued again', async () => {
-    const { id } = await orderFactory.create();
-    await place(id);
-    await settle(id);
-    const jobId = jobIdOf(id, 1);
-    const first = await waitForJob(queue, jobId);
+describe('payment-failed → PAYMENT_FAILED (PAY-005, PAY-007, PAY-008)', () => {
+  it.each(['insufficient_funds', 'psp_unavailable', 'psp_rejected'])(
+    'keeps %s as the failure reason',
+    async (declineCode) => {
+      const { id } = await orderFactory.create();
+      await place(id);
 
-    const again = await queue.add('charge-order', first.job.data, { jobId });
+      await broker.publish(paymentFailed(attempt(id), declineCode));
+      const order = await settle(id);
 
-    expect(again.id).toBe(jobId);
-    expect(await again.getState()).toBe('completed'); // the existing job, not a new one
-    // by name: the cron scheduler always keeps its next tick in the queue as a delayed job
-    const pending = await queue.getJobs(['waiting', 'active', 'delayed']);
-    expect(pending.filter((job) => job.name === 'charge-order')).toEqual([]);
-    expect(psp.calls(id)).toHaveLength(1);
+      expect(order).toMatchObject({ status: 'PAYMENT_FAILED', failureReason: declineCode });
+      const { body } = await api
+        .http()
+        .get(`${orderPath(WS_ACME, id)}/events`)
+        .set(member)
+        .expect(200);
+      expect((body as { items: unknown[] }).items.at(-1)).toMatchObject({
+        type: 'PAYMENT_FAILED',
+        actor: 'system:consumer:orders',
+        payload: { paymentAttempt: 1, reason: declineCode },
+      });
+    },
+  );
+});
+
+describe('the tenant comes from the envelope (PAY-012)', () => {
+  const globexMember = asUser(USER_GLOBEX_MEMBER);
+
+  it('settles a globex order in globex', async () => {
+    const { id } = await orderFactory.create({ workspaceId: WS_GLOBEX });
+    await place(id, 0, WS_GLOBEX, globexMember);
+
+    await broker.publish(paymentSucceeded(attempt(id, 1, WS_GLOBEX), 'ch_globex'));
+
+    expect((await settle(id, WS_GLOBEX, globexMember)).status).toBe('PAID');
   });
 
-  it('layers 2–3 — a redelivered job (another id, same data) changes nothing and charges nothing', async () => {
-    const { id } = await orderFactory.create();
-    await place(id);
-    await settle(id);
+  it('does not find a globex order under an acme envelope: nothing is written', async () => {
+    const { id } = await orderFactory.create({ workspaceId: WS_GLOBEX });
+    await place(id, 0, WS_GLOBEX, globexMember);
     const before = await stored(id);
-    const data = (await waitForJob(queue, jobIdOf(id, 1))).job.data as object;
 
-    await queue.add('charge-order', data, { jobId: `redelivery-${id}` });
-    const replay = await waitForJob(queue, `redelivery-${id}`);
+    await broker.publish(paymentSucceeded(attempt(id, 1, WS_ACME), 'ch_wrong_tenant'));
+    await drained();
 
-    expect(replay.state).toBe('completed'); // "already done", not a failure
-    expect(psp.calls(id)).toHaveLength(1); // the order is PAID: stopped before the PSP
-    expect(psp.charges(id)).toHaveLength(1);
     expect(await stored(id)).toEqual(before);
   });
 });
 
-describe('two workers in the same charge at once (PAY-010, layer 3)', () => {
-  let second: WorkerApp;
-  beforeAll(async () => {
-    second = await createWorkerApp(psp); // a second worker process, same Redis and database
-  });
-  afterAll(() => second.close());
-
-  it('both reach the PSP with the same idempotency key → one charge, one PAID, both jobs done', async () => {
+describe('an outcome is recorded once (PAY-009, PAY-010)', () => {
+  it('the same event delivered twice changes nothing the second time', async () => {
     const { id } = await orderFactory.create();
-    psp.holdUntilConcurrent(id, 2);
-
     await place(id);
-    const data = { workspaceId: WS_ACME, orderId: id, paymentAttempt: 1 };
-    await queue.add('charge-order', data, { jobId: `race-${id}` }); // a duplicate delivery
-    const order = await settle(id);
-    const jobs = [await waitForJob(queue, jobIdOf(id, 1)), await waitForJob(queue, `race-${id}`)];
+    const event = paymentSucceeded(attempt(id), 'ch_once');
 
-    expect(psp.calls(id)).toHaveLength(2); // both passed "is it still pending?"
-    expect(psp.charges(id)).toHaveLength(1); // …and the key made it one charge
-    expect(order.status).toBe('PAID');
-    expect((await stored(id)).history.filter((t) => t === 'PAYMENT_SUCCEEDED')).toHaveLength(1);
-    expect(jobs.map((j) => j.state)).toEqual(['completed', 'completed']);
+    await broker.publish(event);
+    await settle(id);
+    const before = await stored(id);
+    await broker.publish(event);
+    await drained();
+
+    expect(await stored(id)).toEqual(before);
+    expect(before.history.filter((type) => type === 'PAYMENT_SUCCEEDED')).toHaveLength(1);
+  });
+
+  it('a failure that arrives after the success does not undo it', async () => {
+    const { id } = await orderFactory.create();
+    await place(id);
+
+    await broker.publish(paymentSucceeded(attempt(id), 'ch_first'));
+    await settle(id);
+    await broker.publish(paymentFailed(attempt(id), 'psp_unavailable'));
+    await drained();
+
+    expect(await stored(id)).toMatchObject({ status: 'PAID', version: 2 });
   });
 });
 
-describe('PSP failures (PAY-005…008)', () => {
-  // the defaults (5 attempts, 1 s) are pinned in env.schema.spec.ts; here: the queue uses them
-  it('retries a charge with exponential backoff, attempts and base delay from config (PAY-006)', () => {
-    expect(queue.defaultJobOptions).toMatchObject({
-      attempts: 3, // CHARGE_ATTEMPTS in .env.test
-      backoff: { type: 'exponential', delay: 10 }, // CHARGE_BACKOFF_MS in .env.test
-    });
+describe('two workers get the same outcome at once (PAY-010)', () => {
+  let second: WorkerApp;
+  beforeAll(async () => {
+    second = await createWorkerApp(); // a second worker process, same database and queue
   });
+  afterAll(() => second.close());
 
-  it('retries transient failures: 503, 503, then 200 on the last attempt → PAID (PAY-006)', async () => {
+  it('one of them records it: one PAID, one history entry', async () => {
     const { id } = await orderFactory.create();
-    psp.script(id, 'unavailable', 'unavailable', 'ok');
-
     await place(id);
-    const order = await settle(id);
-    const job = await waitForJob(queue, jobIdOf(id, 1));
+    const event = paymentSucceeded(attempt(id), 'ch_race');
 
-    expect(order.status).toBe('PAID');
-    expect(psp.calls(id)).toHaveLength(3); // CHARGE_ATTEMPTS=3: the success is exactly the last try
-    expect(psp.charges(id)).toHaveLength(1);
-    expect(job.state).toBe('completed');
-  });
+    // prefetch is 1: the broker hands one delivery to each worker
+    await Promise.all([broker.publish(event), broker.publish(event)]);
+    await settle(id);
+    await drained();
+    await drained(); // one marker per worker
 
-  it('does not retry a decline: PAYMENT_FAILED with the decline code (PAY-005)', async () => {
-    const { id } = await orderFactory.create();
-    psp.script(id, 'declined:insufficient_funds');
-
-    await place(id);
-    const order = await settle(id);
-    const job = await waitForJob(queue, jobIdOf(id, 1));
-
-    expect(order).toMatchObject({ status: 'PAYMENT_FAILED', failureReason: 'insufficient_funds' });
-    expect(psp.calls(id)).toHaveLength(1);
-    expect(job.state).toBe('completed');
-    const { body } = await api
-      .http()
-      .get(`${orderPath(WS_ACME, id)}/events`)
-      .set(member)
-      .expect(200);
-    expect((body as { items: unknown[] }).items.at(-1)).toMatchObject({
-      type: 'PAYMENT_FAILED',
-      actor: 'system:consumer:orders',
-      payload: { paymentAttempt: 1, reason: 'insufficient_funds' },
-    });
-  });
-
-  it('gives up after the last transient failure: PAYMENT_FAILED psp_unavailable, job completed (PAY-007)', async () => {
-    const { id } = await orderFactory.create();
-    psp.script(id, 'unavailable', 'unavailable', 'unavailable');
-
-    await place(id);
-    const order = await settle(id);
-    const job = await waitForJob(queue, jobIdOf(id, 1));
-
-    expect(order).toMatchObject({ status: 'PAYMENT_FAILED', failureReason: 'psp_unavailable' });
-    expect(psp.calls(id)).toHaveLength(3);
-    expect(job.state).toBe('completed'); // not a dead job: the outcome was recorded
-  });
-
-  it('does not retry a non-transient failure: PAYMENT_FAILED psp_rejected (PAY-008)', async () => {
-    const { id } = await orderFactory.create();
-    psp.script(id, 'rejected');
-
-    await place(id);
-    const order = await settle(id);
-    const job = await waitForJob(queue, jobIdOf(id, 1));
-
-    expect(order).toMatchObject({ status: 'PAYMENT_FAILED', failureReason: 'psp_rejected' });
-    expect(psp.calls(id)).toHaveLength(1);
-    expect(job.state).toBe('completed');
+    const after = await stored(id);
+    expect(after).toMatchObject({ status: 'PAID', version: 2 });
+    expect(after.history.filter((type) => type === 'PAYMENT_SUCCEEDED')).toHaveLength(1);
   });
 });
 
 describe('a new attempt after a failure (PAY-009, PAY-011)', () => {
-  it('charges attempt 2 with its own key; a late job of attempt 1 then does nothing', async () => {
+  it('asks for attempt 2 with its own key; a late answer for attempt 1 then does nothing', async () => {
     const { id } = await orderFactory.create();
-    psp.script(id, 'declined:card_declined');
     await place(id);
+    await broker.publish(paymentFailed(attempt(id, 1), 'card_declined'));
     expect((await settle(id)).status).toBe('PAYMENT_FAILED');
 
     await place(id, 2); // place → 1, payment failed → 2
-    const order = await settle(id);
+    const commands = await broker.waitForCommands(id, 2);
+    expect(commands.map((c) => [c.payload.paymentAttempt, c.payload.idempotencyKey])).toEqual([
+      [1, `${id}:1`],
+      [2, `${id}:2`],
+    ]);
 
-    expect(order).toMatchObject({ status: 'PAID', paymentAttempt: 2, failureReason: null });
-    expect(psp.calls(id).map((c) => c.idempotencyKey)).toEqual([`${id}:1`, `${id}:2`]);
-
-    // a stale job of attempt 1 arrives late
+    // the answer for attempt 1 arrives again, late: the order waits for attempt 2
     const before = await stored(id);
-    await queue.add(
-      'charge-order',
-      { workspaceId: WS_ACME, orderId: id, paymentAttempt: 1 },
-      {
-        jobId: `late-${id}`,
-      },
-    );
-    const late = await waitForJob(queue, `late-${id}`);
-
-    expect(late.state).toBe('completed');
-    expect(psp.calls(id)).toHaveLength(2);
+    await broker.publish(paymentSucceeded(attempt(id, 1), 'ch_late'));
+    await drained();
     expect(await stored(id)).toEqual(before);
+
+    await broker.publish(paymentSucceeded(attempt(id, 2), 'ch_second'));
+    expect(await settle(id)).toMatchObject({
+      status: 'PAID',
+      paymentAttempt: 2,
+      pspChargeId: 'ch_second',
+      failureReason: null,
+    });
+  });
+});
+
+describe('a message that is not a known event is rejected, and the worker goes on', () => {
+  it.each([
+    ['bytes that are not JSON', Buffer.from('not json')],
+    ['JSON that is not a message', Buffer.from(JSON.stringify({ hello: 'world' }))],
+    [
+      'an event that breaks its contract',
+      Buffer.from(
+        JSON.stringify({
+          ...paymentSucceeded(attempt('01990000-0000-7000-8000-a20000000001'), 'ch_1'),
+          payload: { orderId: 'not-a-uuid' },
+        }),
+      ),
+    ],
+  ])('%s', async (_, content) => {
+    const { id } = await orderFactory.create();
+    await place(id);
+
+    broker.publishRaw('payments.payment-succeeded', content);
+    // the next event is served: the bad one was not put back in front of it
+    await broker.publish(paymentSucceeded(attempt(id), 'ch_after_bad'));
+
+    expect((await settle(id)).status).toBe('PAID');
   });
 });

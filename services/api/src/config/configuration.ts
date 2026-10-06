@@ -39,6 +39,7 @@ export type CacheConfig = ConfigType<typeof cacheConfig>;
 
 export const rabbitConfig = registerAs('rabbit', () => ({
   url: env().RABBITMQ_URL,
+  prefetch: env().RABBITMQ_PREFETCH,
 }));
 export type RabbitConfig = ConfigType<typeof rabbitConfig>;
 
@@ -48,17 +49,8 @@ export const authConfig = registerAs('auth', () => ({
 }));
 export type AuthConfig = ConfigType<typeof authConfig>;
 
-export const paymentsConfig = registerAs('payments', () => ({
-  gateway: env().PAYMENT_GATEWAY,
-  pspBaseUrl: env().PSP_BASE_URL,
-  pspTimeoutMs: env().PSP_TIMEOUT_MS,
-}));
-export type PaymentsConfig = ConfigType<typeof paymentsConfig>;
-
 export const ordersQueueConfig = registerAs('ordersQueue', () => ({
   concurrency: env().ORDERS_WORKER_CONCURRENCY,
-  chargeAttempts: env().CHARGE_ATTEMPTS,
-  chargeBackoffMs: env().CHARGE_BACKOFF_MS,
 }));
 export type OrdersQueueConfig = ConfigType<typeof ordersQueueConfig>;
 
@@ -76,7 +68,6 @@ export const allConfigs = [
   cacheConfig,
   rabbitConfig,
   authConfig,
-  paymentsConfig,
   ordersQueueConfig,
   orderEventsConfig,
 ];

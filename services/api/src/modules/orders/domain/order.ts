@@ -141,7 +141,15 @@ export class Order extends AggregateRoot {
     this.addHistory(OrderEventType.OrderPlaced, from, change, {
       paymentAttempt: this.props.paymentAttempt,
     });
-    this.record(new OrderPlaced(this.workspaceId, this.id, this.props.paymentAttempt, change.now));
+    this.record(
+      new OrderPlaced(
+        this.workspaceId,
+        this.id,
+        this.props.paymentAttempt,
+        this.amountDue,
+        change.now,
+      ),
+    );
   }
 
   cancel(change: Change): void {
@@ -156,7 +164,7 @@ export class Order extends AggregateRoot {
     this.addHistory(OrderEventType.OrderFulfilled, from, change);
   }
 
-  /** Guards a charge job: only the attempt the order is waiting for may be charged. */
+  /** Guards a payment outcome: only the attempt the order is waiting for may be settled. */
   assertAwaitingPayment(attempt: number): void {
     if (this.props.status !== OrderStatus.PendingPayment || this.props.paymentAttempt !== attempt) {
       throw new PaymentAttemptNotPendingError(

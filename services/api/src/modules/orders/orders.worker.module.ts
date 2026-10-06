@@ -4,13 +4,15 @@ import { Module } from '@nestjs/common';
 import { OrdersQueue } from './infrastructure/orders.queue';
 import { MaintainOrderEventPartitionsJob } from './interface/worker/maintain-order-event-partitions.job';
 import { OrdersConsumer } from './interface/worker/orders.consumer';
+import { PaymentEventsConsumer } from './interface/worker/payment-events.consumer';
 import { OrdersModule } from './orders.module';
 
 import type { OnApplicationBootstrap } from '@nestjs/common';
 
 @Module({
   imports: [OrdersModule],
-  providers: [OrdersConsumer, MaintainOrderEventPartitionsJob],
+  // two entries: the queue (cron ticks) and the broker (answers of payments-service)
+  providers: [OrdersConsumer, MaintainOrderEventPartitionsJob, PaymentEventsConsumer],
 })
 export class OrdersWorkerModule implements OnApplicationBootstrap {
   constructor(private readonly queue: OrdersQueue) {}

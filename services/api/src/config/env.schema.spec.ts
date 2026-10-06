@@ -13,7 +13,6 @@ const minimal = {
 const production = {
   ...minimal,
   NODE_ENV: 'production',
-  PAYMENT_GATEWAY: 'http',
   SWAGGER_ENABLED: 'false',
   BULL_BOARD_ENABLED: 'false',
 };
@@ -29,10 +28,10 @@ describe('validateEnv: safe defaults (ops/config-env.md §1)', () => {
     expect(env.BULL_BOARD_ENABLED).toBe(false);
   });
 
-  it('charges 5 times with a 1 s base backoff by default (PAY-006)', () => {
-    const env = validateEnv(minimal);
-    expect(env.CHARGE_ATTEMPTS).toBe(5);
-    expect(env.CHARGE_BACKOFF_MS).toBe(1000);
+  it('refuses a broker URL that is not AMQP', () => {
+    expect(() => validateEnv({ ...minimal, RABBITMQ_URL: 'redis://localhost:6379' })).toThrow(
+      /RABBITMQ_URL/,
+    );
   });
 
   it('keeps three history partitions ahead and never drops history by default', () => {
@@ -80,14 +79,8 @@ describe('validateEnv: access token TTL ≤ 15 min (ops/security.md §3)', () =>
 });
 
 describe('validateEnv: production boot checks (ops/config-env.md §3)', () => {
-  it('boots with the real gateway and the tools off', () => {
+  it('boots with the tools off', () => {
     expect(validateEnv(production).NODE_ENV).toBe('production');
-  });
-
-  it('refuses the fake payment gateway: orders would be PAID with no money moved', () => {
-    expect(() => validateEnv({ ...production, PAYMENT_GATEWAY: 'fake' })).toThrow(
-      /PAYMENT_GATEWAY/,
-    );
   });
 
   it.each(['SWAGGER_ENABLED', 'BULL_BOARD_ENABLED'])('refuses %s=true', (flag) => {

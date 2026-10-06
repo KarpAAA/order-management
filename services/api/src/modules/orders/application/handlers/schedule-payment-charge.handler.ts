@@ -10,11 +10,12 @@ import {
 import type { IEventHandler } from '@nestjs/cqrs';
 
 /**
- * Reaction to `OrderPlaced`: enqueue the charge. Runs after the commit.
+ * Reaction to `OrderPlaced`: ask payments-service for the charge. Runs after the commit.
  *
- * KNOWN GAP (Step 0, on purpose): the enqueue is not atomic with the commit. If Redis is
- * down or the process dies right here, the order stays PENDING_PAYMENT with no job, and
- * PENDING_PAYMENT cannot be cancelled. Step 3 replaces this with a transactional outbox.
+ * KNOWN GAP (Step 0, on purpose): the request is not atomic with the commit. If the broker
+ * is down or the process dies right here, the order stays PENDING_PAYMENT with no charge
+ * under way, and PENDING_PAYMENT cannot be cancelled. ROADMAP 3.4 replaces this with a
+ * transactional outbox.
  */
 @EventsHandler(OrderPlaced)
 export class SchedulePaymentChargeHandler implements IEventHandler<OrderPlaced> {
@@ -30,11 +31,12 @@ export class SchedulePaymentChargeHandler implements IEventHandler<OrderPlaced> 
         workspaceId: event.workspaceId,
         orderId: event.orderId,
         paymentAttempt: event.paymentAttempt,
+        amount: event.amountDue,
       });
     } catch (err: unknown) {
       // In-process handlers never throw into the publisher: the order is already committed.
       this.logger.error(
-        `failed to enqueue charge orderId=${event.orderId} attempt=${event.paymentAttempt}`,
+        `failed to request charge orderId=${event.orderId} attempt=${event.paymentAttempt}`,
         err instanceof Error ? err.stack : String(err),
       );
     }

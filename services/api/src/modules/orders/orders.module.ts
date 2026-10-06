@@ -2,9 +2,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 
-import { ordersQueueConfig, paymentsConfig } from '@config/configuration';
-import type { OrdersQueueConfig, PaymentsConfig } from '@config/configuration';
-
 import { CatalogModule } from '@modules/catalog';
 import { IdentityModule } from '@modules/identity';
 
@@ -18,17 +15,14 @@ import { MaintainOrderEventPartitionsService } from './application/maintain-orde
 import { OrderInputsReader } from './application/order-inputs.reader';
 import { OrdersPolicy } from './application/orders.policy';
 import { PlaceOrderService } from './application/place-order.service';
-import { ProcessOrderPaymentService } from './application/process-order-payment.service';
 import { UpdateOrderService } from './application/update-order.service';
-import { FakePaymentGateway } from './infrastructure/fake-payment-gateway.adapter';
-import { HttpPaymentGateway } from './infrastructure/http-payment-gateway.adapter';
 import { ORDERS_QUEUE, OrdersQueue } from './infrastructure/orders.queue';
 import { OrdersRepository } from './infrastructure/orders.repository';
 import { PostgresOrderEventPartitions } from './infrastructure/postgres-order-event-partitions.adapter';
+import { RabbitPaymentChargeAdapter } from './infrastructure/rabbit-payment-charge.adapter';
 import { ORDER_EVENT_PARTITIONS } from './ports/order-event-partitions.port';
 import { ORDERS_REPOSITORY } from './ports/orders-repository.port';
 import { PAYMENT_CHARGE_SCHEDULER } from './ports/payment-charge-scheduler.port';
-import { PAYMENT_GATEWAY } from './ports/payment-gateway.port';
 import { OrdersQueryService } from './read/orders.query.service';
 
 export { ORDERS_QUEUE };
@@ -39,7 +33,6 @@ const USE_CASES = [
   PlaceOrderService,
   CancelOrderService,
   FulfillOrderService,
-  ProcessOrderPaymentService,
   CompleteOrderPaymentService,
   FailOrderPaymentService,
   MaintainOrderEventPartitionsService,
@@ -50,17 +43,9 @@ const USE_CASES = [
     IdentityModule,
     CatalogModule,
     // producer only: the @Processor lives in orders.worker.module.ts
-    BullModule.registerQueueAsync({
+    BullModule.registerQueue({
       name: ORDERS_QUEUE,
-      inject: [ordersQueueConfig.KEY],
-      useFactory: (config: OrdersQueueConfig) => ({
-        defaultJobOptions: {
-          attempts: config.chargeAttempts,
-          backoff: { type: 'exponential', delay: config.chargeBackoffMs },
-          removeOnComplete: 1000,
-          removeOnFail: 5000,
-        },
-      }),
+      defaultJobOptions: { removeOnComplete: 1000, removeOnFail: 5000 },
     }),
   ],
   providers: [
@@ -71,16 +56,9 @@ const USE_CASES = [
     SchedulePaymentChargeHandler,
     { provide: ORDERS_REPOSITORY, useClass: OrdersRepository },
     OrdersQueue,
-    { provide: PAYMENT_CHARGE_SCHEDULER, useExisting: OrdersQueue },
+    // the charge itself happens in payments-service: the command goes through the broker
+    { provide: PAYMENT_CHARGE_SCHEDULER, useClass: RabbitPaymentChargeAdapter },
     { provide: ORDER_EVENT_PARTITIONS, useClass: PostgresOrderEventPartitions },
-    {
-      provide: PAYMENT_GATEWAY,
-      inject: [paymentsConfig.KEY, HttpPaymentGateway, FakePaymentGateway],
-      useFactory: (config: PaymentsConfig, http: HttpPaymentGateway, fake: FakePaymentGateway) =>
-        config.gateway === 'http' ? http : fake,
-    },
-    HttpPaymentGateway,
-    FakePaymentGateway,
     // read
     OrdersQueryService,
   ],

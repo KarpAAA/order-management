@@ -28,13 +28,6 @@ export interface OrderActionCommand {
   version: number;
 }
 
-export interface ProcessOrderPaymentCommand {
-  orderId: string;
-  paymentAttempt: number;
-  /** The queue will not retry after this run: a transient failure becomes final. */
-  isFinalAttempt: boolean;
-}
-
 export interface CompleteOrderPaymentCommand {
   orderId: string;
   paymentAttempt: number;

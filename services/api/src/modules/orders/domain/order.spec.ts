@@ -193,7 +193,7 @@ describe('Order.place', () => {
     ]);
   });
 
-  it('PAY-001 publishes OrderPlaced for the new attempt, to enqueue the charge', () => {
+  it('PAY-001 publishes OrderPlaced for the new attempt with the amount due, to request the charge', () => {
     const order = orderIn(OrderStatus.Draft);
     order.place(change());
     const events = order.pullEvents();
@@ -204,6 +204,7 @@ describe('Order.place', () => {
       workspaceId: WORKSPACE,
       orderId: order.id,
       paymentAttempt: 1,
+      amountDue: order.totals.total,
       occurredAt: LATER,
     });
   });

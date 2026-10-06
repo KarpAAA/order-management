@@ -12,6 +12,8 @@ export async function connectRabbit(config: RabbitConfig): Promise<AmqpConnectio
   const connection = new AmqpConnection({
     uri: config.url,
     exchanges: Object.values(exchanges).map(({ name, type }) => ({ name, type })),
+    // how many unacknowledged messages the broker hands this process: its concurrency
+    prefetchCount: config.prefetch,
     // boot fails when the broker is not there: a process that cannot publish must not serve
     connectionInitOptions: { wait: true, timeout: 10_000, reject: true },
     // a message survives a broker restart, together with its durable queue

@@ -1,7 +1,8 @@
 // Process graph (principles #12, ops/process-model.md): walks the Nest module metadata of each
-// entrypoint without starting it. A @Processor that reaches the api graph makes every api
-// replica a queue consumer; a controller in the worker graph serves nothing. The lint rules
+// entrypoint without starting it. A @Processor or a class with a @RabbitSubscribe method that
+// reaches the api graph makes every api replica a consumer; a controller in the worker graph serves nothing. The lint rules
 // catch the imports; this checks where the classes actually end up registered.
+import { RABBIT_HANDLER } from '@golevelup/nestjs-rabbitmq';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -93,6 +94,21 @@ async function moduleGraph(root: Ctor): Promise<ModuleNode[]> {
 const isProcessor = (ctor: Ctor): boolean =>
   Reflect.getMetadata(PROCESSOR_METADATA, ctor) !== undefined;
 
+/** A class with at least one @RabbitSubscribe method: it consumes from the broker. */
+const isSubscriber = (ctor: Ctor): boolean => {
+  const prototype = ctor.prototype as Record<string, unknown> | undefined;
+  if (!prototype) return false;
+  return Object.getOwnPropertyNames(prototype).some((name) => {
+    const method = Object.getOwnPropertyDescriptor(prototype, name)?.value as unknown;
+    return (
+      typeof method === 'function' && Reflect.getMetadata(RABBIT_HANDLER, method) !== undefined
+    );
+  });
+};
+
+const subscribersOf = (nodes: ModuleNode[]): string[] =>
+  nodes.flatMap((node) => node.providers.filter(isSubscriber).map((ctor) => ctor.name));
+
 const processorsOf = (nodes: ModuleNode[]): string[] =>
   nodes.flatMap((node) => node.providers.filter(isProcessor).map((ctor) => ctor.name));
 
@@ -120,6 +136,10 @@ describe('api process', () => {
     expect(processorsOf(apiGraph)).toEqual([]);
   });
 
+  it('registers no broker consumer: it only publishes', () => {
+    expect(subscribersOf(apiGraph)).toEqual([]);
+  });
+
   it('declares controllers only in *HttpModule', () => {
     expect(declaredOutside(apiGraph, 'HttpModule', (node) => node.controllers.length > 0)).toEqual(
       [],
@@ -144,7 +164,14 @@ describe('worker process', () => {
     ).toEqual([]);
   });
 
-  it('registers the orders consumer (the walk is not vacuous)', () => {
+  it('declares broker consumers only in *WorkerModule', () => {
+    expect(
+      declaredOutside(workerGraph, 'WorkerModule', (node) => node.providers.some(isSubscriber)),
+    ).toEqual([]);
+  });
+
+  it('registers the orders consumers (the walk is not vacuous)', () => {
     expect(processorsOf(workerGraph)).toEqual(['OrdersConsumer']);
+    expect(subscribersOf(workerGraph)).toEqual(['PaymentEventsConsumer']);
   });
 });

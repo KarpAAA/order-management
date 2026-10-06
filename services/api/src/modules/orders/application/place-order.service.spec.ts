@@ -21,6 +21,8 @@ import { PlaceOrderService } from './place-order.service';
 
 // The builders restore orders at version 3.
 const VERSION = 3;
+// every order of the builders has the same lines, so the same amount to charge
+const AMOUNT_DUE = orderIn(OrderStatus.Draft).amountDue;
 
 describe('PlaceOrderService', () => {
   let orders: InMemoryOrdersRepository;
@@ -48,12 +50,12 @@ describe('PlaceOrderService', () => {
     expect(saved.version).toBe(VERSION + 1);
   });
 
-  it('publishes OrderPlaced for the new payment attempt', async () => {
+  it('publishes OrderPlaced for the new payment attempt, with the amount to charge', async () => {
     orders.put(orderIn(OrderStatus.Draft));
 
     await placeOrder().execute({ orderId: ORDER, version: VERSION }, member);
 
-    expect(events.published).toEqual([new OrderPlaced(WORKSPACE, ORDER, 1, LATER)]);
+    expect(events.published).toEqual([new OrderPlaced(WORKSPACE, ORDER, 1, AMOUNT_DUE, LATER)]);
   });
 
   it('re-places an order whose payment failed as the next payment attempt', async () => {
@@ -64,7 +66,7 @@ describe('PlaceOrderService', () => {
     const saved = await orders.getById(ORDER);
     expect(saved.status).toBe(OrderStatus.PendingPayment);
     expect(saved.paymentAttempt).toBe(2);
-    expect(events.published).toEqual([new OrderPlaced(WORKSPACE, ORDER, 2, LATER)]);
+    expect(events.published).toEqual([new OrderPlaced(WORKSPACE, ORDER, 2, AMOUNT_DUE, LATER)]);
   });
 
   it('forbids a VIEWER and leaves the order untouched', async () => {

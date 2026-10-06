@@ -41,7 +41,7 @@ describe('CompleteOrderPaymentService', () => {
     });
   });
 
-  // ProcessOrderPaymentService checks the actor before calling this use case, so this
+  // PaymentEventsConsumer always passes its own system actor, so this
   // use case's own check is only exercised when it is called directly.
   it('PAY-013 a user calling it directly cannot mark the order paid', async () => {
     await expect(completePayment.execute(cmd, member)).rejects.toThrow(ForbiddenError);

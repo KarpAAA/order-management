@@ -172,7 +172,6 @@ services:
       DATABASE_ADMIN_URL: ''
       REDIS_URL: redis://redis:6379
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
-      PSP_BASE_URL: http://fake-psp:4010
     ports:
       - '3000:3000'
     depends_on: &app-deps
@@ -183,8 +182,6 @@ services:
       redis:
         condition: service_healthy
       rabbitmq:
-        condition: service_healthy
-      fake-psp:
         condition: service_healthy
 
   worker:

@@ -1,5 +1,5 @@
 // Two projects in one run (docs/requirements.md → Test levels):
-//  - unit: domain, value objects, policies, adapters against MSW. No infrastructure; `pnpm test`.
+//  - unit: domain, value objects, policies, use cases, adapters. No infrastructure; `pnpm test`.
 //  - e2e:  integration (*.int-spec.ts) and API (*.e2e-spec.ts) tests against Testcontainers;
 //          `pnpm test:e2e`. SWC emits the decorator metadata Nest DI needs.
 // `.mts`: the package is CommonJS, the config is ESM (same reason as eslint.config.mjs).

@@ -57,18 +57,14 @@ export const envSchema = z.object({
   CATALOG_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(3600).default(300),
   /** The broker between the services; the path is the vhost (the e2e suite gives each test file its own). */
   RABBITMQ_URL: z.url({ protocol: /^amqps?$/ }),
+  /** Messages one process works on at a time: unacknowledged messages the broker hands it. */
+  RABBITMQ_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
 
   JWT_SECRET: z.string().min(32),
   // ≤ 15 min (ops/security.md §3); with refresh: none a leaked token lives this long
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().max(900).default(900),
 
-  PAYMENT_GATEWAY: z.enum(['http', 'fake']).default('fake'),
-  PSP_BASE_URL: z.url().default('http://localhost:4010'),
-  PSP_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
-
   ORDERS_WORKER_CONCURRENCY: z.coerce.number().int().positive().default(10),
-  CHARGE_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
-  CHARGE_BACKOFF_MS: z.coerce.number().int().positive().default(1000),
 
   /** Monthly `order_events` partitions kept ready after the current month. */
   ORDER_EVENTS_PARTITIONS_AHEAD: z.coerce.number().int().min(1).max(12).default(3),
@@ -96,10 +92,6 @@ export function validateEnv(raw: Record<string, unknown>): Env {
   // Boot-time safety checks (ops/config-env.md §3).
   if (env.NODE_ENV === 'production' && (env.SWAGGER_ENABLED || env.BULL_BOARD_ENABLED)) {
     throw new Error('Invalid environment: Swagger and bull-board must be disabled in production');
-  }
-  // the fake gateway marks orders PAID with no money moved
-  if (env.NODE_ENV === 'production' && env.PAYMENT_GATEWAY === 'fake') {
-    throw new Error('Invalid environment: PAYMENT_GATEWAY=fake is not allowed in production');
   }
   return env;
 }
