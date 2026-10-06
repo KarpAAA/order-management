@@ -291,6 +291,7 @@ services/api/        NestJS service: src/entrypoints/main.api.ts + main.worker.t
   src/shared/        framework-free: errors, Actor, Money, Clock, ids, events, pagination
   src/infrastructure/ database (tenant choke point), queues, events
   src/modules/       identity (L1), catalog (L1), orders (L4)
+packages/contracts/  message contracts between services: versioned zod schemas (ADR 0011)
 devtools/fake-psp/   external PSP simulator (not part of the system)
-docs/                architecture, requirements, ADRs, requests.http
+docs/                architecture, requirements, ADRs, conventions backlog, requests.http
 ```

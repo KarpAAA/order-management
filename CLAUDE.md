@@ -12,6 +12,11 @@ Rules in `.claude/rules/shared/` are shared across my Nest projects (symlink to
 `C:\Users\ikarp\WebstormProjects\nest-conventions\rules`, created by its `link.ps1`). Do not
 edit them here: tell me and I change them in the conventions repo. Project-specific
 deviations go in `.claude/rules/project/` only.
+When the code goes past the conventions because they did not foresee the case (not a choice
+that is right for this project only), add an entry to `docs/conventions-backlog.md` in the same
+change, in its template: what the conventions say, what we did, why, whether it is good, a
+short example, the proposed change. That file is my queue for the conventions repo; a
+project-only choice still goes to "Deviations" below.
 Full architecture reference: `C:\Users\ikarp\WebstormProjects\nest-conventions\docs\architecture-full.md`
 (read it when creating a module or unsure about a level).
 
@@ -48,7 +53,7 @@ hooks: husky                    # pre-commit: lint-staged; commit-msg: commitlin
 ## Stack
 
 NestJS 12.1, Prisma 7.10 (+ `@prisma/adapter-pg`), PostgreSQL 18, Redis 7, BullMQ 6,
-Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces)
+Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces: `services/*`, `packages/*`, `devtools/*`)
 
 ## Commands (CMD-friendly, from the repo root)
 
@@ -66,7 +71,8 @@ pnpm db:explain:replica      # replication lag, read-your-writes with a 5 s dela
 pnpm db:explain:cache        # catalog cache: hit vs database, hit ratio, 200 callers on an empty key (docs/perf/2.9-cache.md)
 pnpm dev               # api + worker in watch mode
 pnpm lint && pnpm typecheck
-pnpm test              # Vitest project unit: domain, VOs, policies, use cases, adapters (MSW), architecture (no Docker)
+pnpm test              # every package: api Vitest project unit (domain, VOs, policies, use cases, adapters (MSW), architecture) + contracts (no Docker)
+pnpm --filter @oms/contracts build   # packages/contracts → dist (CommonJS + .d.ts)
 pnpm test:e2e          # Vitest project e2e: *.int-spec.ts + *.e2e-spec.ts (Testcontainers)
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
 pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
@@ -89,6 +95,23 @@ New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<ob
 Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
 
 ## Gotchas specific to this project
+
+- **A message between services is a contract in `packages/contracts`** (`@oms/contracts`,
+  ADR 0011): a zod schema from `defineMessage(name, version, payload)`, in an envelope with
+  `messageId`, `workspaceId`, `correlationId`. `@oms/api` does not import it yet (3.2).
+  Consequences:
+  - an incompatible change (a removed or renamed field, a new type or meaning, a new required
+    field) is a new file `<name>.v<N+1>.ts`; the old one stays and `name` never changes. Only an
+    optional field may be added to an existing version;
+  - a new contract is added to `contracts` in `registry.ts` and exported from `index.ts`
+    (`registry.spec.ts` fails otherwise);
+  - a command is named after its receiver, an event after its publisher;
+  - `src/` imports `zod` and its own files only (lint): no id generator, no clock, no domain
+    type. The sender passes `messageId` and `occurredAt`; money is `{ amountMinor, currency }`;
+  - a producer builds with `Contract.create()`, a consumer reads with `parseMessage()`, never
+    with a cast;
+  - a schema is never `.strict()`: a consumer must keep reading a message that gained a field;
+  - the package is consumed from `dist`: build it before whatever imports it.
 
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
   Tenant models (Membership, Product, Order, OrderItem, OrderEvent) are filtered by the
@@ -185,6 +208,9 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   vitest runner is patched for Vitest 5. Details: `.claude/rules/project/testing.md`.
 - `pnpm audit` exceptions live in `package.json` → `pnpm.auditConfig`, the reason next to the
   `overrides` in `pnpm-workspace.yaml` (JSON has no comments).
+- A message between services has no integration event class in `<module>/events/`
+  (`events.md` §1): its contract is the schema in `@oms/contracts`. Domain events stay classes.
+  Why, and what to change in the conventions: `docs/conventions-backlog.md` §1–3.
 - No `docs-json` diff in CI yet (`git-pr.md` §5): the nightly Schemathesis run checks the API
   against its own OpenAPI document; a committed `openapi.json` diff comes when a client does.
 - `tsconfig.json` sets `strictPropertyInitialization: false`: DTO classes are filled by
