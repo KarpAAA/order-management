@@ -1,4 +1,4 @@
-# Local environment. Infra (postgres, postgres-replica, pgbouncer, redis, fake-psp) starts by default;
+# Local environment. Infra (postgres, postgres-replica, pgbouncer, redis, rabbitmq, fake-psp) starts by default;
 # api + worker start with `docker compose --profile app up --build` from ONE image.
 name: oms
 
@@ -81,6 +81,21 @@ services:
       timeout: 3s
       retries: 10
 
+  # The broker between the services: commands and events (@oms/contracts, docs/adr/0011).
+  # Management UI: http://localhost:15672 (guest / guest).
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - '5672:5672'
+      - '15672:15672'
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   fake-psp:
     build:
       context: .
@@ -136,6 +151,7 @@ services:
       # env_file is the dev environment; the processes themselves get no owner URL
       DATABASE_ADMIN_URL: ''
       REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       PSP_BASE_URL: http://fake-psp:4010
     ports:
       - '3000:3000'
@@ -145,6 +161,8 @@ services:
       pgbouncer:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
       fake-psp:
         condition: service_healthy
@@ -164,3 +182,4 @@ volumes:
   postgres-data:
   postgres-replica-data:
   redis-data:
+  rabbitmq-data:

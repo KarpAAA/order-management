@@ -37,6 +37,11 @@ export const cacheConfig = registerAs('cache', () => ({
 }));
 export type CacheConfig = ConfigType<typeof cacheConfig>;
 
+export const rabbitConfig = registerAs('rabbit', () => ({
+  url: env().RABBITMQ_URL,
+}));
+export type RabbitConfig = ConfigType<typeof rabbitConfig>;
+
 export const authConfig = registerAs('auth', () => ({
   jwtSecret: env().JWT_SECRET,
   accessTtlSeconds: env().JWT_ACCESS_TTL_SECONDS,
@@ -69,6 +74,7 @@ export const allConfigs = [
   databaseConfig,
   redisConfig,
   cacheConfig,
+  rabbitConfig,
   authConfig,
   paymentsConfig,
   ordersQueueConfig,

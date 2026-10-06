@@ -7,6 +7,7 @@ const minimal = {
   NODE_ENV: 'development',
   DATABASE_URL: 'postgresql://oms:oms@localhost:5432/oms',
   REDIS_URL: 'redis://localhost:6379',
+  RABBITMQ_URL: 'amqp://guest:guest@localhost:5672',
   JWT_SECRET: 'x'.repeat(32),
 };
 const production = {

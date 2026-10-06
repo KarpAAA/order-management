@@ -7,6 +7,10 @@ declare module 'vitest' {
     /** Postgres server URL on its maintenance database; test files CREATE DATABASE through it. */
     pgServerUrl: string;
     redisUrl: string;
+    /** The broker on its default vhost; test files connect to a vhost of their own. */
+    rabbitUrl: string;
+    /** The broker's management API: test files create and drop their vhost through it. */
+    rabbitManagementUrl: string;
     /** The same server through PgBouncer (transaction mode), as the application role. */
     pgBouncerUrl: string;
     /** A hot standby of the same server, on its maintenance database, as the superuser. */

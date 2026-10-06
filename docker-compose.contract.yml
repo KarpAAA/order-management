@@ -12,6 +12,8 @@ services:
     ports: !reset []
   redis:
     ports: !reset []
+  rabbitmq:
+    ports: !reset []
   fake-psp:
     ports: !reset []
 

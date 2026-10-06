@@ -30,6 +30,7 @@
   "dependencies": {
     "@bull-board/api": "9.10.1",
     "@bull-board/express": "9.10.1",
+    "@golevelup/nestjs-rabbitmq": "9.1.0",
     "@nestjs-cls/transactional": "4.0.1",
     "@nestjs-cls/transactional-adapter-prisma": "2.0.1",
     "@nestjs/bullmq": "12.0.0",
@@ -40,6 +41,7 @@
     "@nestjs/jwt": "12.0.2",
     "@nestjs/platform-express": "12.1.0",
     "@nestjs/swagger": "12.0.2",
+    "@oms/contracts": "workspace:*",
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "argon2": "0.45.1",
@@ -66,6 +68,7 @@
     "@stryker-mutator/vitest-runner": "10.0.0",
     "@swc/core": "1.16.2",
     "@testcontainers/postgresql": "12.1.0",
+    "@testcontainers/rabbitmq": "12.1.0",
     "@testcontainers/redis": "12.1.0",
     "@types/express": "5.0.6",
     "@types/node": "24.19.0",

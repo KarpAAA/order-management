@@ -5,6 +5,8 @@
 //  2. Test infrastructure (test/factories, test/doubles, test/helpers) may import module
 //     internals: a factory persists through the domain and OrderMapper, a double implements a
 //     port, the worker app overrides PAYMENT_GATEWAY. test/setup/global.ts default-exports.
+//  3. @oms/contracts (packages/contracts) is an element of its own: only what talks to the
+//     broker may import it: infrastructure/, a module's adapters and its consumers.
 // `.mjs`: a Nest package is CommonJS, and this config uses ESM imports and import.meta.
 // Requires: eslint@9, typescript-eslint, eslint-plugin-import, eslint-import-resolver-typescript,
 //           eslint-plugin-boundaries@5 (the element-types API below), eslint-config-prettier
@@ -94,6 +96,8 @@ export default tseslint.config(
       'boundaries/elements': [
         // process roots (project-structure.md §1): they wire everything
         { type: 'entry', pattern: 'src/entrypoints/**' },
+        // project: addition 3. pnpm links the workspace package, so it resolves to a path, not to node_modules
+        { type: 'contracts', pattern: '**/packages/contracts/**', mode: 'full' },
         { type: 'shared', pattern: 'src/shared/**' },
         { type: 'common', pattern: 'src/common/**' },
         { type: 'config', pattern: 'src/config/**' },
@@ -203,7 +207,7 @@ export default tseslint.config(
             { from: 'shared', allow: ['shared'] },
             { from: 'common', allow: ['shared', 'common', 'config'] },
             { from: 'config', allow: ['shared', 'config'] },
-            { from: 'infra', allow: ['shared', 'common', 'config', 'infra'] },
+            { from: 'infra', allow: ['shared', 'common', 'config', 'infra', 'contracts'] },
             { from: 'domain', allow: ['shared', ['domain', { module: '${from.module}' }]] },
             { from: 'ports', allow: ['shared', ['domain', { module: '${from.module}' }]] },
             {
@@ -252,6 +256,7 @@ export default tseslint.config(
                 'common',
                 'config',
                 'infra',
+                'contracts',
                 ['domain', { module: '${from.module}' }],
                 ['ports', { module: '${from.module}' }],
                 ['modinfra', { module: '${from.module}' }],
@@ -263,6 +268,7 @@ export default tseslint.config(
               from: 'entryclass',
               allow: [
                 ...INTERFACE_ALLOW,
+                'contracts',
                 ['interface', { module: '${from.module}' }],
                 ['entryclass', { module: '${from.module}' }],
               ],

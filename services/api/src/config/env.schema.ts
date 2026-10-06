@@ -55,6 +55,8 @@ export const envSchema = z.object({
    * invalidation leaves behind. 0 switches the catalog cache off (docs/adr/0010).
    */
   CATALOG_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(3600).default(300),
+  /** The broker between the services; the path is the vhost (the e2e suite gives each test file its own). */
+  RABBITMQ_URL: z.url({ protocol: /^amqps?$/ }),
 
   JWT_SECRET: z.string().min(32),
   // ≤ 15 min (ops/security.md §3); with refresh: none a leaked token lives this long
