@@ -35,7 +35,8 @@ Node.js 24 LTS · TypeScript 6 (strict) · pnpm 10 workspaces · NestJS 12 · Pr
 PostgreSQL 18 · Redis 7 · BullMQ 6 · class-validator · zod (env) · nestjs-cls · Swagger ·
 bull-board · argon2 + JWT.
 
-PostgreSQL **18**, not 17: Step 2 adds Citus, and Citus 14 (Feb 2026) supports PG 18.
+PostgreSQL **18**, not 17: the roadmap adds Citus (2.11, deferred to the second pass), and
+Citus 14 (Feb 2026) supports PG 18.
 
 ## Quick start (Windows CMD)
 

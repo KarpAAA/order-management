@@ -1,7 +1,10 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 2: databases and scaling** (see `docs/ROADMAP.md`; Step 0 foundation: `docs/architecture.md`).
+Current step: **Step 3: microservices and brokers** (see `docs/ROADMAP.md`; Step 0 foundation: `docs/architecture.md`).
+The roadmap runs in two passes: Step 2 closed at 2.9, and 2.10–2.12, Kafka (3.8, 3.9, 3.14) and
+the other deferred items wait in `docs/ROADMAP.md` → «Другий прохід». Do not build a deferred
+item unless asked.
 
 ## Conventions
 
