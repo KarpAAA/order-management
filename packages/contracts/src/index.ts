@@ -12,3 +12,4 @@ export {
   type ParseFailure,
   type ParseResult,
 } from './registry';
+export { exchanges } from './topology';
