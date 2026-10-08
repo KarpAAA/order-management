@@ -376,3 +376,105 @@ an adapter that only writes through `txHost.tx` (the outbox) is the allowed case
 `application/events.md` §1: where contracts are schemas in a shared package (§1 of this file),
 the translation is registered by the module and applied by the publisher. `transport/cron.md`:
 a service without a queue cleans its outbox from a timer.
+
+## 9. A table that deduplicates cannot be partitioned by time
+
+Step 3.5 · 2026-10-08 · Status: open
+
+**Conventions say:** `data/db-general.md` §9: every log-like table (`outbox`,
+`webhook_inbox`, `processed_events`, …) is created as `PARTITION BY RANGE` on its time column
+in its first migration, and retention is `DROP PARTITION`, never `DELETE`. The same section
+states the price: the partition key is part of the primary key and of every `UNIQUE`.
+
+**What we did:** `inbox` (the `processed_events` of the text) is a plain table with the
+primary key `(consumer, message_id)`, an index on `processed_at`, and a daily `DELETE` of the
+rows older than the retention. `outbox` (3.4) is a plain table as well.
+
+**Why:** the rule and its stated price contradict each other for a table whose whole job is
+a unique key. With `processed_at` in the primary key, the same message handled a second later
+is a different key: the insert succeeds and the duplicate is handled. The text lists
+`processed_events` among the tables to partition without noticing that.
+
+**Assessment:** good for these two tables. The rows are small, the retention is days, and a
+`DELETE` by an indexed time column is cheap at that size. It stops being good at millions of
+messages a day; the way out then is a partition key that is the same for every copy of a
+message (the sender's `occurredAt`, or a range over a UUIDv7 id), which keeps the unique key
+at the price of trusting the sender's clock and of a write error for a message with no
+partition.
+
+**Example:**
+
+```sql
+-- what the rule asks for, and why it does not deduplicate
+PRIMARY KEY (consumer, message_id, processed_at)   -- the partition key must be in it
+INSERT … (q, m1, '10:00:00.000') ON CONFLICT DO NOTHING;  -- 1 row
+INSERT … (q, m1, '10:00:00.250') ON CONFLICT DO NOTHING;  -- 1 row again: not a conflict
+```
+
+**Proposed change:** `data/db-general.md` §9: take `processed_events` (and any table whose
+unique key must hold without the time) out of the list, with the reason; say that it is
+cleaned with `DELETE` by an indexed time column, and name the two partition keys that work
+when the volume asks for them. Decide separately whether `outbox` belongs in the list: it has
+no such key, only a short life.
+
+## 10. The inbox of a broker consumer: where the record is written, and by whom
+
+Step 3.5 · 2026-10-08 · Status: open
+
+**Conventions say:** `application/transactions.md` §5: every `reliable` handler is
+idempotent; the pending-state pattern gives this for free, and a stateless handler records
+`processed_events(event_id)` "in their own transaction before acting". `transport/queues.md`
+§3: a consumer is thin, with no ORM, no logic and no transaction (the use case has its own).
+`transport/webhooks.md` §2 describes an inbox table, for webhooks, with a status.
+
+**What we did:**
+
+1. Every broker consumer records the message, not only the stateless ones: the table is
+   `(consumer, message_id)`, and the record is written in the same transaction as the effect,
+   as its first statement, with `ON CONFLICT DO NOTHING`.
+2. In the api the consumer calls `inbox.once(queue, messageId, () => useCase.execute(…))`. The
+   port is in `shared/messaging/` (an entry class may not import `infrastructure/`), the
+   implementation opens the transaction, and the `@Transactional()` use case joins it.
+3. In payments the use case calls the provider before its only transaction, so the use case
+   records the message itself, and its command carries the message id.
+
+**Why:** "in their own transaction before acting" can be read as a separate transaction, and
+that reading loses a message: recorded, then the handler fails, and the next delivery is
+skipped. The text also leaves open who writes the record when the consumer may not open a
+transaction and the use case must not know about messages, and it does not say that one event
+has several consumers, each with a record of its own.
+
+**Assessment:** good. One mechanism for every consumer, independent of how the use case
+behind it is written; the checks by state stay for a message with another id about the same
+fact. The cost: the transaction of the api's use case is opened one level above it, by a
+helper the consumer calls, which a reader of `queues.md` §3 would call a transaction in a
+consumer. It is not logic in the consumer, and the use case still owns everything inside.
+
+**Example:**
+
+```ts
+// *.consumer.ts — after parseMessage(), inside runInWorkspace
+const fresh = await this.inbox.once(QUEUE, message.messageId, () => this.settle(message));
+if (!fresh) this.logger.log(`${message.name} ${message.messageId} skipped: duplicate`);
+
+// infrastructure/inbox/postgres-inbox.ts
+return this.txHost.withTransaction(async () => {
+  const { count } = await this.txHost.tx.inboxMessage.createMany({
+    data: [{ consumer, messageId, processedAt: this.clock.now() }],
+    skipDuplicates: true,
+  });
+  if (count === 0) return false;
+  await handle(); // the use case joins this transaction
+  return true;
+});
+```
+
+**Proposed change:** `application/transactions.md` §5: replace "in their own transaction
+before acting" with "in the transaction of the effect, as its first statement, with
+`ON CONFLICT DO NOTHING`", and show the three orders that fail. Name the key
+`(consumer, event_id)`. Say that the record and the checks by state are two layers.
+`transport/queues.md` §3 (or the consumer rule file §4 of this backlog asks for): a broker
+consumer calls its use case through the inbox port; when the use case calls the outside
+before its transaction, the use case records the message. `transport/webhooks.md` §2: say
+how `webhook_inbox` (what arrived, with a status, processed later) differs from this table
+(what was handled, no status).

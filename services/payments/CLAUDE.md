@@ -13,13 +13,13 @@ ids: uuid7
 cross-module-fk: n/a            # one module; `order_id` and `workspace_id` belong to the api: plain columns
 transactions: cls               # `txHost.withTransaction()` in the use case: settle + outbox row; the provider is never called inside one
 tenancy: column                 # `workspace_id` on the row; no RLS, no scoped client (ADR 0012)
-db-roles: owner + payments_app  # DATABASE_ADMIN_URL migrates; DATABASE_URL reads and writes rows, no DDL; DELETE on `outbox` only
+db-roles: owner + payments_app  # DATABASE_ADMIN_URL migrates; DATABASE_URL reads and writes rows, no DDL; DELETE on `outbox` and `inbox` only
 outbox: yes                     # table `outbox` + a relay in this process (ADR 0014)
 broker: rabbitmq                # in: queue `payments.commands`; out: exchange `events`
 queue: none                     # no BullMQ, no Redis
-processes: worker               # one process: a broker consumer and the relay of the outbox; no HTTP
+processes: worker               # one process: a broker consumer, the relay of the outbox, the cleanups of the outbox and the inbox; no HTTP
 dlq: alert                      # a command given up → `payments.commands.dlq` + Logger.error (Step 4: metric)
-cron: none                      # the cleanup of the outbox is a timer of the process (`OUTBOX_CLEANUP_INTERVAL_MS`)
+cron: none                      # the cleanups of the outbox and of the inbox are timers of the process (`*_CLEANUP_INTERVAL_MS`)
 validation: zod                 # messages through `parseMessage()` of @oms/contracts; env through zod
 logs: stdout                    # Nest built-in Logger; pino in Step 4
 testing: vitest                 # projects unit + e2e; the e2e suite stops at the service boundary
@@ -50,9 +50,16 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
 
 - **Everything may run twice.** A command is delivered at least once. The row is unique per
   `(order_id, attempt)`, the provider gets the idempotency key of the command, and a row is
-  settled only while `PENDING` (`updateMany … where status = PENDING`). Whoever comes second
-  answers with what is stored: a command is always answered. Keep every new step repeatable
-  the same way.
+  settled only while `PENDING` (`updateMany … where status = PENDING`). Keep every new step
+  repeatable the same way.
+- **A command is handled once per message id** (ADR 0015). `Inbox.record(queue, messageId)`
+  is the first statement of the transaction that settles the payment and writes the answer,
+  and of the one that answers a settled attempt again. False = the same message was recorded
+  before: nothing is settled and nothing is answered, its answer is in the outbox since then.
+  Another message for a settled attempt (a new id) is answered with what is stored. The use
+  case records, not the consumer: the provider is called before that transaction, outside
+  any. `Inbox.record()` throws outside a transaction. `infrastructure/inbox/` follows the
+  api's inbox but is not a copy of it: there the consumer wraps the use case in `inbox.once()`.
 - **One call to the provider per delivery** (ADR 0013). A failure that may pass
   (`InfrastructureError.retryable`) is thrown out of the use case while a delivery is left:
   the row stays `PENDING`, nothing is published, and the command comes again after
@@ -89,7 +96,7 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
   per process; the e2e suite runs two).
 - **A new table** needs `GRANT … TO payments_app` in its migration: the service does not own
   its tables. No `DELETE` is granted on `payments`: an attempt is a record of money. `outbox`
-  has it: the retention deletes published messages.
+  and `inbox` have it: the retention deletes old rows.
 - CHECK constraints (`payments_status_shape` and others) live in the migration SQL; Prisma
   cannot express them and `migrate diff` does not see them.
 - The e2e suite replaces `PAYMENT_GATEWAY` with `test/doubles/test-psp.ts`; the HTTP adapter
@@ -111,8 +118,10 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
 - The publisher port is called inside that transaction (`write-service.md` §4 forbids an
   adapter call there): it writes an outbox row and calls nothing
   (`docs/conventions-backlog.md` §8).
-- The cleanup of the outbox is a timer in the process, not a scheduled job (`transport/cron.md`):
-  the service has no queue.
-- Two migrations, no migration checker and no mutation run yet (`docs/architecture.md` →
+- The cleanups of the outbox and of the inbox are timers in the process, not scheduled jobs
+  (`transport/cron.md`): the service has no queue.
+- `ChargePaymentCommand` carries the message id and the queue of the command: the use case
+  writes the inbox row in its own last transaction (`docs/conventions-backlog.md` §10).
+- Three migrations, no migration checker and no mutation run yet (`docs/architecture.md` →
   Known gaps).
 - `Actor` is the system actor only; `role-scope`, guards and HTTP rules do not apply.

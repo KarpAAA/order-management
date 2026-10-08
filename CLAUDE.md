@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.4 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 3: microservices and brokers**, 3.5 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Two services: `services/api` (this file) and `services/payments` (its own decisions:
 `services/payments/CLAUDE.md`). They share `packages/contracts` and nothing else.
 The roadmap runs in two passes: Step 2 closed at 2.9, and 2.10–2.12, Kafka (3.8, 3.9, 3.14) and
@@ -39,7 +39,7 @@ broker: rabbitmq                # between services only (ADR 0012): commands →
 queue: bullmq
 processes: api+worker
 dlq: alert                      # dead job → Logger.error in OrdersConsumer; a broker message given up → `<queue>.dlq` + Logger.error (Step 4: metric)
-cron: bullmq                    # job schedulers on the owner's queue: maintain-order-event-partitions (orders), cleanup-outbox (outbox)
+cron: bullmq                    # job schedulers on the owner's queue: maintain-order-event-partitions (orders), cleanup-outbox (outbox), cleanup-inbox (inbox)
 validation: class-validator
 swagger-prod: off
 async-push: poll
@@ -100,8 +100,8 @@ New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<ob
 | catalog  | layered (flat) | L1    | CQS            | http         |
 | orders   | layered        | L4    | CQS + EventBus | http, worker |
 
-Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image. The worker has four
-entries: the BullMQ queues `orders` and `outbox` (cron ticks only), the broker queue
+Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image. The worker has five
+entries: the BullMQ queues `orders`, `outbox` and `inbox` (cron ticks only), the broker queue
 `api.payment-events`, and the relay of the outbox (a timer, `infrastructure/outbox/`).
 
 ## Gotchas specific to this project
@@ -134,11 +134,11 @@ entries: the BullMQ queues `orders` and `outbox` (cron ticks only), the broker q
   - `@RabbitSubscribe` only in a `*.consumer.ts`, provided only by a `*.worker.module.ts`
     (lint + `test/architecture/process-graph.spec.ts`): the api process never consumes;
   - a consumer reads with `parseMessage()`, binds the tenant from the envelope
-    (`runInWorkspace`) and calls one use case. `InvalidStateError` = already settled → return
+    (`runInWorkspace`) and calls one use case through `inbox.once()`. `InvalidStateError` = already settled → return
     (ack). Not a known contract, or a business refusal that will not change (`NotFoundError`)
     → `throw new UnprocessableMessageError(…)`. `ConflictError` and anything that is not a
     `DomainError` → let it out;
-  - no inbox until 3.5, no retry of the PSP call itself until 3.11: do not build them earlier;
+  - no retry of the PSP call itself until 3.11: do not build it earlier;
   - `MessagingModule` stands in for the library's `RabbitMQModule`, whose static state allows
     one Nest application per process; the e2e suite runs several. Do not import
     `RabbitMQModule`;
@@ -186,8 +186,8 @@ entries: the BullMQ queues `orders` and `outbox` (cron ticks only), the broker q
     `infrastructure/outbox/rabbit-outbox.publisher.ts` only;
   - the id of a row is the `messageId` of its envelope; `correlationId` comes from
     `CorrelationContext` (CLS): a consumer calls `continue()` inside the scope of its message;
-  - at-least-once: the relay may publish a message twice, with the same id. A consumer must
-    absorb it (by state today, an inbox in 3.5);
+  - at-least-once: the relay may publish a message twice, with the same id. The inbox of the
+    consumer absorbs it (below);
   - one relay at a time (`pg_try_advisory_xact_lock`), and the first message that cannot be
     published stops the ones behind it: order over throughput. Do not remove the lock to go
     faster;
@@ -199,12 +199,35 @@ entries: the BullMQ queues `orders` and `outbox` (cron ticks only), the broker q
     cleanup use the unscoped `PrismaService`;
   - the relay and `Outbox` are copied in `services/payments`: a fix in one is made in the
     other. The passes of the relay are tested here (`test/outbox/`).
+- **A broker message takes effect once per consumer: the consumer records it in the inbox**
+  (ADR 0015; `infrastructure/inbox/`, port `INBOX` in `@shared/messaging/inbox`).
+  `inbox.once(queue, messageId, handle)` opens a transaction, inserts `(consumer, message_id)`
+  with `ON CONFLICT DO NOTHING` and calls `handle`; the `@Transactional()` use case inside
+  joins it. Nothing inserted = a duplicate: `handle` is not called, the consumer acknowledges.
+  Consequences:
+  - a new broker consumer wraps its use case in `inbox.once()`, inside `runInWorkspace` (the
+    tenant before the transaction), with the name of its queue as `consumer`;
+  - whatever `handle` throws rolls the record back too: a failed message is not "seen", and
+    its next delivery is handled. Never write the record in a transaction of its own;
+  - a duplicate is the same `messageId`. Another message about the same fact (payments
+    answering a second command, a late answer for an old attempt) is not one: the checks by
+    state stay (`InvalidStateError` → ack), do not remove them "because there is an inbox";
+  - only what the transaction holds is covered: a call to the outside inside a handler needs
+    an idempotency key of its own;
+  - `inbox` is not a tenant table and is not partitioned (the primary key could not hold the
+    time and still catch a duplicate); `cleanup-inbox` deletes records older than
+    `INBOX_RETENTION_DAYS`, on its own BullMQ queue `inbox`;
+  - a test that publishes "the same event twice" must reuse the message object: the helpers
+    of `test/helpers/broker.ts` give every call a new `messageId`;
+  - the inbox is copied in `services/payments`, where the use case records the message itself
+    (`Inbox.record()` in the transaction that settles the payment). The deliveries are tested
+    here (`test/inbox/`).
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
   Tenant models (Membership, Product, Order, OrderItem, OrderEvent) are filtered by the
   workspace in CLS; a query without a tenant throws. Never inject `PrismaService` for tenant
   data: its only users are the extension, identity's documented cross-tenant reads
   (`asUser`), the partition adapter in orders (table structure, no tenant rows), and the relay
-  and the cleanup of the outbox (rows of no tenant).
+  and the cleanups of the outbox and of the inbox (rows of no tenant).
 - **Row-Level Security is the second layer** (ADR 0006). Two database roles: `DATABASE_URL` is
   `oms_app` (api + worker: owns nothing, sees only rows of `app.workspace_id`),
   `DATABASE_ADMIN_URL` is the owner (Prisma CLI, seed, datagen, `testDb()` in tests; not in
@@ -315,6 +338,15 @@ entries: the BullMQ queues `orders` and `outbox` (cron ticks only), the broker q
   process gets none of them.
 - `OutboxCleanup` is called by its job directly, with no use case and no `Actor`
   (`transport/cron.md` §1 asks for a use case): one `DELETE` on a table of no tenant.
+- The inbox has the same shape: entry classes in `infrastructure/inbox/` (`inbox.consumer.ts`,
+  `cleanup-inbox.job.ts`, wired by `inbox.worker.module.ts`), and `InboxCleanup` called by its
+  job directly.
+- `outbox` and `inbox` are not partitioned and are cleaned with `DELETE` (`db-general.md` §9
+  asks for `PARTITION BY RANGE` on log-like tables): `docs/conventions-backlog.md` §9.
+- `PaymentEventsConsumer` calls its use case through the inbox port, so the transaction opens
+  around the use case, not in it (`transport/queues.md` §3: "no transaction" in a consumer):
+  the record of the message and the use case have to be one transaction, and the consumer
+  still holds no logic (`docs/conventions-backlog.md` §10).
 - A broker consumer has no rule file of its own (`transport/queues.md` is BullMQ): ack, reject
   and prefetch replace attempts, backoff and concurrency. What we do: `docs/conventions-backlog.md` §4, §7.
 - `UnprocessableMessageError` extends `InfrastructureError` and lives in `shared/errors/`,

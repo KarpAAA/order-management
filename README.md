@@ -121,6 +121,12 @@ pnpm dev
     publishes.
   - Bind a queue to the exchange `events` with the routing key `orders.*` in the management
     UI: every order now leaves `orders.order-placed`, `-paid`, `-cancelled`, `-fulfilled` there.
+- A message takes effect once per consumer (ADR 0015): the consumer records its id in the
+  table `inbox`, in the transaction of what the message causes. To see it, publish the same
+  `payments.payment-succeeded` several times from the management UI (exchange `events`): the
+  worker logs `skipped: duplicate` for every copy after the first, and
+  `SELECT * FROM inbox` (database `oms`) has one row for it. `INBOX_RETENTION_DAYS` is how
+  long a record is kept.
 - `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_PUBLISH_TIMEOUT_MS` and
   `OUTBOX_RETENTION_DAYS` tune the relay; `OUTBOX_RELAY_ENABLED=false` stops it.
 - `RABBITMQ_RETRY_DELAY_MS`, `PAYMENTS_COMMANDS_MAX_ATTEMPTS` (payments) and
@@ -342,7 +348,7 @@ services/api/        NestJS service: src/entrypoints/main.api.ts + main.worker.t
   src/config/        zod-validated env, typed namespaces
   src/common/        HTTP frame: guards, filter, decorators, DTOs, tenant context
   src/shared/        framework-free: errors, Actor, Money, Clock, ids, events, pagination
-  src/infrastructure/ database (tenant choke point), queues, messaging (broker), outbox, events
+  src/infrastructure/ database (tenant choke point), queues, messaging (broker), outbox, inbox, events
   src/modules/       identity (L1), catalog (L1), orders (L4)
 services/payments/   NestJS service: src/entrypoints/main.worker.ts, its own image and database
   prisma/            schema and migrations of the payments database

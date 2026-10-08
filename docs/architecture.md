@@ -212,26 +212,28 @@ sequenceDiagram
   W->>MQ: payments.charge-payment → exchange commands (mandatory, confirmed), then mark published
   MQ->>P: queue payments.commands
   P->>PDB: insert payment PENDING, unique (order, attempt)
-  alt the row exists and is settled (the command came twice)
-    P->>PDB: outbox: the stored outcome, again
+  alt the row exists and is settled (another command for the attempt)
+    P->>PDB: BEGIN; inbox: the message; outbox: the stored outcome, again; COMMIT<br/>(the same message again: its record exists, nothing is written)
   else PENDING
     P->>PSP: POST /charges, Idempotency-Key {id}:{attempt}, timeout 3 s, one call
     opt no answer (timeout, 5xx), and a delivery is left
       P-->>MQ: reject → payments.commands.wait.30000 → back after 30 s, the row stays PENDING
     end
-    P->>PDB: BEGIN; PENDING → SUCCEEDED / FAILED (decline code, psp_rejected, psp_unavailable on the last delivery),<br/>outbox: payments.payment-succeeded / -failed; COMMIT
+    P->>PDB: BEGIN; inbox: the message; PENDING → SUCCEEDED / FAILED (decline code, psp_rejected, psp_unavailable on the last delivery),<br/>outbox: payments.payment-succeeded / -failed; COMMIT
   end
   P->>MQ: relay of payments: the answer → exchange events (confirmed), then mark published
   MQ->>W: queue api.payment-events
-  W->>DB: load order (tenant bound from the envelope); still PENDING_PAYMENT with this attempt?
-  alt stale or duplicate event
+  W->>DB: BEGIN (tenant bound from the envelope); inbox: the message
+  alt the message is recorded already
     W-->>MQ: ack, nothing happens
+  else the order is not PENDING_PAYMENT with this attempt (a stale event)
+    W-->>MQ: ROLLBACK; ack, nothing happens
   else the write fails (database, a concurrent worker)
     W-->>MQ: reject → api.payment-events.wait.30000 → back after 30 s
   else succeeded
-    W->>DB: BEGIN; → PAID + PAYMENT_SUCCEEDED, outbox: orders.order-paid; COMMIT
+    W->>DB: → PAID + PAYMENT_SUCCEEDED, outbox: orders.order-paid; COMMIT
   else failed
-    W->>DB: BEGIN; → PAYMENT_FAILED (reason) + PAYMENT_FAILED; COMMIT
+    W->>DB: → PAYMENT_FAILED (reason) + PAYMENT_FAILED; COMMIT
   end
   C->>API: GET /orders/{id} (poll until PAID / PAYMENT_FAILED)
 ```
@@ -266,9 +268,26 @@ down `place` still answers 202, and the command leaves when the broker is back. 
 published `mandatory`: while its receiver has not declared its queue, the row stays
 unpublished. A published row is kept 7 days. Nobody subscribes to `orders.*` yet (3.6, 3.10).
 
-A charge is never made twice, by three layers: the attempt number on the order (a second
-answer for a settled attempt is acknowledged and ignored), the unique row per (order, attempt)
-in payments, and the idempotency key at the provider.
+A message takes effect once per consumer (ADR 0015). Each service has a table `inbox`,
+`(consumer, message_id)`, and a consumer records the message in the transaction of what it
+causes:
+
+```
+BEGIN; INSERT INTO inbox … ON CONFLICT DO NOTHING;
+       nothing inserted → COMMIT, acknowledge: the message was handled before
+       inserted         → the use case, in this transaction; COMMIT, or ROLLBACK and the record goes too
+```
+
+Two deliveries of one message at the same moment meet at the primary key: the second waits
+for the first. In the api the consumer wraps its use case (`Inbox.once`); in payments the use
+case records the message in its last step, the transaction that settles the payment, because
+the call to the provider comes before it and outside any transaction. A record is kept 7 days.
+
+The inbox knows a message by its id. Another message about the same fact (payments answering
+a second command for an attempt, a late answer for an old attempt) is absorbed by state, as
+before. So a charge is never made twice, by four layers: the inbox of payments, the attempt
+number on the order (an answer for a settled attempt is acknowledged and ignored), the unique
+row per (order, attempt) in payments, and the idempotency key at the provider.
 
 A message whose handling fails is not lost (ADR 0013). Every queue a service reads has two
 more beside it:
@@ -352,9 +371,8 @@ message is an error in the log; it is put back through the management UI ("Move 
 | The call to the PSP is made once per delivery            | A provider that does not answer is asked again only when the command is redelivered, 30 s later, four times in all; nothing retries within a delivery and nothing stops calling a provider that is down                                               | 3.11 (retries with backoff, circuit breaker)                     |
 | A command parked in payments leaves the api unanswered   | When the last delivery of a command fails on something other than the provider (the database of payments), or the command is not processable, it goes to `payments.commands.dlq` and the order stays `PENDING_PAYMENT` until an operator puts it back | 3.7 (a saga step has a timeout)                                  |
 | Nobody is told about a parked message                    | A message in a dead-letter queue is a `Logger.error`; no metric, no alert. Putting it back is manual, through the management UI                                                                                                                       | Step 4 (metric and alert on the depth of `*.dlq`)                |
-| No inbox                                                 | A repeated message (the outbox and the broker both deliver at least once) is absorbed by state (the attempt on the order, the unique row in payments), not by a table of seen message ids                                                             | 3.5                                                              |
 | The relay of the outbox is watched by nobody             | A relay that cannot publish logs one error; the unpublished rows and the age of the oldest are not measured                                                                                                                                           | Step 4 (metrics outbox_pending_total, outbox_oldest_age_seconds) |
-| payments has no migration checker and no mutation run    | Two migrations, applied on an empty database by its e2e suite; drift was checked by hand for the second, upgrade is not checked                                                                                                                       | open: a checker like the one of the api                          |
+| payments has no migration checker and no mutation run    | Three migrations, applied on an empty database by its e2e suite; drift was checked by hand for the second, upgrade is not checked                                                                                                                     | open: a checker like the one of the api                          |
 | `PENDING_PAYMENT` cannot be cancelled                    | A stuck order (see above) cannot be cancelled by users                                                                                                                                                                                                | Step 3 (saga with compensation)                                  |
 | No rate limiting                                         | A noisy tenant is not limited; brute force on `/auth/login` is not throttled                                                                                                                                                                          | deferred: roadmap 2.10, second pass                              |
 | Default Nest logger only                                 | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                                                                                                             | Step 4 (pino, OpenTelemetry)                                     |
