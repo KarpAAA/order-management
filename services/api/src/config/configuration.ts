@@ -37,10 +37,28 @@ export const cacheConfig = registerAs('cache', () => ({
 }));
 export type CacheConfig = ConfigType<typeof cacheConfig>;
 
-export const rabbitConfig = registerAs('rabbit', () => ({
-  url: env().RABBITMQ_URL,
-  prefetch: env().RABBITMQ_PREFETCH,
-}));
+/** How often a message of one queue is delivered, and how long it waits in between. */
+export interface RetryPolicy {
+  maxAttempts: number;
+  delayMs: number;
+}
+
+export const rabbitConfig = registerAs('rabbit', () => {
+  // By queue name, as on the wire. A queue a consumer reads must be listed: the process does
+  // not boot otherwise (infrastructure/messaging/rabbit-subscribers.ts).
+  const retry: Record<string, RetryPolicy> = {
+    'api.payment-events': {
+      maxAttempts: env().PAYMENT_EVENTS_MAX_ATTEMPTS,
+      delayMs: env().PAYMENT_EVENTS_RETRY_DELAY_MS ?? env().RABBITMQ_RETRY_DELAY_MS,
+    },
+  };
+  return {
+    url: env().RABBITMQ_URL,
+    prefetch: env().RABBITMQ_PREFETCH,
+    redeliveryLimit: env().RABBITMQ_REDELIVERY_LIMIT,
+    retry,
+  };
+});
 export type RabbitConfig = ConfigType<typeof rabbitConfig>;
 
 export const authConfig = registerAs('auth', () => ({

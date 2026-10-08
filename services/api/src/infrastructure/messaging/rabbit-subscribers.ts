@@ -1,11 +1,22 @@
 import { AmqpConnection, RABBIT_HANDLER } from '@golevelup/nestjs-rabbitmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { DiscoveryService, MetadataScanner } from '@nestjs/core';
 
-import type { RabbitHandlerConfig, SubscriberHandler } from '@golevelup/nestjs-rabbitmq';
-import type { OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
+import { rabbitConfig } from '@config/configuration';
+import type { RabbitConfig } from '@config/configuration';
+import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
+import type { Delivery } from '@shared/messaging/delivery';
 
-type Methods = Record<string, SubscriberHandler | undefined>;
+import { deliveryOf, retryOrPark } from './retry-or-park';
+import { declareRetryQueues, redeliveries, workQueueOptions } from './retry-topology';
+
+import type { RabbitHandlerConfig } from '@golevelup/nestjs-rabbitmq';
+import type { OnApplicationBootstrap, OnApplicationShutdown } from '@nestjs/common';
+import type { ConfirmChannel } from 'amqplib';
+
+/** A `@RabbitSubscribe` method: the body of the message, and which delivery of it this is. */
+type Handler = (message: unknown, delivery: Delivery) => Promise<unknown>;
+type Methods = Record<string, Handler | undefined>;
 
 const subscription = (method: unknown): RabbitHandlerConfig | undefined => {
   if (typeof method !== 'function') return undefined;
@@ -33,6 +44,7 @@ export class RabbitSubscribers implements OnApplicationBootstrap, OnApplicationS
     private readonly discovery: DiscoveryService,
     private readonly scanner: MetadataScanner,
     private readonly connection: AmqpConnection,
+    @Inject(rabbitConfig.KEY) private readonly config: RabbitConfig,
   ) {}
 
   async onApplicationBootstrap(): Promise<void> {
@@ -53,14 +65,61 @@ export class RabbitSubscribers implements OnApplicationBootstrap, OnApplicationS
     if (!prototype) return;
     for (const name of this.scanner.getAllMethodNames(prototype)) {
       const config = subscription(instance[name]);
-      if (!config) continue;
-      await this.connection.createSubscriber(
-        (message, raw, headers) =>
-          instance[name]?.call(instance, message, raw, headers) ?? Promise.resolve(),
-        config,
-        name,
-      );
-      this.logger.log(`${provider}.${name} ← ${config.exchange ?? ''} → ${config.queue ?? ''}`);
+      if (config) await this.subscribe(provider, instance, name, config);
     }
+  }
+
+  /**
+   * The decorator names the exchange, the routing keys and the queue. What a failed message
+   * does is the same for every queue and comes from the configuration, so it is added here:
+   * the queue's arguments, its wait and dead-letter queues, and the error handler.
+   */
+  private async subscribe(
+    provider: string,
+    instance: Methods,
+    name: string,
+    config: RabbitHandlerConfig,
+  ): Promise<void> {
+    const { queue } = config;
+    const policy = queue === undefined ? undefined : this.config.retry[queue];
+    if (queue === undefined || policy === undefined) {
+      throw new Error(
+        `${provider}.${name}: queue ${queue ?? '(unnamed)'} has no retry policy (rabbitConfig.retry)`,
+      );
+    }
+
+    // as a setup of the channel: declared again when the connection comes back
+    await this.connection.managedChannel.addSetup((channel: ConfirmChannel) =>
+      declareRetryQueues(channel, queue, policy),
+    );
+    await this.connection.createSubscriber(
+      async (message, raw) => {
+        // A message that kills its consumer never reaches an error handler, so the count of
+        // the broker is the only one there is. Checked before the handler, and below the
+        // limit of the broker itself: what the broker dead-letters at its own limit cannot
+        // return from the wait queue (a cycle without a rejection) and stays there.
+        const returned = redeliveries(raw);
+        if (returned >= this.config.redeliveryLimit) {
+          throw new UnprocessableMessageError(
+            `taken back from a consumer ${String(returned)} times (redelivery limit)`,
+          );
+        }
+        await instance[name]?.call(instance, message, deliveryOf(raw, queue, policy));
+        return undefined;
+      },
+      {
+        ...config,
+        queueOptions: workQueueOptions(queue, policy),
+        errorHandler: retryOrPark(queue, policy, this.logger),
+        // bytes that are not JSON reach the handler as a string and fail its contract check,
+        // like every other message that is not a contract
+        allowNonJsonMessages: true,
+      },
+      name,
+    );
+    this.logger.log(
+      `${provider}.${name} ← ${config.exchange ?? ''} → ${queue} ` +
+        `(${String(policy.maxAttempts)} deliveries, ${String(policy.delayMs)} ms apart)`,
+    );
   }
 }

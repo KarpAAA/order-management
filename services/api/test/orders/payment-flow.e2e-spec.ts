@@ -17,13 +17,20 @@ import {
   paymentSucceeded,
   type TestBroker,
 } from '../helpers/broker';
+import { DATABASE_LOST, failToLoad } from '../helpers/failing-orders';
 import { orderPath } from '../helpers/paths';
-import { waitForStatus } from '../helpers/waiting';
+import { waitFor, waitForStatus } from '../helpers/waiting';
 import { createWorkerApp, type WorkerApp } from '../helpers/worker-app';
 import { USER_ACME_MEMBER, USER_GLOBEX_MEMBER, WS_ACME, WS_GLOBEX } from '../seed/ids';
 import { testDb } from '../setup/db';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// the queues the worker declares for itself: names on the wire, so the test spells them out
+const EVENTS_QUEUE = 'api.payment-events';
+// .env.test: an event that failed waits 200 ms, and its third delivery is the last
+const WAIT_QUEUE = 'api.payment-events.wait.200';
+const DEAD_LETTER_QUEUE = 'api.payment-events.dlq';
+const MAX_ATTEMPTS = 3;
 
 let api: ApiApp;
 let worker: WorkerApp;
@@ -79,17 +86,34 @@ async function stored(orderId: string) {
   };
 }
 
+const noneWaiting = () =>
+  waitFor(
+    () => broker.depth(WAIT_QUEUE),
+    (depth) => depth === 0,
+    { what: 'the wait queue to be empty' },
+  );
+
 /**
  * Proof that every event published before this call has been handled: the worker takes one
  * message at a time (RABBITMQ_PREFETCH=1), so an order placed and paid after them is behind
- * them in the queue.
+ * them in the queue. An event that failed is not in that queue while it waits for its next
+ * delivery, so nothing may be waiting before the marker goes in, nor after it came out.
  */
 async function drained(): Promise<void> {
+  await noneWaiting();
   const { id } = await orderFactory.create();
   await place(id);
   await broker.publish(paymentSucceeded(attempt(id), 'ch_marker'));
   await settle(id);
+  await noneWaiting();
 }
+
+const parked = () =>
+  waitFor(
+    () => broker.take(DEAD_LETTER_QUEUE),
+    (taken) => taken.length > 0,
+    { what: 'a message in the dead-letter queue' },
+  );
 
 describe('place → the api asks payments-service for the charge (PAY-001, PAY-003)', () => {
   it('sends charge-payment with the total, the attempt and the key <id>:1, in the order workspace', async () => {
@@ -194,15 +218,22 @@ describe('the tenant comes from the envelope (PAY-012)', () => {
     expect((await settle(id, WS_GLOBEX, globexMember)).status).toBe('PAID');
   });
 
-  it('does not find a globex order under an acme envelope: nothing is written', async () => {
+  it('does not find a globex order under an acme envelope: nothing is written, the event is parked', async () => {
     const { id } = await orderFactory.create({ workspaceId: WS_GLOBEX });
     await place(id, 0, WS_GLOBEX, globexMember);
     const before = await stored(id);
 
     await broker.publish(paymentSucceeded(attempt(id, 1, WS_ACME), 'ch_wrong_tenant'));
+    const [event] = await parked();
     await drained();
 
     expect(await stored(id)).toEqual(before);
+    // at once: the order will not be in acme on a later delivery either
+    expect(event?.headers).toMatchObject({
+      'x-parked-from': EVENTS_QUEUE,
+      'x-last-error': expect.stringMatching(/^UnprocessableMessageError: ORDER_NOT_FOUND/),
+    });
+    expect(event?.headers['x-parked-deaths']).toBeUndefined();
   });
 });
 
@@ -256,6 +287,8 @@ describe('two workers get the same outcome at once (PAY-010)', () => {
     const after = await stored(id);
     expect(after).toMatchObject({ status: 'PAID', version: 2 });
     expect(after.history.filter((type) => type === 'PAYMENT_SUCCEEDED')).toHaveLength(1);
+    // the worker that lost the write got the event again and found the order settled
+    expect(await broker.take(DEAD_LETTER_QUEUE)).toEqual([]);
   });
 });
 
@@ -289,7 +322,59 @@ describe('a new attempt after a failure (PAY-009, PAY-011)', () => {
   });
 });
 
-describe('a message that is not a known event is rejected, and the worker goes on', () => {
+describe('an event whose handling fails is delivered again (PAY-016, PAY-017)', () => {
+  it('is recorded on the delivery the database is back for', async () => {
+    const { id } = await orderFactory.create();
+    await place(id);
+    failToLoad(worker, id, MAX_ATTEMPTS - 1);
+
+    await broker.publish(paymentSucceeded(attempt(id), 'ch_retried'));
+    const order = await settle(id);
+    await drained();
+
+    expect(order).toMatchObject({ status: 'PAID', pspChargeId: 'ch_retried', version: 2 });
+    expect((await stored(id)).history.filter((type) => type === 'PAYMENT_SUCCEEDED')).toHaveLength(
+      1,
+    );
+    expect(await broker.take(DEAD_LETTER_QUEUE)).toEqual([]);
+  });
+
+  it('is parked after the last delivery, and recorded when it is put back', async () => {
+    const { id } = await orderFactory.create();
+    await place(id);
+    const repair = failToLoad(worker, id);
+    const event = paymentSucceeded(attempt(id), 'ch_parked');
+
+    await broker.publish(event);
+    const [message] = await parked();
+
+    // the event as it was published, with where it came from and why it was given up
+    expect(JSON.parse(message?.content.toString() ?? '')).toMatchObject({
+      messageId: event.messageId,
+    });
+    expect(message?.headers).toMatchObject({
+      'x-parked-from': EVENTS_QUEUE,
+      'x-last-error': `Error: ${DATABASE_LOST}`,
+      'x-parked-deaths': expect.arrayContaining([
+        expect.objectContaining({
+          queue: EVENTS_QUEUE,
+          reason: 'rejected',
+          count: MAX_ATTEMPTS - 1,
+        }),
+      ]),
+    });
+    // the charge is made and the order does not know: this is what the dead-letter queue is for
+    expect(await stored(id)).toMatchObject({ status: 'PENDING_PAYMENT', version: 1 });
+
+    // the operator fixed the cause and moves the message back
+    repair();
+    if (message) broker.put(EVENTS_QUEUE, message.content, message.headers);
+
+    expect(await settle(id)).toMatchObject({ status: 'PAID', pspChargeId: 'ch_parked' });
+  });
+});
+
+describe('a message that is not a known event is parked at once, and the worker goes on (PAY-015)', () => {
   it.each([
     ['bytes that are not JSON', Buffer.from('not json')],
     ['JSON that is not a message', Buffer.from(JSON.stringify({ hello: 'world' }))],
@@ -311,5 +396,12 @@ describe('a message that is not a known event is rejected, and the worker goes o
     await broker.publish(paymentSucceeded(attempt(id), 'ch_after_bad'));
 
     expect((await settle(id)).status).toBe('PAID');
+    // kept as it came, for whoever has to find out who sent it
+    const messages = await broker.take(DEAD_LETTER_QUEUE);
+    expect(messages.map((message) => message.content)).toEqual([content]);
+    expect(messages[0]?.headers).toMatchObject({
+      'x-parked-from': EVENTS_QUEUE,
+      'x-last-error': expect.stringMatching(/^UnprocessableMessageError: /),
+    });
   });
 });

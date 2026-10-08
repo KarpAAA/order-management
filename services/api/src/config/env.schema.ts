@@ -59,6 +59,21 @@ export const envSchema = z.object({
   RABBITMQ_URL: z.url({ protocol: /^amqps?$/ }),
   /** Messages one process works on at a time: unacknowledged messages the broker hands it. */
   RABBITMQ_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
+  /** How long a message whose handling failed waits before it is delivered again. */
+  RABBITMQ_RETRY_DELAY_MS: z.coerce.number().int().min(1).default(30_000),
+  /**
+   * How many times the broker may take a message back from a consumer that died holding it
+   * before the message is parked unhandled. Below 20, the limit at which the broker itself
+   * dead-letters it: that message cannot come back from the wait queue (docs/adr/0013).
+   */
+  RABBITMQ_REDELIVERY_LIMIT: z.coerce.number().int().min(1).max(19).default(10),
+  /**
+   * Deliveries of one payment event before it is parked. The charge is made by then and
+   * nobody waits for an answer, so giving up early only makes work for an operator.
+   */
+  PAYMENT_EVENTS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(10),
+  /** The delay of `api.payment-events` alone; unset: RABBITMQ_RETRY_DELAY_MS. */
+  PAYMENT_EVENTS_RETRY_DELAY_MS: z.coerce.number().int().min(1).optional(),
 
   JWT_SECRET: z.string().min(32),
   // ≤ 15 min (ops/security.md §3); with refresh: none a leaked token lives this long

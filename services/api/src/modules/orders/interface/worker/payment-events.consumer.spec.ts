@@ -1,10 +1,10 @@
-import { Nack } from '@golevelup/nestjs-rabbitmq';
 import { Logger } from '@nestjs/common';
 import { ChargePaymentV1, PaymentFailedV1, PaymentSucceededV1 } from '@oms/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { TenantContext } from '@common/tenancy/tenant-context';
-import { InvalidStateError } from '@shared/errors/domain-error';
+import { ConcurrencyError, InvalidStateError, NotFoundError } from '@shared/errors/domain-error';
+import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
 
 import { PaymentEventsConsumer } from './payment-events.consumer';
 
@@ -32,6 +32,10 @@ const failed = PaymentFailedV1.create(META, {
 
 class NotPayable extends InvalidStateError {
   readonly code = 'NOT_PAYABLE';
+}
+
+class OrderNotFound extends NotFoundError {
+  readonly code = 'ORDER_NOT_FOUND';
 }
 
 /** The consumer with its use cases replaced by spies; the tenant runs the work directly. */
@@ -100,11 +104,23 @@ describe('PaymentEventsConsumer', () => {
     await expect(consumer.onPaymentEvent(succeeded)).resolves.toBeUndefined();
   });
 
-  it('lets any other failure reject the message: the connection decides what happens to it', async () => {
-    const error = new Error('database is down');
+  it.each([
+    ['a failure of the outside world', new Error('database is down')],
+    ['a concurrent write of the same order', new ConcurrencyError('Order', ORDER)],
+  ])('PAY-016 lets %s out as it is: the message is delivered again', async (_, error) => {
     const { consumer } = consumerWith({ complete: vi.fn().mockRejectedValue(error) });
 
     await expect(consumer.onPaymentEvent(succeeded)).rejects.toBe(error);
+  });
+
+  it('PAY-015 gives up an event business refuses for good: another delivery finds no order either', async () => {
+    const refusal = new OrderNotFound('no such order');
+    const { consumer } = consumerWith({ complete: vi.fn().mockRejectedValue(refusal) });
+
+    const thrown = await consumer.onPaymentEvent(succeeded).catch((err: unknown) => err);
+
+    expect(thrown).toBeInstanceOf(UnprocessableMessageError);
+    expect(thrown).toMatchObject({ message: 'ORDER_NOT_FOUND: no such order', cause: refusal });
   });
 
   it.each([
@@ -119,13 +135,13 @@ describe('PaymentEventsConsumer', () => {
         idempotencyKey: `${ORDER}:2`,
       }),
     ],
-  ])('rejects %s without putting it back, and calls no use case', async (_, raw) => {
+    // what the connection hands over when the bytes are not JSON
+    ['bytes that are not JSON', 'not json'],
+  ])('PAY-015 gives up %s at once, and calls no use case', async (_, raw) => {
     const { consumer, complete, fail } = consumerWith();
 
-    const answer = await consumer.onPaymentEvent(raw);
+    await expect(consumer.onPaymentEvent(raw)).rejects.toBeInstanceOf(UnprocessableMessageError);
 
-    expect(answer).toBeInstanceOf(Nack);
-    expect(answer?.requeue).toBe(false);
     expect(complete).not.toHaveBeenCalled();
     expect(fail).not.toHaveBeenCalled();
   });

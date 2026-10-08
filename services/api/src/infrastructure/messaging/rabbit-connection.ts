@@ -1,12 +1,16 @@
-import { AmqpConnection, MessageHandlerErrorBehavior } from '@golevelup/nestjs-rabbitmq';
+import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 import { Logger } from '@nestjs/common';
 import { exchanges } from '@oms/contracts';
 
 import type { RabbitConfig } from '@config/configuration';
 
+/** The api process and the worker process each open one under this name. */
+export const CONNECTION_NAME = 'api';
+
 /**
  * One connection per process, with the exchanges every service agrees on (`@oms/contracts`).
- * Queues are declared by the consumer that reads them (`@RabbitSubscribe`).
+ * Queues are declared by the consumer that reads them (`@RabbitSubscribe`); what happens to a
+ * message whose handler throws is decided in `retry-or-park.ts`.
  */
 export async function connectRabbit(config: RabbitConfig): Promise<AmqpConnection> {
   const connection = new AmqpConnection({
@@ -18,10 +22,10 @@ export async function connectRabbit(config: RabbitConfig): Promise<AmqpConnectio
     connectionInitOptions: { wait: true, timeout: 10_000, reject: true },
     // a message survives a broker restart, together with its durable queue
     defaultPublishOptions: { persistent: true },
-    // A handler that throws rejects its message; the library's default puts it back at once,
-    // which is a hot loop on a message that fails every time. Delayed retries and the
-    // dead-letter queue are ROADMAP 3.3; until then a rejected message is lost.
-    defaultSubscribeErrorBehavior: MessageHandlerErrorBehavior.NACK,
+    // shown in the management UI, next to the queues this process reads
+    connectionManagerOptions: {
+      connectionOptions: { clientProperties: { connection_name: CONNECTION_NAME } },
+    },
     // no request/reply between the services: commands are answered by events
     enableDirectReplyTo: false,
     logger: new Logger('RabbitMQ'),

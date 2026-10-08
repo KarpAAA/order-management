@@ -1,10 +1,11 @@
-import { Nack, RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
+import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { exchanges, parseMessage, PaymentFailedV1, PaymentSucceededV1 } from '@oms/contracts';
 
 import { TenantContext } from '@common/tenancy/tenant-context';
 import { systemActor } from '@shared/auth/actor';
-import { InvalidStateError } from '@shared/errors/domain-error';
+import { ConflictError, DomainError, InvalidStateError } from '@shared/errors/domain-error';
+import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
 
 import { CompleteOrderPaymentService } from '../../application/complete-order-payment.service';
 import { FailOrderPaymentService } from '../../application/fail-order-payment.service';
@@ -19,8 +20,9 @@ const PAYMENT_EVENTS_QUEUE = 'api.payment-events';
 /**
  * The answer to `payments.charge-payment`. Thin: validate the message against its contract,
  * bind the tenant from the envelope, build the actor, call one use case.
- * Returning acknowledges the message; `Nack(false)` rejects it without putting it back.
- * A use case that throws is rejected the same way by the connection (rabbit-connection.ts).
+ * Returning acknowledges the message. Whatever is thrown is settled by the connection
+ * (infrastructure/messaging/retry-or-park.ts): delivered again after a delay, or parked in
+ * `api.payment-events.dlq` when it is an `UnprocessableMessageError` or the last delivery.
  */
 @Injectable()
 export class PaymentEventsConsumer {
@@ -32,33 +34,37 @@ export class PaymentEventsConsumer {
     private readonly failPayment: FailOrderPaymentService,
   ) {}
 
+  // the queue's arguments and its retry policy are added by RabbitSubscribers, from the config
   @RabbitSubscribe({
     exchange: exchanges.events.name,
     routingKey: [PaymentSucceededV1.name, PaymentFailedV1.name],
     queue: PAYMENT_EVENTS_QUEUE,
-    queueOptions: { durable: true },
   })
-  async onPaymentEvent(raw: unknown): Promise<Nack | undefined> {
+  async onPaymentEvent(raw: unknown): Promise<void> {
     const parsed = parseMessage(raw);
     if (!parsed.ok) {
-      // not a contract this build knows: retrying cannot help
-      this.logger.error(`rejected a message (${parsed.reason}): ${parsed.detail}`);
-      return new Nack(false);
+      // not a contract this build knows: another delivery cannot help
+      throw new UnprocessableMessageError(`${parsed.reason}: ${parsed.detail}`);
     }
     const { message } = parsed;
+    let handled: boolean;
     try {
-      const handled = await this.tenant.runInWorkspace(message.workspaceId, () =>
-        this.settle(message),
-      );
-      if (handled) return undefined;
+      handled = await this.tenant.runInWorkspace(message.workspaceId, () => this.settle(message));
     } catch (err: unknown) {
-      if (!(err instanceof InvalidStateError)) throw err;
-      // Already settled, or a stale attempt: done, not failed (the event came twice or late).
-      this.logger.log(`${message.name} ${message.messageId} skipped: ${err.code}`);
-      return undefined;
+      if (err instanceof InvalidStateError) {
+        // Already settled, or a stale attempt: done, not failed (the event came twice or late).
+        this.logger.log(`${message.name} ${message.messageId} skipped: ${err.code}`);
+        return;
+      }
+      // A concurrent writer won: the next delivery finds the order as that writer left it.
+      // Anything that is not a business answer (the database, a bug) may pass as well.
+      if (err instanceof ConflictError || !(err instanceof DomainError)) throw err;
+      // Business said no and will say it again: no such order in this workspace.
+      throw new UnprocessableMessageError(`${err.code}: ${err.message}`, { cause: err });
     }
-    this.logger.error(`rejected ${message.name}: not an event of this queue`);
-    return new Nack(false);
+    if (!handled) {
+      throw new UnprocessableMessageError(`${message.name} is not an event of this queue`);
+    }
   }
 
   /** False for a message this queue is not bound to. */
