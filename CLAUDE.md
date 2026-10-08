@@ -1,10 +1,11 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.6 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 3: microservices and brokers**, 3.7 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Three services: `services/api` (this file), `services/payments` and `services/inventory`
 (their own decisions: `services/payments/CLAUDE.md`, `services/inventory/CLAUDE.md`). They
-share `packages/contracts` and nothing else. The api does not talk to inventory yet: 3.7.
+share `packages/contracts` and nothing else. The api orchestrates the other two: placing an
+order is a saga (ADR 0017).
 The roadmap runs in two passes: Step 2 closed at 2.9, and 2.10–2.12, Kafka (3.8, 3.9, 3.14) and
 the other deferred items wait in `docs/ROADMAP.md` → «Другий прохід». Do not build a deferred
 item unless asked.
@@ -104,9 +105,10 @@ New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<ob
 | catalog  | layered (flat) | L1    | CQS            | http         |
 | orders   | layered        | L4    | CQS + EventBus | http, worker |
 
-Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image. The worker has five
-entries: the BullMQ queues `orders`, `outbox` and `inbox` (cron ticks only), the broker queue
-`api.payment-events`, and the relay of the outbox (a timer, `infrastructure/outbox/`).
+Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image. The worker has
+seven entries: the BullMQ queues `orders`, `outbox` and `inbox` (cron ticks only), the broker
+queues `api.inventory-events`, `api.payment-events` and `api.saga-timeouts`, and the relay of
+the outbox (a timer, `infrastructure/outbox/`).
 
 ## Gotchas specific to this project
 
@@ -127,27 +129,90 @@ entries: the BullMQ queues `orders`, `outbox` and `inbox` (cron ticks only), the
   - a schema is never `.strict()`: a consumer must keep reading a message that gained a field;
   - the package is consumed from `dist`: build it before whatever imports it.
 
-- **Payment is a command to payments-service and an event back** (ADR 0012). `place` writes
+- **Placing an order is a saga the api orchestrates** (ADR 0017): `place → reserve stock →
+charge → PAID`, a command for every step and an answer back. Its state is `OrderSaga`, a
+  row of `order_sagas` per `(order, paymentAttempt)`, beside `Order`: the saga says where the
+  process is, the order what the client sees (`PENDING_PAYMENT` the whole time). Consequences:
+  - `place` asks for the stock, not for the charge: `payments.charge-payment` is written when
+    `inventory.stock-reserved` arrives (`confirm-stock-reservation.service.ts`). A test that
+    answers payments first is refused by the saga;
+  - a use case of the saga loads the saga and the order, lets `OrderSaga` accept the fact
+    (anything it is not waiting for is an `InvalidStateError`: acknowledged), changes the
+    order, saves both and sends through `OrderSagaSteps`. Never branch on the step in a use
+    case to decide whether a fact is allowed: that table is `OrderSaga`
+    (`domain/order-saga.spec.ts` pins it);
+  - `OrderSagaSteps.save()` writes the timeout of a step that has just begun and gives the
+    saga its deadline. A step that waits without `deadline_at` is refused by a CHECK;
+  - the order gets its status when the question of money is settled, not when the saga ends:
+    `PAYMENT_FAILED` or `CANCELLED` come with the saga still `RELEASING`. Do not wait for
+    `stock-released` to tell the client;
+  - a timeout is not a failure: of the reservation it gives the order back (`DRAFT`) and
+    releases in the dark; of the charge it only sends `payments.cancel-payment` and the answer
+    decides (`payment-succeeded` still pays the order); of a compensation it asks again and
+    logs an error. Never end a saga or release stock on a charge that was not answered;
+  - `cancel` of a `PENDING_PAYMENT` order goes through `saga.requestCancel()`: 204 while the
+    stock is being reserved, 202 while the charge is under way
+    (`AcceptedWhenPendingInterceptor`). `TRANSITIONS` allows `PENDING_PAYMENT → CANCELLED`,
+    but only `CancelOrderService` and `FailOrderPaymentService` may use it;
+  - a step that changes no status is `order.note(type, …)`: a history row with
+    `fromStatus = toStatus`, saved with the order, so its version goes up. A client that
+    cancels reads the order first;
+  - `release-stock` is safe to send for an attempt that holds nothing or was never reserved
+    (inventory remembers it, ADR 0016); `cancel-payment` likewise (payments, ADR 0017);
+  - out of stock is `DRAFT` with `failureReason = out_of_stock`, not `PAYMENT_FAILED`;
+  - an order written past `place` needs its saga: the seed, the migration and
+    `orderFactory` (`sagaStep`) write one. Without it `cancel` and every answer are
+    `ORDER_SAGA_NOT_FOUND`;
+  - in the e2e suite `connectTestBroker()` answers every `reserve-stock` with
+    `stock-reserved` by itself, so a test about payments sees its charge;
+    `{ inventory: 'silent' }` hands inventory to the test (`saga*.e2e-spec.ts`). A test waits
+    for the charge command before it answers as payments (`place()` in
+    `payment-flow.e2e-spec.ts`);
+  - the saga timeouts are ten minutes in `.env.test`; `saga-timeouts.e2e-spec.ts` sets short
+    ones for itself, and ends every saga it starts: one left in `RELEASING` asks again for
+    as long as the file runs.
+
+- **A message for later is a row of the outbox with a delay** (ADR 0017;
+  `infrastructure/messaging/delay-topology.ts`). `Outbox.appendDelayed({ queue, delayMs,
+message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: a queue
+  nobody reads, whose messages expire and are dead-lettered to `<queue>`. Consequences:
+  - a delay must be listed for its queue in `rabbitConfig.delays`: the queues are declared
+    with the consumer of `<queue>`, and a delay without one is refused by the broker
+    (`mandatory`), which stops the relay behind that row;
+  - one queue per delay, the delay in its name. A changed delay is a new queue; the old one
+    empties by itself and stays until it is deleted;
+  - the wait starts when the relay publishes: at the deadline or later, never before. A
+    delayed message is not cancelled; its consumer decides whether it still counts;
+  - no BullMQ delayed job for something that must not be lost: Redis is not in the
+    transaction;
+  - `orders.saga-step-timeout` is built with `defineMessage()` but is the api's own: not in
+    `@oms/contracts`, validated by its consumer with its schema, unknown to `parseMessage()`.
+
+- **Payment is a command to payments-service and an event back** (ADR 0012). The saga writes
   `payments.charge-payment` to the outbox (`OutboxPaymentChargeAdapter`); the worker reads
-  `payments.payment-succeeded` / `-failed` from `api.payment-events` (`PaymentEventsConsumer`)
-  and calls `CompleteOrderPayment` / `FailOrderPayment`. Consequences:
+  `payments.payment-succeeded` / `-failed` / `-cancelled` from `api.payment-events`
+  (`PaymentEventsConsumer`) and calls `CompleteOrderPayment` / `FailOrderPayment`. Consequences:
   - the api knows nothing about the PSP: no gateway port, no `PSP_*` setting. The command
     carries the amount and the idempotency key `<orderId>:<attempt>`;
   - the routing key of a message is its `name`; a queue is declared by the consumer that
     reads it, never by a publisher;
   - `@RabbitSubscribe` only in a `*.consumer.ts`, provided only by a `*.worker.module.ts`
     (lint + `test/architecture/process-graph.spec.ts`): the api process never consumes;
-  - a consumer reads with `parseMessage()`, binds the tenant from the envelope
-    (`runInWorkspace`) and calls one use case through `inbox.once()`. `InvalidStateError` = already settled → return
-    (ack). Not a known contract, or a business refusal that will not change (`NotFoundError`)
+  - a consumer reads with `parseMessage()` and hands the message to `handleOnce()`
+    (`orders/interface/worker/handle-once.ts`), which binds the tenant from the envelope
+    (`runInWorkspace`) and calls one use case through `inbox.once()`. `InvalidStateError` =
+    already settled, or not what the saga waits for → return (ack). Not a known contract, or a business refusal that will not change (`NotFoundError`)
     → `throw new UnprocessableMessageError(…)`. `ConflictError` and anything that is not a
     `DomainError` → let it out;
   - no retry of the PSP call itself until 3.11: do not build it earlier;
   - `MessagingModule` stands in for the library's `RabbitMQModule`, whose static state allows
     one Nest application per process; the e2e suite runs several. Do not import
     `RabbitMQModule`;
-  - the e2e suite has no payments-service: a test reads the command and publishes the answer
-    through `test/helpers/broker.ts`, which also subscribes to `orders.*`
+  - the command carries `expiresAt`, the deadline of the saga step: handled later, payments
+    charges nothing and answers `payment-failed` with `expired`;
+  - the e2e suite has neither payments-service nor inventory-service: a test reads the
+    commands and publishes the answers through `test/helpers/broker.ts` (`sent()`,
+    `waitForSent()`, the builders of the answers), which also subscribes to `orders.*`
     (`broker.orderEvents()`). Each test file has its own RabbitMQ vhost (`db.ts`);
   - `RABBITMQ_PREFETCH=1` in `.env.test`: one message at a time, which is what makes "the
     event before this one was handled" provable (`drained()` in `payment-flow.e2e-spec.ts`).
@@ -195,8 +260,11 @@ entries: the BullMQ queues `orders`, `outbox` and `inbox` (cron ticks only), the
   - one relay at a time (`pg_try_advisory_xact_lock`), and the first message that cannot be
     published stops the ones behind it: order over throughput. Do not remove the lock to go
     faster;
-  - a command is published `mandatory`: while its receiver has not declared its queue, the row
-    stays unpublished and the relay logs one error. An event needs no subscriber;
+  - a command is published `mandatory`, and so is a delayed message: while its receiver has
+    not declared its queue, the row stays unpublished and the relay logs one error. An event
+    needs no subscriber;
+  - a row is addressed by its exchange and the name of its message; `routingKey` is set
+    only by `appendDelayed()`, to name a queue;
   - the api app alone publishes nothing: an e2e test that waits for a command or an event
     needs the worker app (`createWorkerApp()`), and `OUTBOX_POLL_INTERVAL_MS=50` in `.env.test`;
   - `outbox` is not a tenant table (no `workspace_id`, no policy), and the relay and the
@@ -227,7 +295,7 @@ entries: the BullMQ queues `orders`, `outbox` and `inbox` (cron ticks only), the
     (`Inbox.record()` in the transaction that settles the payment). The deliveries are tested
     here (`test/inbox/`).
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
-  Tenant models (Membership, Product, Order, OrderItem, OrderEvent) are filtered by the
+  Tenant models (Membership, Product, Order, OrderItem, OrderEvent, OrderSaga) are filtered by the
   workspace in CLS; a query without a tenant throws. Never inject `PrismaService` for tenant
   data: its only users are the extension, identity's documented cross-tenant reads
   (`asUser`), the partition adapter in orders (table structure, no tenant rows), and the relay
@@ -331,9 +399,9 @@ entries: the BullMQ queues `orders`, `outbox` and `inbox` (cron ticks only), the
   class-transformer and Nest, never by a constructor.
 - `register` and `login` take no `Actor` (the caller is anonymous); `createWorkspace` has no
   policy call, because any signed-in user may create one (`principles.md` §2.2).
-- `PlaceOrderService` calls an adapter inside `@Transactional()` (`write-service.md` §4 forbids
-  it for a call to the outside): `PaymentChargeScheduler` writes an outbox row through
-  `txHost.tx` and calls nothing. The outbox itself differs from `transactions.md` §5 in three
+- The use cases of the saga call adapters inside `@Transactional()` (`write-service.md` §4
+  forbids it for a call to the outside): `StockReservationScheduler`, `PaymentChargeScheduler`
+  and `SagaTimeoutScheduler` write outbox rows through `txHost.tx` and call nothing. The outbox itself differs from `transactions.md` §5 in three
   ways (relayed to a broker through a port, the row carries its address, a command goes
   through it too): `docs/conventions-backlog.md` §8.
 - The outbox has entry classes in `infrastructure/` (`outbox.consumer.ts`, `cleanup-outbox.job.ts`,
@@ -351,6 +419,19 @@ entries: the BullMQ queues `orders`, `outbox` and `inbox` (cron ticks only), the
   around the use case, not in it (`transport/queues.md` §3: "no transaction" in a consumer):
   the record of the message and the use case have to be one transaction, and the consumer
   still holds no logic (`docs/conventions-backlog.md` §10).
+- The saga is a second aggregate in `orders`, and its use cases save it together with the
+  order in one transaction (`domain-model.md` §1: the aggregate is the consistency boundary):
+  a step of the process and the status the client sees must not disagree. The timeouts are
+  delayed messages of the broker, not BullMQ delayed jobs as the roadmap named them. Why,
+  and what the conventions lack: `docs/conventions-backlog.md` §14, §15.
+- `OrderSagaSteps` is an injectable of `application/` that is not a use case: the repository
+  of the saga and the three ports a step sends through, as one collaborator. Six constructor
+  dependencies are the limit (`code-style.md` §2), and every use case of the saga needs these
+  four.
+- `POST …/orders/{id}/cancel` has two success statuses, 204 and 202
+  (`http/controller.md`: one status per route): `docs/conventions-backlog.md` §16.
+- `OrderSaga` does not extend `AggregateRoot`: it records no events, and its version is
+  checked by the repository only (no client holds it).
 - A broker consumer has no rule file of its own (`transport/queues.md` is BullMQ): ack, reject
   and prefetch replace attempts, backoff and concurrency. What we do: `docs/conventions-backlog.md` §4, §7.
 - `UnprocessableMessageError` extends `InfrastructureError` and lives in `shared/errors/`,

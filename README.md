@@ -138,11 +138,34 @@ pnpm dev
   `PAYMENT_EVENTS_MAX_ATTEMPTS` (api) set the delay and the number of deliveries; a queue can
   have a delay of its own (`.env.example` of each service).
 - inventory-service has its own Postgres on port 5435 (ADR 0016), with the roles `inventory`
-  (owner) and `inventory_app`. Nothing sends it commands yet; to see it work, publish one from
+  (owner) and `inventory_app`. `pnpm db:seed:inventory` gives the seeded products their stock.
+  Stock itself still arrives by a command nobody sends: publish `inventory.adjust-stock` from
   the management UI (exchange `commands`, routing key = the `name` of the message, payload as
-  in `packages/contracts/src/inventory/`) and watch `stock_items`, `reservations` and the
-  `events` exchange. Two `inventory.reserve-stock` for the product with one unit (below), for
-  two orders: one `inventory.stock-reserved`, one `inventory.stock-reservation-failed`.
+  in `packages/contracts/src/inventory/`) and watch `stock_items`.
+- Placing an order is a saga (ADR 0017): the api reserves the stock, then asks for the
+  charge, and undoes what was done when a step fails. `GET …/orders/{id}/events` tells the
+  steps; `SELECT step, deadline_at FROM order_sagas` (database `oms`) says where a saga
+  stands. Things to try, with all four processes running:
+  - success: place an order. History: `ORDER_PLACED`, `STOCK_RESERVED`, `PAYMENT_SUCCEEDED`;
+    `reserved` of the product went up in `stock_items` (database `inventory`).
+  - declined: an order whose total ends in 13 minor units with `PAYMENT_GATEWAY=fake`, or
+    `declineRate: 1` at fake-psp. `PAYMENT_FAILED`, then `STOCK_RELEASED`, and `reserved` is
+    back where it was.
+  - out of stock: order more than the product has. The order is a `DRAFT` again with
+    `failureReason: out_of_stock`, and the history names the shortage. Nothing was charged.
+  - payments is down: stop the payments process and place an order. After
+    `ORDER_SAGA_CHARGE_TIMEOUT_MS` the history has `PAYMENT_TIMED_OUT` and the order still
+    waits: the api asked payments to cancel the charge and cannot know more. Start payments:
+    the charge command has expired, so nothing is charged; `PAYMENT_FAILED` with `expired`,
+    then `STOCK_RELEASED`.
+  - inventory is down: stop it and place an order. After `ORDER_SAGA_RESERVE_TIMEOUT_MS` the
+    order is a `DRAFT` again with `inventory_unavailable`.
+  - cancel while the charge is under way (`latencyMs` of fake-psp gives the time): 202, then
+    `CANCELLED` with `CANCELLATION_REQUESTED` in the history, or `PAID` when the charge was
+    first. Seeded order 3 (`PENDING_PAYMENT`) can be cancelled this way too.
+  - the timeouts wait in the broker: the queues `api.saga-timeouts.delay.<ms>` in the
+    management UI hold one message per step that is waiting. Set the three
+    `ORDER_SAGA_*_TIMEOUT_MS` to a few seconds to watch them go off.
 - `pnpm db:explain:stock`: the last unit and 50 buyers under four locking strategies
   (`docs/perf/3.6-stock-locking.md`).
 - `pnpm dev`: the contracts in watch mode, then api, worker, payments and inventory, side by

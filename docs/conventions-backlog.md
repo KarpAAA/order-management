@@ -616,3 +616,148 @@ change, nobody is waiting) from an answer to a command (derived from the state, 
 time the command is handled, carries the correlation id of that command). Say that a module
 that only answers commands may skip `record()`/`pullEvents()`, and that a repeated command is
 answered again.
+
+---
+
+## 14. A process across services: a saga with a state of its own
+
+Step 3.7 · 2026-10-10 · Status: open
+
+**Conventions say:** `application/write-service.md` §4: a slow or outside step is "pending +
+queue + second use case": `RequestX` persists a pending state and enqueues, the consumer
+calls `CompleteX` / `FailX`. The pending state is a state of the aggregate.
+`domain/domain-model.md` §1: one use case changes one aggregate.
+
+**What we did:** placing an order takes two other services, in order, with a compensation
+(ADR 0017). The process has an aggregate of its own, `OrderSaga`, one row per attempt, next
+to `Order`: the saga holds the step (`RESERVING`, `CHARGING`, `CANCELLING_PAYMENT`,
+`RELEASING`, ended), the order keeps one status for the client (`PENDING_PAYMENT`). Each
+answer and each timeout is one use case that loads both, lets the saga accept the fact,
+changes the order and saves both in one transaction, together with the outbox rows of the
+next step. The four things every such use case needs (the repository of the saga and three
+outbound ports) are one injectable of `application/`, `OrderSagaSteps`.
+
+**Why:** "pending + queue + second use case" describes one outside step. With two steps the
+pending state would have to become several statuses of the order, which are of no use to a
+client and change with the process, and a late answer of an earlier attempt would have no
+state of its own to be refused by. The conventions also say nothing about what a step does
+when it is not answered, or about undoing a step that succeeded.
+
+**Assessment:** good. The order stays what the client sees, the saga is a table of facts and
+steps that is tested without a database, and a consumer acknowledges whatever the saga is
+not waiting for. The cost: two aggregates in one transaction (as §11), every answer loads
+both, and the rule "what the order becomes" is spread over six use cases.
+
+**Example:**
+
+```ts
+@Transactional()
+async execute(cmd: FailOrderPaymentCommand, actor: Actor): Promise<void> {
+  const order = await this.orders.getById(cmd.orderId);
+  const saga = await this.sagas.getByAttempt(cmd.orderId, cmd.paymentAttempt);
+  saga.paymentEnded(now);                 // not waiting for it → InvalidStateError → ack
+  order.markPaymentFailed({ ... });
+  await this.sagas.save(saga);            // writes the timeout of the step that begins
+  await this.orders.save(order);
+  await this.sagas.releaseStock(saga);    // the compensation: an outbox row
+}
+```
+
+**Proposed change:** a new file `application/sagas.md`: when one outside step becomes a
+process (two steps, or a step to undo); the saga as an aggregate per run of the process,
+keyed by what makes a run (`orderId` + attempt); a method per fact, `InvalidStateError` for a
+fact nobody waits for; the status of the business object changes when its question is
+settled, not when the saga ends; every waiting step has a timeout, and a timeout is "I did
+not hear", so only a step that cannot have had an effect is given up; a compensation is
+safe to repeat and is never given up silently. `domain-model.md` §1: name the saga as the
+second case, after §11, where one transaction holds two aggregates.
+
+---
+
+## 15. A message for later: the broker keeps it, the outbox writes it
+
+Step 3.7 · 2026-10-10 · Status: open
+
+**Conventions say:** `transport/queues.md` §2: a delayed BullMQ job with a deterministic
+`jobId` (`expire:enr_123`) is how something happens later. `application/transactions.md`
+§5: the outbox is for `reliable` events.
+
+**What we did:** the timeout of a saga step is a message the service sends to itself:
+`Outbox.appendDelayed({ queue, delayMs, message })` writes it in the transaction that begins
+the step, the relay publishes it to an exchange of the service (`api.delayed`) with the
+routing key `<queue>.delay.<ms>`, a queue nobody reads whose messages expire after `<ms>`
+and are dead-lettered to `<queue>`, where a normal consumer handles it through the inbox.
+The delays of a queue are configuration (`rabbitConfig.delays`), declared with its consumer.
+
+**Why:** a delayed job is written to Redis, next to the transaction, not in it. For "send a
+reminder" a lost job is a lost reminder. For a timeout that is the only thing that ends a
+wait, a job lost between the commit and `queue.add` is a process that hangs for ever, and
+the fix (the deadline in the database, a sweeper for the jobs that were lost) is three
+mechanisms. A project that already has an outbox and a broker has the fourth for free.
+
+**Assessment:** good where the broker and the outbox exist; not a reason to add either. One
+mechanism, atomic with the state, and the retry and dead-letter rules of every other
+message apply. What it costs: a fixed set of delays (a queue each, the delay in the name, a
+changed delay leaves an empty queue behind), a message cannot be cancelled (its consumer
+must check whether it still counts, which it should anyway), and the wait starts at the
+publish, so it is "no earlier than", not "at".
+
+**Example:**
+
+```ts
+// in the transaction that moves the saga to the step
+const deadline = await this.timeouts.schedule({ workspaceId, orderId, attempt, step });
+saga.waitUntil(deadline);
+
+// the consumer, when the delay is over
+saga.timedOut(step, now); // the step was answered meanwhile → InvalidStateError → ack
+```
+
+**Proposed change:** `transport/queues.md`: say when a delayed job is the wrong tool (when
+losing it leaves something waiting for ever) and name the two alternatives: a deadline
+column with a sweeper where there is no broker, a delayed message through the outbox where
+there is one. `application/transactions.md` §5: the outbox carries whatever must leave with
+the commit, a message for later included. A broker rule file (see §4, §7) would hold the
+topology: one queue per delay, quorum, `at-least-once` dead-lettering, published
+`mandatory`.
+
+---
+
+## 16. An action that is done at once or only asked for: two success statuses
+
+Step 3.7 · 2026-10-10 · Status: open
+
+**Conventions say:** `http/controller.md` and `http/api-conventions.md` §4: a write answers
+with one status: `201` created, `204` done, `202` accepted when the work continues
+elsewhere.
+
+**What we did:** `POST …/orders/{id}/cancel` answers `204` when the order is cancelled when
+the request returns, and `202 { id, status }` with `Location` when the charge of the order
+is under way and the cancellation is with its saga. The use case returns which of the two
+happened; the handler returns a body only for the second, and a small interceptor
+(`AcceptedWhenPendingInterceptor`) turns a body into `202`, so the controller still does not
+touch the response.
+
+**Why:** whether an action is synchronous may depend on the state of the object, not on the
+route. Always `202` would make a client poll for a draft that was cancelled in the request;
+always `204` would lie about an order that may still become `PAID`.
+
+**Assessment:** acceptable, and to be used rarely: a client has to handle both. It is honest
+about what happened, and the two cases are told apart by the status alone.
+
+**Example:**
+
+```ts
+@Post(':orderId/cancel')
+@HttpCode(204)
+@UseInterceptors(AcceptedWhenPendingInterceptor)
+async cancelOrder(...): Promise<OrderAcceptedDto | undefined> {
+  const outcome = await this.cancelOrderService.execute({ orderId, version }, actor);
+  return outcome === 'cancelled' ? undefined : { id: orderId, status: OrderStatus.PendingPayment };
+}
+```
+
+**Proposed change:** `http/api-conventions.md` §4: allow `204 | 202` on one action when the
+state decides whether the work is done, with both documented in OpenAPI and `Location` on
+the `202`; `http/controller.md`: the handler returns a body for "accepted" and nothing for
+"done", and a shared interceptor sets the status.

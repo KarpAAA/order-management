@@ -235,12 +235,12 @@
   - Закласти: запаси й резервації (reserve / release) з власною БД. Команди `ReserveStock` і `ReleaseStock` через RabbitMQ. Запас приходить командою `inventory.adjust-stock` (різниця, не рівень). `api` у цьому пункті не змінюється: сервіс збудований і протестований до своєї межі, команди шлють тести й seed.
   - Подивитись: конкурентні резервації останньої одиниці товару — хто виграє і чому (блокування чи optimistic locking).
 
-- [ ] **3.7 Сага (оркестрація в `api`)**
+- [x] **3.7 Сага (оркестрація в `api`)**
   - Закласти:
     - `api` після 3.6 нічого не знає про inventory. Тут з'являються: відправка `inventory.reserve-stock` / `inventory.release-stock` з outbox (ключ резервації `orderId + attempt`), консюмер подій `inventory.*` і ендпойнт каталогу, що шле `inventory.adjust-stock` (`docs/adr/0016-inventory-service.md` → «What 3.7 starts from»)
     - кроки: place → reserve stock → charge → confirm
     - компенсації: оплата не пройшла → release stock
-    - стан саги зберігається в БД, у кроків є таймаути (BullMQ delayed job)
+    - стан саги зберігається в БД, у кроків є таймаути (зроблено відкладеним повідомленням через outbox і TTL-чергу RabbitMQ замість BullMQ delayed job: ADR 0017)
     - тут же з'являється скасування `PENDING_PAYMENT`, заборонене в кроці 0
   - Подивитись: сценарії success, declined, out of stock і «payments лежить» — статуси й компенсації в історії замовлення.
 

@@ -22,10 +22,11 @@ flowchart LR
 
   api --> pg[("PostgreSQL<br/>api db")]
   worker --> pg
-  api -- "payments.charge-payment" --> rabbit
+  api -- "reserve-stock, charge-payment, their cancellations" --> rabbit
   rabbit -- "payments.commands" --> payments
-  payments -- "payment-succeeded / -failed" --> rabbit
-  rabbit -- "api.payment-events" --> worker
+  payments -- "payment-succeeded / -failed / -cancelled" --> rabbit
+  rabbit -- "api.payment-events, api.inventory-events" --> worker
+  rabbit -- "api.saga-timeouts (after a delay)" --> worker
   payments --> paydb[("PostgreSQL<br/>payments db")]
   payments -- "HTTP, idempotent" --> psp["fake-psp<br/>(external PSP simulator)"]
 
@@ -45,7 +46,6 @@ flowchart LR
   rabbit -- "inventory.commands" --> inventory
   inventory -- "stock-reserved / -failed / -released / -adjusted" --> rabbit
   inventory --> invdb[("PostgreSQL<br/>inventory db")]
-  api -. "inventory.reserve-stock (3.7)" .-> rabbit
   api -. "OrderPlaced, OrderPaid…" .-> rabbit
   rabbit -.-> notifications
   api -. "same events, second publisher" .-> kafka
@@ -61,11 +61,11 @@ flowchart LR
 
 | Component               | Responsibility                                                                       | Status       |
 | ----------------------- | ------------------------------------------------------------------------------------ | ------------ |
-| `api` (HTTP)            | identity & tenancy, catalog, orders; later orchestrates the order saga               | **Step 0**   |
-| `api` worker            | payment outcomes from the broker, scheduled jobs (BullMQ); later saga timeouts       | **Step 0**   |
+| `api` (HTTP)            | identity & tenancy, catalog, orders; starts the saga of an order (ADR 0017)          | **Step 0**   |
+| `api` worker            | moves the saga on the answers of inventory and payments and on its timeouts; jobs    | **Step 0**   |
 | `fake-psp`              | simulated external payment provider (`devtools/`, not part of the system)            | **Step 0**   |
 | RabbitMQ                | commands and events between the services (`@oms/contracts`, ADR 0011)                | **Step 3.2** |
-| `payments-service`      | one payment attempt per command, charged once at the PSP; later retries and refunds  | **Step 3.2** |
+| `payments-service`      | one payment attempt per command, charged once at the PSP, cancelled on a command     | **Step 3.2** |
 | `inventory-service`     | stock on hand and held per product; reserve, release, adjust on a command (ADR 0016) | **Step 3.6** |
 | `notifications-service` | emails on order events                                                               | Step 3       |
 | `analytics-service`     | read-model aggregates from Kafka events                                              | deferred     |
@@ -116,24 +116,26 @@ flowchart TB
 - Within `orders` (level 4) the layers are enforced by `eslint-plugin-boundaries`:
   `domain` imports nothing framework-related; `application` sees `domain`, `ports`,
   `common`, `shared` and other modules' `index.ts`; `infrastructure` implements `ports`.
-- Ports in `orders`: `OrdersRepositoryPort`, `OrderEventPartitions` and
-  `PaymentChargeScheduler` ("charge this attempt and tell me how it ended": a command written
-  to the outbox in the transaction of `place`). The payment provider is no longer a port of the
+- Ports in `orders`: `OrdersRepositoryPort`, `OrderSagasRepositoryPort`,
+  `OrderEventPartitions`, and what the saga asks for: `StockReservationScheduler` (reserve,
+  release), `PaymentChargeScheduler` (charge, cancel) and `SagaTimeoutScheduler`. Each of the
+  three writes a row of the outbox in the transaction of the use case that calls it; the
+  use cases reach them through `OrderSagaSteps`. The payment provider is no longer a port of the
   api: `PaymentGateway` (HTTP adapter → fake-psp, fake in-process adapter, chosen by
   `PAYMENT_GATEWAY=http|fake`) moved to payments-service with the code that calls it.
-- payments-service has one module, `payments` (`layered · L1 · together`): one use case,
-  `ChargePaymentService`, the table `payments`, and two ports, `PaymentGateway` and
+- payments-service has one module, `payments` (`layered · L1 · together`): two use cases,
+  `ChargePaymentService` and `CancelPaymentService`, the table `payments`, and two ports, `PaymentGateway` and
   `PaymentEventsPublisher` (the answer, written to the outbox with the settled row).
 - The outbox is infrastructure in both services (`src/infrastructure/outbox/`): `Outbox`
   (append in the current transaction), `OutboxRelay` and its runner, and the port
   `OutboxPublisher` with the RabbitMQ adapter. In the api it also holds `ReliableEvents`,
   where a module registers what its reliable domain events become on the broker.
 
-| Module   | Owns tables                             | Exposes                                               |
-| -------- | --------------------------------------- | ----------------------------------------------------- |
-| identity | `users`, `workspaces`, `memberships`    | `IdentityFacade` (membership lookup, workspace terms) |
-| catalog  | `products`                              | `CatalogFacade` (product snapshots for orders)        |
-| orders   | `orders`, `order_items`, `order_events` | nothing yet (no consumer)                             |
+| Module   | Owns tables                                            | Exposes                                               |
+| -------- | ------------------------------------------------------ | ----------------------------------------------------- |
+| identity | `users`, `workspaces`, `memberships`                   | `IdentityFacade` (membership lookup, workspace terms) |
+| catalog  | `products`                                             | `CatalogFacade` (product snapshots for orders)        |
+| orders   | `orders`, `order_items`, `order_events`, `order_sagas` | nothing yet (no consumer)                             |
 
 ## 4. Data model
 
@@ -147,6 +149,7 @@ erDiagram
   orders ||--|{ order_items : "(workspace_id, order_id)"
   products ||--o{ order_items : "(workspace_id, product_id)"
   orders ||--|{ order_events : "(workspace_id, order_id)"
+  orders ||--o{ order_sagas : "(workspace_id, order_id)"
 
   users { uuid id PK "global" text email UK "lower-case" text password_hash }
   workspaces { uuid id PK "global" text slug UK char3 currency int tax_rate_bps }
@@ -155,6 +158,7 @@ erDiagram
   orders { uuid workspace_id PK uuid id PK enum status char3 currency bigint total_minor int payment_attempt int version }
   order_items { uuid workspace_id PK uuid id PK uuid order_id FK uuid product_id FK bigint unit_price_minor int quantity }
   order_events { uuid workspace_id PK uuid id PK timestamptz created_at PK uuid order_id FK enum type text actor jsonb payload }
+  order_sagas { uuid workspace_id PK uuid order_id PK int attempt PK enum step timestamptz deadline_at timestamptz cancel_requested_at int version }
 ```
 
 - **Global tables** `users`, `workspaces` (future Citus reference tables).
@@ -168,6 +172,9 @@ erDiagram
   `ORDER_EVENTS_RETENTION_MONTHS` (0 = keep everything, the default). A read by `order_id`
   alone probes every partition, so the history query bounds `created_at` by the order's
   `created_at … updated_at`.
+- `order_sagas` (Step 3.7, ADR 0017): where one placing of an order is in its process across
+  inventory and payments. One row per `(order, payment attempt)`, so its key is not
+  `(workspace_id, id)`; a tenant table like the others, under Row-Level Security.
 - `outbox` (Step 3.4, ADR 0014) is not in the diagram: it belongs to no tenant and points at
   nothing. One row per message for the broker (`id` = the message id, `exchange`,
   `routing_key`, `payload` = the envelope, `published_at`), written in the transaction of the
@@ -187,7 +194,9 @@ stateDiagram-v2
   DRAFT --> PENDING_PAYMENT: place
   DRAFT --> CANCELLED: cancel
   PENDING_PAYMENT --> PAID: payment succeeded (worker)
-  PENDING_PAYMENT --> PAYMENT_FAILED: payment failed (worker)
+  PENDING_PAYMENT --> PAYMENT_FAILED: payment failed, or cancelled after a timeout (worker)
+  PENDING_PAYMENT --> DRAFT: out of stock, or inventory never answered (worker)
+  PENDING_PAYMENT --> CANCELLED: cancel, once the saga says nothing is charged
   PAYMENT_FAILED --> PENDING_PAYMENT: place (new attempt)
   PAYMENT_FAILED --> CANCELLED: cancel
   PAID --> FULFILLED: fulfill
@@ -197,6 +206,50 @@ stateDiagram-v2
 
 Items and discount change only in `DRAFT`. Every transition appends an `order_events` row
 in the same transaction as the order update. Any other transition → `422`.
+
+`PENDING_PAYMENT` is one status for the client and several steps for the system: while an
+order has it, its **saga** runs (ADR 0017). The api orchestrates: it sends a command for
+each step and reads the answer; the state of the process is a row of `order_sagas` per
+payment attempt.
+
+```mermaid
+stateDiagram-v2
+  [*] --> RESERVING: place → inventory.reserve-stock
+  RESERVING --> CHARGING: stock-reserved → payments.charge-payment
+  RESERVING --> ABORTED: stock-reservation-failed (order → DRAFT)
+  RESERVING --> RELEASING: timeout, or cancel (order → DRAFT / CANCELLED) → release-stock
+  CHARGING --> COMPLETED: payment-succeeded (order → PAID)
+  CHARGING --> RELEASING: payment-failed (order → PAYMENT_FAILED) → release-stock
+  CHARGING --> CANCELLING_PAYMENT: timeout, or cancel → payments.cancel-payment
+  CANCELLING_PAYMENT --> COMPLETED: payment-succeeded: the charge was first (order → PAID)
+  CANCELLING_PAYMENT --> RELEASING: payment-cancelled / -failed (order → PAYMENT_FAILED / CANCELLED) → release-stock
+  RELEASING --> ABORTED: stock-released
+  COMPLETED --> [*]
+  ABORTED --> [*]
+```
+
+- The charge is the pivot: what was done before it is undone by a compensation
+  (`release-stock`), after it nothing can fail for a business reason.
+- The order gets its status when the question of money is settled, not when the saga ends:
+  a declined order is `PAYMENT_FAILED` while the release of its stock is still under way.
+- Every step that waits has a timeout, written with it. A timeout says "I did not hear": of
+  a reservation it gives the order back and releases in the dark; of a charge it only asks
+  payments to cancel, and the answer decides; of a compensation it asks again and logs an
+  error.
+- An answer the saga is not waiting for (a late one, one given twice, one of an earlier
+  attempt) is acknowledged and changes nothing; two at once meet at the `version` of the saga.
+- The steps that change no status are rows of the history too (`STOCK_RESERVED`,
+  `STOCK_RELEASED`, `PAYMENT_TIMED_OUT`, `CANCELLATION_REQUESTED`, with `fromStatus = toStatus`).
+
+A timeout is a message the api sends to itself, through the outbox like every other one:
+
+```
+outbox ──► exchange api.delayed ──► api.saga-timeouts.delay.<ms> ──(expired)──► api.saga-timeouts ──► worker
+```
+
+A queue nobody reads, whose messages expire after `<ms>` and are dead-lettered to the queue
+of the worker: the same means as the retries below. Written in the transaction that begins
+the step, so a step never waits without its timeout; no Redis is involved.
 
 ## 6. Payment flow
 
@@ -213,8 +266,9 @@ sequenceDiagram
   participant W as worker (PaymentEventsConsumer)
 
   C->>API: POST /orders/{id}/place { version }
-  API->>DB: BEGIN; order → PENDING_PAYMENT, attempt++, insert ORDER_PLACED,<br/>outbox: payments.charge-payment + orders.order-placed; COMMIT
+  API->>DB: BEGIN; order → PENDING_PAYMENT, attempt++, insert ORDER_PLACED, saga RESERVING,<br/>outbox: inventory.reserve-stock + its timeout + orders.order-placed; COMMIT
   API-->>C: 202 { id, status: PENDING_PAYMENT } + Location
+  Note over W,MQ: inventory-service holds the stock and answers inventory.stock-reserved<br/>(queue api.inventory-events); the worker moves the saga to CHARGING and writes<br/>payments.charge-payment, with expiresAt, and its timeout to the outbox
   W->>DB: relay: the unpublished outbox rows, oldest first
   W->>MQ: payments.charge-payment → exchange commands (mandatory, confirmed), then mark published
   MQ->>P: queue payments.commands
@@ -240,7 +294,7 @@ sequenceDiagram
   else succeeded
     W->>DB: → PAID + PAYMENT_SUCCEEDED, outbox: orders.order-paid; COMMIT
   else failed
-    W->>DB: → PAYMENT_FAILED (reason) + PAYMENT_FAILED; COMMIT
+    W->>DB: → PAYMENT_FAILED (reason) + PAYMENT_FAILED, saga RELEASING,<br/>outbox: inventory.release-stock + its timeout; COMMIT
   end
   C->>API: GET /orders/{id} (poll until PAID / PAYMENT_FAILED)
 ```
@@ -261,19 +315,25 @@ relay:     BEGIN; advisory lock (one relay at a time);
            UPDATE … SET published_at; COMMIT                         every second, or at once after a full batch
 ```
 
-| Message                                 | Written by                                   | Exchange   |
-| --------------------------------------- | -------------------------------------------- | ---------- |
-| `payments.charge-payment`               | api, `place` (a port called by the use case) | `commands` |
-| `orders.order-placed`                   | api, `place`                                 | `events`   |
-| `orders.order-paid`                     | api, the answer of payments recorded         | `events`   |
-| `orders.order-cancelled`, `-fulfilled`  | api, `cancel`, `fulfill`                     | `events`   |
-| `payments.payment-succeeded`, `-failed` | payments, the attempt settled                | `events`   |
+| Message                                                        | Written by                                   | Exchange      |
+| -------------------------------------------------------------- | -------------------------------------------- | ------------- |
+| `inventory.reserve-stock`                                      | api, `place` (a port called by the use case) | `commands`    |
+| `payments.charge-payment`                                      | api, the stock of the attempt reserved       | `commands`    |
+| `inventory.release-stock`                                      | api, the compensation of the saga            | `commands`    |
+| `payments.cancel-payment`                                      | api, a charge timed out or a cancel asked    | `commands`    |
+| `orders.saga-step-timeout`                                     | api, every step of the saga that waits       | `api.delayed` |
+| `orders.order-placed`                                          | api, `place`                                 | `events`      |
+| `orders.order-paid`                                            | api, the answer of payments recorded         | `events`      |
+| `orders.order-cancelled`, `-fulfilled`                         | api, `cancel`, `fulfill`                     | `events`      |
+| `payments.payment-succeeded`, `-failed`, `-cancelled`          | payments, the attempt settled                | `events`      |
+| `inventory.stock-reserved`, `-reservation-failed`, `-released` | inventory, the command answered              | `events`      |
 
 Delivery is at least once: a relay that dies between the broker's confirm and its own commit
 publishes those messages again, with the same message id (the id of the row). With the broker
 down `place` still answers 202, and the command leaves when the broker is back. A command is
 published `mandatory`: while its receiver has not declared its queue, the row stays
-unpublished. A published row is kept 7 days. Nobody subscribes to `orders.*` yet (3.6, 3.10).
+unpublished; so is a delayed message. A published row is kept 7 days. Nobody subscribes to
+`orders.*` yet (3.10).
 
 A message takes effect once per consumer (ADR 0015). Each service has a table `inbox`,
 `(consumer, message_id)`, and a consumer records the message in the transaction of what it
@@ -304,10 +364,13 @@ more beside it:
                   └──(given up: publish + ack)──► <queue>.dlq
 ```
 
-| Queue                | Deliveries | Then                                                                  |
-| -------------------- | ---------- | --------------------------------------------------------------------- |
-| `payments.commands`  | 4          | a provider still down: answered `psp_unavailable`; anything else: dlq |
-| `api.payment-events` | 10         | dlq                                                                   |
+| Queue                  | Deliveries | Then                                                                  |
+| ---------------------- | ---------- | --------------------------------------------------------------------- |
+| `payments.commands`    | 4          | a provider still down: answered `psp_unavailable`; anything else: dlq |
+| `api.payment-events`   | 10         | dlq                                                                   |
+| `api.inventory-events` | 10         | dlq                                                                   |
+| `api.saga-timeouts`    | 10         | dlq                                                                   |
+| `inventory.commands`   | 5          | dlq                                                                   |
 
 A message that is not a known contract, or that business refuses for good (no such order in
 the workspace of the envelope), is parked in the dead-letter queue on its first delivery. So
@@ -373,24 +436,24 @@ message is an error in the log; it is put back through the management UI ("Move 
 
 ## 8. Known gaps
 
-| Gap                                                      | Consequence today                                                                                                                                                                                                                                     | Closed in                                                        |
-| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
-| The call to the PSP is made once per delivery            | A provider that does not answer is asked again only when the command is redelivered, 30 s later, four times in all; nothing retries within a delivery and nothing stops calling a provider that is down                                               | 3.11 (retries with backoff, circuit breaker)                     |
-| A command parked in payments leaves the api unanswered   | When the last delivery of a command fails on something other than the provider (the database of payments), or the command is not processable, it goes to `payments.commands.dlq` and the order stays `PENDING_PAYMENT` until an operator puts it back | 3.7 (a saga step has a timeout)                                  |
-| Nobody is told about a parked message                    | A message in a dead-letter queue is a `Logger.error`; no metric, no alert. Putting it back is manual, through the management UI                                                                                                                       | Step 4 (metric and alert on the depth of `*.dlq`)                |
-| The relay of the outbox is watched by nobody             | A relay that cannot publish logs one error; the unpublished rows and the age of the oldest are not measured                                                                                                                                           | Step 4 (metrics outbox_pending_total, outbox_oldest_age_seconds) |
-| payments has no migration checker and no mutation run    | Three migrations, applied on an empty database by its e2e suite; drift was checked by hand for the second, upgrade is not checked                                                                                                                     | open: a checker like the one of the api                          |
-| Nobody sends the commands of inventory                   | The api places and charges an order without asking for stock; the stock changes only by the seed, the test suite or a message published by hand. `inventory.adjust-stock` has no sender at all                                                        | 3.7 (the saga reserves and releases; a catalog endpoint adjusts) |
-| A command parked in inventory is not answered            | When every delivery of a command fails (the database of inventory), or a refusal will not change (stock below what is held), it goes to `inventory.commands.dlq` and whoever sent it hears nothing                                                    | 3.7 (a saga step has a timeout)                                  |
-| The stock cannot be read                                 | No HTTP in inventory and no read model in the api: what is in stock is visible in the database only. `inventory.stock-adjusted` is published for a future reader                                                                                      | open: a read model in the api, fed by `inventory.*` events       |
-| Units of a paid order stay `reserved`                    | Nothing lowers `on_hand` when an order is fulfilled, and adjustments keep no ledger (levels, not movements)                                                                                                                                           | open: fulfilment is not in the roadmap of Step 3                 |
-| inventory has no migration checker and no mutation run   | One migration, applied on an empty database by its e2e suite                                                                                                                                                                                          | open: a checker like the one of the api                          |
-| `PENDING_PAYMENT` cannot be cancelled                    | A stuck order (see above) cannot be cancelled by users                                                                                                                                                                                                | Step 3 (saga with compensation)                                  |
-| No rate limiting                                         | A noisy tenant is not limited; brute force on `/auth/login` is not throttled                                                                                                                                                                          | deferred: roadmap 2.10, second pass                              |
-| Default Nest logger only                                 | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                                                                                                             | Step 4 (pino, OpenTelemetry)                                     |
-| No health checks, no graceful shutdown                   | Compose/k8s cannot tell "started" from "ready"; in-flight jobs are cut on stop                                                                                                                                                                        | Step 5                                                           |
-| `Location` on two 201s points nowhere                    | `POST /auth/register` and `POST /workspaces/{id}/members` return a `Location` without a GET route behind it                                                                                                                                           | open: a GET route or another URL, decided with the API           |
-| No `Idempotency-Key` on HTTP writes                      | A retried `POST /orders` creates a second draft (place is protected by `version`)                                                                                                                                                                     | Step 3 (with the saga)                                           |
-| No reconciliation with the PSP                           | If every attempt times out after the PSP already charged (e.g. latency > 3 s), the order ends `PAYMENT_FAILED psp_unavailable` while the PSP holds a successful charge                                                                                | open (payments-service reconciles by idempotency key)            |
-| Dropping a partition locks `order_events`                | `drop_order_events_partition` is a plain `DROP` (a function cannot `DETACH … CONCURRENTLY`); it gives up after 5 s and the job retries. Retention is off by default                                                                                   | open: an owner-run task outside the application                  |
-| Seeded `PENDING_PAYMENT` orders have no charge under way | They stay pending forever: the seed writes past `place`, no command is in the outbox                                                                                                                                                                  | Step 3                                                           |
+| Gap                                                                      | Consequence today                                                                                                                                                                                                                                                             | Closed in                                                              |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| The call to the PSP is made once per delivery                            | A provider that does not answer is asked again only when the command is redelivered, 30 s later, four times in all; nothing retries within a delivery and nothing stops calling a provider that is down                                                                       | 3.11 (retries with backoff, circuit breaker)                           |
+| Nobody is told about a parked message                                    | A message in a dead-letter queue is a `Logger.error`; no metric, no alert. Putting it back is manual, through the management UI                                                                                                                                               | Step 4 (metric and alert on the depth of `*.dlq`)                      |
+| The relay of the outbox is watched by nobody                             | A relay that cannot publish logs one error; the unpublished rows and the age of the oldest are not measured                                                                                                                                                                   | Step 4 (metrics outbox_pending_total, outbox_oldest_age_seconds)       |
+| payments has no migration checker and no mutation run                    | Five migrations, applied on an empty database by its e2e suite; drift and upgrade are not checked                                                                                                                                                                             | open: a checker like the one of the api                                |
+| `inventory.adjust-stock` has no sender                                   | The saga reserves and releases; stock itself arrives only by the seed, the test suite or a message published by hand                                                                                                                                                          | open: an endpoint of the catalog that writes the command to the outbox |
+| A command parked in another service is answered only when it is put back | The saga asks again on every timeout of a compensation and logs an error, but an order whose `cancel-payment` or `release-stock` is never answered stays where it is: `PENDING_PAYMENT` with its stock held, or with stock held for an order that is already `PAYMENT_FAILED` | Step 4 (an alert on the error and on the depth of `*.dlq`)             |
+| The stock cannot be read                                                 | No HTTP in inventory and no read model in the api: what is in stock is visible in the database only. `inventory.stock-adjusted` is published for a future reader                                                                                                              | open: a read model in the api, fed by `inventory.*` events             |
+| Units of a paid order stay `reserved`                                    | Nothing lowers `on_hand` when an order is fulfilled, and adjustments keep no ledger (levels, not movements)                                                                                                                                                                   | open: fulfilment is not in the roadmap of Step 3                       |
+| inventory has no migration checker and no mutation run                   | One migration, applied on an empty database by its e2e suite                                                                                                                                                                                                                  | open: a checker like the one of the api                                |
+| Orders written past `place` have no saga                                 | An order the datagen wrote as `PENDING_PAYMENT` cannot be cancelled, and an answer for it is parked: its saga is not found. The seed and the migration write one                                                                                                              | open: the datagen is for query plans, not for flows                    |
+| A saga that nobody answers asks for ever                                 | Every `ORDER_SAGA_COMPENSATION_TIMEOUT_MS` one more command goes into the queue of a service that is down, with no limit                                                                                                                                                      | Step 4 (the alert is what ends it: an operator)                        |
+| An order back in `DRAFT` or `PAYMENT_FAILED` publishes nothing           | Out of stock and a failed payment are visible to a client that polls, not to a subscriber of `orders.*`                                                                                                                                                                       | 3.10 (a mail for them needs a reliable domain event)                   |
+| No rate limiting                                                         | A noisy tenant is not limited; brute force on `/auth/login` is not throttled                                                                                                                                                                                                  | deferred: roadmap 2.10, second pass                                    |
+| Default Nest logger only                                                 | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                                                                                                                                     | Step 4 (pino, OpenTelemetry)                                           |
+| No health checks, no graceful shutdown                                   | Compose/k8s cannot tell "started" from "ready"; in-flight jobs are cut on stop                                                                                                                                                                                                | Step 5                                                                 |
+| `Location` on two 201s points nowhere                                    | `POST /auth/register` and `POST /workspaces/{id}/members` return a `Location` without a GET route behind it                                                                                                                                                                   | open: a GET route or another URL, decided with the API                 |
+| No `Idempotency-Key` on HTTP writes                                      | A retried `POST /orders` creates a second draft (place is protected by `version`)                                                                                                                                                                                             | Step 3 (with the saga)                                                 |
+| No reconciliation with the PSP                                           | If every attempt times out after the PSP already charged (e.g. latency > 3 s), the order ends `PAYMENT_FAILED psp_unavailable` while the PSP holds a successful charge. The same for a cancelled attempt whose void fails on the last delivery of its charge command          | open (payments-service reconciles by idempotency key)                  |
+| Dropping a partition locks `order_events`                                | `drop_order_events_partition` is a plain `DROP` (a function cannot `DETACH … CONCURRENTLY`); it gives up after 5 s and the job retries. Retention is off by default                                                                                                           | open: an owner-run task outside the application                        |
