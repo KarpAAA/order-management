@@ -617,8 +617,6 @@ time the command is handled, carries the correlation id of that command). Say th
 that only answers commands may skip `record()`/`pullEvents()`, and that a repeated command is
 answered again.
 
----
-
 ## 14. A process across services: a saga with a state of its own
 
 Step 3.7 · 2026-10-10 · Status: open
@@ -672,8 +670,6 @@ not hear", so only a step that cannot have had an effect is given up; a compensa
 safe to repeat and is never given up silently. `domain-model.md` §1: name the saga as the
 second case, after §11, where one transaction holds two aggregates.
 
----
-
 ## 15. A message for later: the broker keeps it, the outbox writes it
 
 Step 3.7 · 2026-10-10 · Status: open
@@ -721,8 +717,6 @@ the commit, a message for later included. A broker rule file (see §4, §7) woul
 topology: one queue per delay, quorum, `at-least-once` dead-lettering, published
 `mandatory`.
 
----
-
 ## 16. An action that is done at once or only asked for: two success statuses
 
 Step 3.7 · 2026-10-10 · Status: open
@@ -761,3 +755,63 @@ async cancelOrder(...): Promise<OrderAcceptedDto | undefined> {
 state decides whether the work is done, with both documented in OpenAPI and `Location` on
 the `202`; `http/controller.md`: the handler returns a body for "accepted" and nothing for
 "done", and a shared interceptor sets the status.
+
+## 17. The Idempotency-Key: who opens the transaction, and what "in flight" is
+
+Step 3.7 · 2026-10-11 · Status: open
+
+**Conventions say:** `http/api-conventions.md` §5: money and publish-style endpoints require
+an `Idempotency-Key`; the key, the fingerprint, the status and the body are stored in one
+table "written in the same transaction as the operation"; a repeat returns the stored
+response, another body is `422`, a second request in flight is `409` with `Retry-After`,
+"never a wait on a lock held by HTTP". `application/write-service.md`: the use case owns the
+transaction.
+
+**What we did:** a method decorator `@Idempotent()` applies a route-level interceptor. The
+interceptor calls a port, `Idempotency.once(request, handle)`, which opens the transaction,
+takes `pg_try_advisory_xact_lock` on `(user, method + path, key)`, returns the stored
+response for a known key, or runs the handler and inserts the row with its response. The
+`@Transactional()` use case inside joins that transaction. A request that throws rolls the
+key back. The key is required on the two routes that have no natural key to refuse a
+repetition (`POST /orders`, `place`), not on the three creating routes that have one.
+
+**Why:** the conventions say what must be true and not how. Three things had to be decided:
+
+- _who opens the transaction._ The row and the write are one transaction, and the use case
+  cannot write the row: it does not know the header, the status or the body of the response.
+  So the transaction opens around the use case, as it does for a broker consumer with an
+  inbox (§10). The same exception to "the use case owns the transaction", for the same
+  reason;
+- _what "in flight" is._ A row inserted first and committed (`in progress`) answers a
+  second request, but a request that dies leaves it behind. A transaction-level advisory
+  lock answers it without a row and is released by the database however the request ends;
+  it is also the only advisory lock a transaction-mode pooler allows (`db-general.md` §8);
+- _which use cases can be wrapped._ One that acts on its own commit (a cache invalidation
+  after the write) or that opens its transaction in a new context (to bind a tenant that
+  did not exist a moment ago) breaks when a transaction is already open around it.
+
+**Assessment:** good. The use cases did not change, the store is the inbox with a response
+in it, and a refused request leaves no trace. The cost is the rule the last point implies:
+a use case behind `@Idempotent()` may not assume that its commit is the commit.
+
+**Example:**
+
+```ts
+@Post()
+@HttpCode(201)
+@Idempotent() // 400 without the header; the same key again → the same 201 and body
+createOrder(@Body() dto: CreateOrderDto, @CurrentActor() actor: UserActor) { ... }
+
+// the store, in the transaction the use case joins
+const [lock] = await tx.$queryRaw`SELECT pg_try_advisory_xact_lock(hashtextextended(${id}, 0)) AS locked`;
+if (!lock.locked) throw new IdempotencyKeyInProgressError(key); // 409 + Retry-After
+```
+
+**Proposed change:** `http/api-conventions.md` §5: add the mechanics. The key is scoped to
+the actor and to the method and path; the transaction is opened by a route-level interceptor
+through a port (`once(request, handle)`), and the use case joins it; "in flight" is a
+transaction-level advisory lock taken first; only a successful response is stored; say which
+writes need no key (a unique natural key, or a `version`). `application/write-service.md`
+and `transport/queues.md` §3: name the two cases where the transaction opens around the use
+case (the inbox of a consumer, the idempotency key of a route), and what a use case must not
+do because of them.

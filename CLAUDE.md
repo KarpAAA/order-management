@@ -41,7 +41,8 @@ broker: rabbitmq                # between services only (ADR 0012): commands →
 queue: bullmq
 processes: api+worker
 dlq: alert                      # dead job → Logger.error in OrdersConsumer; a broker message given up → `<queue>.dlq` + Logger.error (Step 4: metric)
-cron: bullmq                    # job schedulers on the owner's queue: maintain-order-event-partitions (orders), cleanup-outbox (outbox), cleanup-inbox (inbox)
+cron: bullmq                    # job schedulers on the owner's queue: maintain-order-event-partitions (orders), cleanup-outbox (outbox), cleanup-inbox (inbox), cleanup-idempotency-keys (idempotency)
+idempotency-key: required       # on POST /orders and POST /orders/{id}/place only (ADR 0018); a row in the transaction of the write
 validation: class-validator
 swagger-prod: off
 async-push: poll
@@ -106,7 +107,8 @@ New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<ob
 | orders   | layered        | L4    | CQS + EventBus | http, worker |
 
 Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image. The worker has
-seven entries: the BullMQ queues `orders`, `outbox` and `inbox` (cron ticks only), the broker
+eight entries: the BullMQ queues `orders`, `outbox`, `inbox` and `idempotency` (cron ticks
+only), the broker
 queues `api.inventory-events`, `api.payment-events` and `api.saga-timeouts`, and the relay of
 the outbox (a timer, `infrastructure/outbox/`).
 
@@ -294,12 +296,34 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
   - the inbox is copied in `services/payments`, where the use case records the message itself
     (`Inbox.record()` in the transaction that settles the payment). The deliveries are tested
     here (`test/inbox/`).
+- **A write with no key of its own requires an `Idempotency-Key`** (ADR 0018;
+  `@Idempotent()`, `common/interceptors/idempotency.interceptor.ts`, the port `IDEMPOTENCY`
+  in `@shared/http/idempotency`, `infrastructure/idempotency/`). On `POST /orders` and
+  `POST /orders/{id}/place`: the interceptor opens a transaction, takes
+  `pg_try_advisory_xact_lock` on the key, and either returns the stored answer or runs the
+  handler and stores its answer in that transaction. Consequences:
+  - the use case of such a route joins a transaction that began before it. It must not rely
+    on "after my `@Transactional()` returns the row is committed": nothing that acts on the
+    commit (a cache invalidation, a call to the outside) belongs in it;
+  - a use case that opens its transaction in a fresh CLS scope (`createWorkspace`) does not
+    join, and cannot be wrapped: that is why the other creating routes have no key. Their
+    unique keys refuse a repetition (409);
+  - only an answered request is recorded: whatever throws rolls the key back with the rest;
+  - same key, same body → the stored status and body, the handler does not run; another
+    body → 422; still being handled → 409 with `Retry-After`. Never wait on the lock;
+  - `@Idempotent()` is route-level on purpose: its transaction has to commit inside the
+    global interceptors (`Location`, read-your-writes). Do not make it global;
+  - the route must be behind the auth guard: the key is scoped to `(user, method + path)`;
+  - `idempotency_keys` is not a tenant table (no `workspace_id`, no policy), and its cleanup
+    uses the unscoped `PrismaService`;
+  - `api.http()` in the e2e suite sends a fresh key with every request; a test about the
+    key sets or unsets the header.
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
   Tenant models (Membership, Product, Order, OrderItem, OrderEvent, OrderSaga) are filtered by the
   workspace in CLS; a query without a tenant throws. Never inject `PrismaService` for tenant
   data: its only users are the extension, identity's documented cross-tenant reads
   (`asUser`), the partition adapter in orders (table structure, no tenant rows), and the relay
-  and the cleanups of the outbox and of the inbox (rows of no tenant).
+  and the cleanups of the outbox, of the inbox and of the idempotency keys (rows of no tenant).
 - **Row-Level Security is the second layer** (ADR 0006). Two database roles: `DATABASE_URL` is
   `oms_app` (api + worker: owns nothing, sees only rows of `app.workspace_id`),
   `DATABASE_ADMIN_URL` is the owner (Prisma CLI, seed, datagen, `testDb()` in tests; not in
@@ -412,7 +436,12 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
   (`transport/cron.md` §1 asks for a use case): one `DELETE` on a table of no tenant.
 - The inbox has the same shape: entry classes in `infrastructure/inbox/` (`inbox.consumer.ts`,
   `cleanup-inbox.job.ts`, wired by `inbox.worker.module.ts`), and `InboxCleanup` called by its
-  job directly.
+  job directly. So have the idempotency keys (`infrastructure/idempotency/`).
+- The `Idempotency-Key` is required on two routes, not on every creating `POST`
+  (`api-conventions.md` §5 allows that), and the transaction of those routes opens in an
+  interceptor, around the use case (`write-service.md`: the use case owns the transaction):
+  the key and the write have to be one transaction, as with the inbox
+  (`docs/conventions-backlog.md` §17).
 - `outbox` and `inbox` are not partitioned and are cleaned with `DELETE` (`db-general.md` §9
   asks for `PARTITION BY RANGE` on log-like tables): `docs/conventions-backlog.md` §9.
 - `PaymentEventsConsumer` calls its use case through the inbox port, so the transaction opens

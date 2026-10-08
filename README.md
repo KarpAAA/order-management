@@ -170,6 +170,10 @@ pnpm dev
   (`docs/perf/3.6-stock-locking.md`).
 - `pnpm dev`: the contracts in watch mode, then api, worker, payments and inventory, side by
   side.
+- `POST …/orders` and `POST …/orders/{id}/place` need an `Idempotency-Key` header, a uuid of
+  the client's choosing (ADR 0018). Send the same request twice with the same key: one order,
+  the same answer. Another body with that key: 422. `SELECT scope, status_code, response FROM
+idempotency_keys` (database `oms`) shows what is remembered, for `IDEMPOTENCY_RETENTION_HOURS`.
 - Then open `docs/requests.http` in WebStorm and run it top to bottom.
 
 Everything in containers instead (api and worker from **one** image, payments and inventory
