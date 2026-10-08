@@ -1,6 +1,7 @@
-# Local environment. Infra (postgres, postgres-replica, pgbouncer, postgres-payments, redis, rabbitmq,
-# fake-psp) starts by default; `docker compose --profile app up --build` adds the services:
-# api + worker from ONE image, payments from its own.
+# Local environment. Infra (postgres, postgres-replica, pgbouncer, postgres-payments,
+# postgres-inventory, redis, rabbitmq, fake-psp) starts by default;
+# `docker compose --profile app up --build` adds the services: api + worker from ONE image,
+# payments and inventory each from its own.
 name: oms
 
 services:
@@ -63,6 +64,25 @@ services:
       - ./devtools/postgres-payments/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U payments -d payments']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # The database of inventory-service: its own server as well (ADR 0016).
+  postgres-inventory:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: inventory
+      POSTGRES_PASSWORD: inventory
+      POSTGRES_DB: inventory
+    ports:
+      - '5435:5432'
+    volumes:
+      - postgres-inventory-data:/var/lib/postgresql
+      # the application role's login, on an empty volume only
+      - ./devtools/postgres-inventory/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U inventory -d inventory']
       interval: 5s
       timeout: 3s
       retries: 10
@@ -235,7 +255,42 @@ services:
       fake-psp:
         condition: service_healthy
 
+  # ── inventory-service: its own image, database and migration step ──────────────
+  migrate-inventory:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: services/inventory/Dockerfile
+      target: build
+    image: oms-inventory-build:local
+    working_dir: /repo/services/inventory
+    command: ['pnpm', 'exec', 'prisma', 'migrate', 'deploy']
+    environment:
+      DATABASE_ADMIN_URL: postgresql://inventory:inventory@postgres-inventory:5432/inventory?schema=public
+    depends_on:
+      postgres-inventory:
+        condition: service_healthy
+
+  inventory:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: services/inventory/Dockerfile
+    image: oms-inventory:local
+    env_file: services/inventory/.env.example
+    environment:
+      DATABASE_URL: postgresql://inventory_app:inventory_app@postgres-inventory:5432/inventory?schema=public
+      # env_file is the dev environment; the process itself gets no owner URL
+      DATABASE_ADMIN_URL: ''
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+    depends_on:
+      migrate-inventory:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+
 volumes:
+  postgres-inventory-data:
   postgres-payments-data:
   postgres-data:
   postgres-replica-data:
