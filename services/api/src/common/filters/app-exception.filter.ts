@@ -8,6 +8,7 @@ import {
   NotFoundError,
 } from '@shared/errors/domain-error';
 import { ForbiddenError } from '@shared/errors/forbidden-error';
+import { IdempotencyKeyInProgressError } from '@shared/errors/idempotency-key.error';
 import { InfrastructureError } from '@shared/errors/infrastructure-error';
 
 import { VALIDATION_FAILED } from '../validation/validation-exception.factory';
@@ -68,6 +69,10 @@ export class AppExceptionFilter implements ExceptionFilter {
   }
 
   private map(err: unknown): Mapped {
+    if (err instanceof IdempotencyKeyInProgressError) {
+      // the first request with the key is about to be answered: the same key, a moment later
+      return { ...domain(409, err), headers: { 'Retry-After': '1' } };
+    }
     if (err instanceof NotFoundError) return domain(404, err);
     if (err instanceof ConflictError) return domain(409, err);
     if (err instanceof InvalidStateError) return domain(422, err);

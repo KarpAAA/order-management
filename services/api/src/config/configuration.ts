@@ -95,6 +95,11 @@ export const inboxConfig = registerAs('inbox', () => ({
 }));
 export type InboxConfig = ConfigType<typeof inboxConfig>;
 
+export const idempotencyConfig = registerAs('idempotency', () => ({
+  retentionHours: env().IDEMPOTENCY_RETENTION_HOURS,
+}));
+export type IdempotencyConfig = ConfigType<typeof idempotencyConfig>;
+
 export const authConfig = registerAs('auth', () => ({
   jwtSecret: env().JWT_SECRET,
   accessTtlSeconds: env().JWT_ACCESS_TTL_SECONDS,
@@ -128,6 +133,7 @@ export const allConfigs = [
   rabbitConfig,
   outboxConfig,
   inboxConfig,
+  idempotencyConfig,
   authConfig,
   ordersQueueConfig,
   orderEventsConfig,

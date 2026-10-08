@@ -35,8 +35,9 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  memberships   Membership[]
-  createdOrders Order[]
+  memberships     Membership[]
+  createdOrders   Order[]
+  idempotencyKeys IdempotencyKey[]
 
   @@map("users")
 }
@@ -296,4 +297,30 @@ model InboxMessage {
   // the cleanup: `processed_at < …`
   @@index([processedAt])
   @@map("inbox")
+}
+
+// ── idempotency keys ────────────────────────────────────────────────────────
+
+/// A write the API has answered, under the key its client chose for it
+/// (docs/adr/0018-http-idempotency-key.md): the same key again gets the same answer, and
+/// the write is not made twice. Written in the transaction of the write. Not a tenant table:
+/// a key belongs to its user and its route, and the cleanup reads the keys of everybody.
+model IdempotencyKey {
+  userId      String   @map("user_id") @db.Uuid
+  /// the method and the path of the request: one key never answers two routes
+  scope       String
+  key         String   @db.Uuid
+  /// sha-256 of the request body: the same key with another body is refused
+  fingerprint String
+  statusCode  Int      @map("status_code")
+  /// the response body as it was sent; null for a response without one
+  response    Json?
+  createdAt   DateTime @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, scope, key])
+  // the cleanup: `created_at < …`
+  @@index([createdAt])
+  @@map("idempotency_keys")
 }

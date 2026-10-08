@@ -17,7 +17,7 @@
     "typecheck": "prisma generate && tsc --noEmit -p tsconfig.json",
     "test": "vitest run --project unit",
     "test:watch": "vitest --project unit",
-    "test:e2e": "vitest run --project e2e --passWithNoTests",
+    "test:e2e": "vitest run --project e2e --passWithNoTests --maxWorkers=75%",
     "test:mutation": "stryker run",
     "test:migrations": "tsx prisma/check-migrations.ts",
     "db:generate": "prisma generate",

@@ -185,6 +185,7 @@ describe('worker process', () => {
       'OrdersConsumer',
       'OutboxConsumer',
       'InboxConsumer',
+      'IdempotencyConsumer',
     ]);
     expect(subscribersOf(workerGraph)).toEqual([
       'InventoryEventsConsumer',

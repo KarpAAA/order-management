@@ -22,6 +22,7 @@ import {
 
 import { ApiErrors } from '@common/decorators/api-errors.decorator';
 import { CurrentActor } from '@common/decorators/current-actor.decorator';
+import { Idempotent } from '@common/decorators/idempotent.decorator';
 import { UuidParam } from '@common/decorators/uuid-param.decorator';
 import { WorkspaceScoped } from '@common/decorators/workspace-scoped.decorator';
 import { CreatedDto, CursorPageQueryDto, VersionDto } from '@common/dto/common.dto';
@@ -66,6 +67,7 @@ export class OrdersController {
 
   @Post()
   @HttpCode(201)
+  @Idempotent()
   @ApiOperation({ summary: 'Create a DRAFT order (MEMBER and above)' })
   @ApiCreatedResponse({ type: CreatedDto })
   @ApiErrors(400, 422)
@@ -132,6 +134,7 @@ export class OrdersController {
 
   @Post(':orderId/place')
   @HttpCode(202)
+  @Idempotent()
   @ApiOperation({
     summary: 'Place the order: charge runs asynchronously (MEMBER and above)',
     description:

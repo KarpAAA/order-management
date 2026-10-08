@@ -182,6 +182,26 @@ answer through the inbox. The order stays PENDING_PAYMENT while the saga waits.
 | SAGA-022 | `cancel` while the saga is `CANCELLING_PAYMENT` after a timeout → 202: the saga remembers the request, and the order ends CANCELLED instead of PAYMENT_FAILED. A second request → 202 and nothing is written.                                                                                                                                                                                        | `unit + api`           |
 | SAGA-023 | `cancel` of a PENDING_PAYMENT order checks `version` (409) and the role (403) like any other cancel, and writes nothing when refused.                                                                                                                                                                                                                                                                | `unit + api`           |
 
+## IDK: idempotency of HTTP writes (Step 3.7)
+
+A client that did not get the answer to a write sends it again. `POST /orders` and
+`POST /orders/{id}/place` require the header `Idempotency-Key`, a uuid the client chooses and
+repeats on every retry of that request (`docs/adr/0018-http-idempotency-key.md`). The other
+writes need none: a second `POST` of a workspace, a member or a product is refused by its
+unique key (409), and `cancel`, `fulfill`, `archive` and `PATCH` by `version` and state.
+
+| Id      | Requirement                                                                                                                                                                                                 | Level              |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
+| IDK-001 | Without the header, or with one that is not a uuid, the route answers `400 IDEMPOTENCY_KEY_REQUIRED` and does nothing.                                                                                      | `unit + api`       |
+| IDK-002 | The first request with a key is handled as usual, and its answer is stored with the key in the transaction of the write: status, body. The response echoes the header.                                      | `unit + int + api` |
+| IDK-003 | The same key again with the same body gets the stored answer: the same status, body and `Location`. The use case does not run: one order is created, an order is placed once, no second message is written. | `unit + int + api` |
+| IDK-004 | The same key with another body → `422 IDEMPOTENCY_KEY_REUSED`, and nothing is done. The order of the keys in the JSON body does not make it another body.                                                   | `unit + int + api` |
+| IDK-005 | A key belongs to its user and its route (the method and the path): the same key sent by another user, or to another route or workspace, is a key nobody has seen.                                           | `int + api`        |
+| IDK-006 | A second request with a key whose first request is still being handled → `409 IDEMPOTENCY_KEY_IN_PROGRESS` with `Retry-After`; it does not wait and nothing is done twice.                                  | `int + api`        |
+| IDK-007 | A request that is refused or fails stores nothing: its key can be sent again, and is handled.                                                                                                               | `int + api`        |
+| IDK-008 | A key is deleted `IDEMPOTENCY_RETENTION_HOURS` after its request was answered; sent again after that, the request is handled anew.                                                                          | `int`              |
+| IDK-009 | A route that does not require the header ignores it.                                                                                                                                                        | `api`              |
+
 ## AUTH: authentication
 
 | Id       | Requirement                                                                                                                                      | Level |

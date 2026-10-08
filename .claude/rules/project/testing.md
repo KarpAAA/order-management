@@ -25,6 +25,14 @@ paths:
   `application/__test__/` (repository, recording publisher), beside the e2e
   suite that `testing.md` asks for: they pin the load → policy → domain → save → publish order
   and the payment branches without containers. Never a `vi.mock` of our own code.
+- `pnpm test:e2e` of the api runs with `--maxWorkers=75%`: the files run against containers
+  on the same machine (Postgres, RabbitMQ, Redis), and since 3.7 most of them start an api
+  app, a worker app and a dozen quorum queues. With a worker per core the first test of such
+  a file timed out in about half the runs (8 cores); with two cores left to the containers
+  it did not in any. Raise it only together with a look at those first tests.
+- The API test helper (`test/helpers/api-app.ts`) sends an `Idempotency-Key` of its own with
+  every request, as a client would: `http()` is one request. A test about the key sets or
+  unsets the header itself.
 - An adapter that publishes to the broker (`rabbit-*.adapter.spec.ts`) is tested against a
   recording stand-in for `AmqpConnection`: what it sends must pass `parseMessage()`. The broker
   itself is exercised by the e2e suite of each service, which stops at the service boundary:

@@ -102,6 +102,12 @@ export const envSchema = z.object({
   /** Days the record of a handled message is kept: longer than the message may come again. */
   INBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
 
+  /**
+   * Hours the answer to an `Idempotency-Key` is kept: longer than a client may still retry
+   * the request. After that the key is unknown, and the request is done again.
+   */
+  IDEMPOTENCY_RETENTION_HOURS: z.coerce.number().int().min(1).max(720).default(24),
+
   JWT_SECRET: z.string().min(32),
   // ≤ 15 min (ops/security.md §3); with refresh: none a leaked token lives this long
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().max(900).default(900),
