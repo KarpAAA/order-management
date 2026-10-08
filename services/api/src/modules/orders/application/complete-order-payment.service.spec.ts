@@ -2,7 +2,8 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { ForbiddenError } from '@shared/errors/forbidden-error';
 
-import { LATER, ORDER, orderIn } from '../domain/__test__/builders';
+import { LATER, ORDER, orderIn, WORKSPACE } from '../domain/__test__/builders';
+import { OrderPaid } from '../domain/events/order-paid.event';
 import { OrderStatus } from '../domain/order-status';
 
 import { enableNoOpTransactions, fixedClock, member, paymentConsumer } from './__test__/fixtures';
@@ -16,6 +17,7 @@ const cmd = { orderId: ORDER, paymentAttempt: 1, pspChargeId: 'ch_1' };
 
 describe('CompleteOrderPaymentService', () => {
   let orders: InMemoryOrdersRepository;
+  let events: RecordingEventPublisher;
   let completePayment: CompleteOrderPaymentService;
 
   beforeAll(enableNoOpTransactions);
@@ -23,12 +25,19 @@ describe('CompleteOrderPaymentService', () => {
   beforeEach(() => {
     orders = new InMemoryOrdersRepository();
     orders.put(orderIn(OrderStatus.PendingPayment));
+    events = new RecordingEventPublisher();
     completePayment = new CompleteOrderPaymentService(
       orders,
       new OrdersPolicy(),
       fixedClock,
-      new RecordingEventPublisher(),
+      events,
     );
+  });
+
+  it('OBX-007 publishes OrderPaid for the attempt, with the charge id', async () => {
+    await completePayment.execute(cmd, paymentConsumer);
+
+    expect(events.published).toEqual([new OrderPaid(WORKSPACE, ORDER, 1, 'ch_1', LATER)]);
   });
 
   it('PAY-004 marks the awaited attempt PAID with the charge id', async () => {

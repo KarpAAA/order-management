@@ -61,6 +61,15 @@ export const rabbitConfig = registerAs('rabbit', () => {
 });
 export type RabbitConfig = ConfigType<typeof rabbitConfig>;
 
+export const outboxConfig = registerAs('outbox', () => ({
+  relayEnabled: env().OUTBOX_RELAY_ENABLED,
+  pollIntervalMs: env().OUTBOX_POLL_INTERVAL_MS,
+  batchSize: env().OUTBOX_BATCH_SIZE,
+  publishTimeoutMs: env().OUTBOX_PUBLISH_TIMEOUT_MS,
+  retentionDays: env().OUTBOX_RETENTION_DAYS,
+}));
+export type OutboxConfig = ConfigType<typeof outboxConfig>;
+
 export const authConfig = registerAs('auth', () => ({
   jwtSecret: env().JWT_SECRET,
   accessTtlSeconds: env().JWT_ACCESS_TTL_SECONDS,
@@ -85,6 +94,7 @@ export const allConfigs = [
   redisConfig,
   cacheConfig,
   rabbitConfig,
+  outboxConfig,
   authConfig,
   ordersQueueConfig,
   orderEventsConfig,

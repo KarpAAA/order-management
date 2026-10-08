@@ -15,6 +15,7 @@ import { OrderStatus } from '../domain/order-status';
 
 import { enableNoOpTransactions, fixedClock, member, tenantAs } from './__test__/fixtures';
 import { InMemoryOrdersRepository } from './__test__/in-memory-orders.repository';
+import { RecordingChargeScheduler } from './__test__/recording-charge-scheduler';
 import { RecordingEventPublisher } from './__test__/recording-event-publisher';
 import { OrdersPolicy } from './orders.policy';
 import { PlaceOrderService } from './place-order.service';
@@ -26,17 +27,19 @@ const AMOUNT_DUE = orderIn(OrderStatus.Draft).amountDue;
 
 describe('PlaceOrderService', () => {
   let orders: InMemoryOrdersRepository;
+  let charges: RecordingChargeScheduler;
   let events: RecordingEventPublisher;
 
   beforeAll(enableNoOpTransactions);
 
   beforeEach(() => {
     orders = new InMemoryOrdersRepository();
+    charges = new RecordingChargeScheduler();
     events = new RecordingEventPublisher();
   });
 
   const placeOrder = (role: WorkspaceRole = WorkspaceRole.Member): PlaceOrderService =>
-    new PlaceOrderService(orders, new OrdersPolicy(), tenantAs(role), fixedClock, events);
+    new PlaceOrderService(orders, new OrdersPolicy(), tenantAs(role), fixedClock, charges, events);
 
   it('moves a draft to PENDING_PAYMENT as payment attempt 1', async () => {
     orders.put(orderIn(OrderStatus.Draft));
@@ -58,6 +61,16 @@ describe('PlaceOrderService', () => {
     expect(events.published).toEqual([new OrderPlaced(WORKSPACE, ORDER, 1, AMOUNT_DUE, LATER)]);
   });
 
+  it('PAY-001 asks for the charge of the new attempt, with the amount due', async () => {
+    orders.put(orderIn(OrderStatus.Draft));
+
+    await placeOrder().execute({ orderId: ORDER, version: VERSION }, member);
+
+    expect(charges.scheduled).toEqual([
+      { workspaceId: WORKSPACE, orderId: ORDER, paymentAttempt: 1, amount: AMOUNT_DUE },
+    ]);
+  });
+
   it('re-places an order whose payment failed as the next payment attempt', async () => {
     orders.put(orderIn(OrderStatus.PaymentFailed));
 
@@ -66,6 +79,7 @@ describe('PlaceOrderService', () => {
     const saved = await orders.getById(ORDER);
     expect(saved.status).toBe(OrderStatus.PendingPayment);
     expect(saved.paymentAttempt).toBe(2);
+    expect(charges.scheduled).toMatchObject([{ orderId: ORDER, paymentAttempt: 2 }]);
     expect(events.published).toEqual([new OrderPlaced(WORKSPACE, ORDER, 2, AMOUNT_DUE, LATER)]);
   });
 
@@ -115,7 +129,7 @@ describe('PlaceOrderService', () => {
     ).rejects.toThrow(OrderNotFoundError);
   });
 
-  it('does not publish OrderPlaced when another writer saved the order first', async () => {
+  it('asks for no charge and publishes nothing when another writer saved the order first', async () => {
     orders.put(orderIn(OrderStatus.Draft));
     orders.writeConcurrentlyAfterNextLoad();
 
@@ -123,6 +137,7 @@ describe('PlaceOrderService', () => {
       placeOrder().execute({ orderId: ORDER, version: VERSION }, member),
     ).rejects.toThrow(ConcurrencyError);
 
+    expect(charges.scheduled).toEqual([]);
     expect(events.published).toEqual([]);
   });
 });

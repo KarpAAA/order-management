@@ -1,6 +1,7 @@
 // The other side of the broker in a test: what payments-service is to the api. It reads the
 // commands the api sends to the `commands` exchange through a queue of its own, and publishes
-// the events payments-service would answer with to the `events` exchange.
+// the events payments-service would answer with to the `events` exchange. It also subscribes
+// to the events the api publishes about its orders (`orders.*`).
 // payments-service itself is not in this suite: the full path is ROADMAP 3.13.
 import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 import {
@@ -14,6 +15,8 @@ import { v7 as uuidv7 } from 'uuid';
 
 import { waitFor } from './waiting';
 
+import type { AnyMessage } from '@oms/contracts';
+
 export interface Attempt {
   workspaceId: string;
   orderId: string;
@@ -25,6 +28,10 @@ export interface TestBroker {
   commands(orderId: string): ChargePaymentV1[];
   /** Until the api has sent `count` charge commands for the order. */
   waitForCommands(orderId: string, count?: number): Promise<ChargePaymentV1[]>;
+  /** The `orders.*` events the api published about the order so far, in arrival order. */
+  orderEvents(orderId: string): AnyMessage[];
+  /** Until the api has published `count` events about the order. */
+  waitForOrderEvents(orderId: string, count?: number): Promise<AnyMessage[]>;
   /** Publishes to `events` with the message's name as the routing key. */
   publish(message: { name: string }): Promise<void>;
   /** Publishes bytes as they are: for what no producer of ours would send. */
@@ -42,6 +49,9 @@ export interface TakenMessage {
   content: Buffer;
   headers: Record<string, unknown>;
 }
+
+/** Every event of orders: `events` is a topic exchange, and the routing key is the name. */
+const ORDER_EVENTS = 'orders.*';
 
 const silent = { log: () => undefined, error: () => undefined, warn: () => undefined };
 
@@ -96,8 +106,32 @@ export async function connectTestBroker(): Promise<TestBroker> {
   const commands = (orderId: string): ChargePaymentV1[] =>
     received.filter((command) => command.payload.orderId === orderId);
 
+  // a subscriber of the api's own events, as inventory or notifications will be
+  const published: AnyMessage[] = [];
+  const subscription = await channel.assertQueue('', { exclusive: true });
+  await channel.bindQueue(subscription.queue, exchanges.events.name, ORDER_EVENTS);
+  await channel.consume(
+    subscription.queue,
+    (raw) => {
+      if (!raw) return;
+      const parsed = parseMessage(JSON.parse(raw.content.toString()));
+      if (parsed.ok) published.push(parsed.message);
+    },
+    { noAck: true },
+  );
+
+  const orderEvents = (orderId: string): AnyMessage[] =>
+    published.filter((event) => event.payload.orderId === orderId);
+
   return {
     commands,
+    orderEvents,
+    waitForOrderEvents: (orderId, count = 1) =>
+      waitFor(
+        () => Promise.resolve(orderEvents(orderId)),
+        (list) => list.length >= count,
+        { what: `${String(count)} event(s) of order ${orderId}` },
+      ),
     waitForCommands: (orderId, count = 1) =>
       waitFor(
         () => Promise.resolve(commands(orderId)),

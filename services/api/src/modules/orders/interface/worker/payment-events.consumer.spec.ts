@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import { ChargePaymentV1, PaymentFailedV1, PaymentSucceededV1 } from '@oms/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { CorrelationContext } from '@common/messaging/correlation-context';
 import type { TenantContext } from '@common/tenancy/tenant-context';
 import { ConcurrencyError, InvalidStateError, NotFoundError } from '@shared/errors/domain-error';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
@@ -47,12 +48,14 @@ function consumerWith({
   fail?: FailOrderPaymentService['execute'];
 } = {}) {
   const runInWorkspace = vi.fn((_workspaceId: string, work: () => Promise<unknown>) => work());
+  const continued: string[] = [];
   const consumer = new PaymentEventsConsumer(
     { runInWorkspace } as unknown as TenantContext,
+    { continue: (id: string) => continued.push(id) } as unknown as CorrelationContext,
     { execute: complete } as CompleteOrderPaymentService,
     { execute: fail } as FailOrderPaymentService,
   );
-  return { consumer, runInWorkspace, complete, fail };
+  return { consumer, runInWorkspace, continued, complete, fail };
 }
 
 describe('PaymentEventsConsumer', () => {
@@ -94,6 +97,14 @@ describe('PaymentEventsConsumer', () => {
     await consumer.onPaymentEvent(succeeded);
 
     expect(runInWorkspace).toHaveBeenCalledWith(WORKSPACE, expect.any(Function));
+  });
+
+  it('OBX-008 continues the correlation of the message: what the order publishes carries it', async () => {
+    const { consumer, continued } = consumerWith();
+
+    await consumer.onPaymentEvent(succeeded);
+
+    expect(continued).toEqual([META.correlationId]);
   });
 
   it('PAY-009 acknowledges an event whose attempt is already settled (delivered twice or late)', async () => {

@@ -13,8 +13,10 @@ export interface ScheduledCharge {
 /**
  * "Charge this attempt, and tell me how it ended." The charge happens in payments-service;
  * the answer comes back as an event (`interface/worker/payment-events.consumer.ts`).
- * 3.2: a command published to the broker after commit. ROADMAP 3.4: an outbox row written in
- * the same transaction, same port, new adapter.
+ *
+ * Called inside the transaction of the use case, and that is the contract of this port: the
+ * request is recorded with the change that needs it (an outbox row), never sent to the
+ * outside from here. An adapter that calls a broker or an HTTP API does not belong behind it.
  */
 export interface PaymentChargeScheduler {
   schedule(charge: ScheduledCharge): Promise<void>;

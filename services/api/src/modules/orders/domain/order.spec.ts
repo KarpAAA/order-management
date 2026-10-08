@@ -25,6 +25,9 @@ import {
   PaymentAttemptNotPendingError,
   ProductNotActiveError,
 } from './errors';
+import { OrderCancelled } from './events/order-cancelled.event';
+import { OrderFulfilled } from './events/order-fulfilled.event';
+import { OrderPaid } from './events/order-paid.event';
 import { OrderPlaced } from './events/order-placed.event';
 import { Order } from './order';
 import { OrderEventType, OrderStatus } from './order-status';
@@ -201,6 +204,7 @@ describe('Order.place', () => {
     expect(events[0]).toBeInstanceOf(OrderPlaced);
     expect(events[0]).toMatchObject({
       name: 'order.placed',
+      delivery: 'reliable',
       workspaceId: WORKSPACE,
       orderId: order.id,
       paymentAttempt: 1,
@@ -246,6 +250,13 @@ describe('Order.cancel', () => {
       ]);
     },
   );
+
+  it('OBX-007 records OrderCancelled, reliable', () => {
+    const order = orderIn(OrderStatus.Draft);
+    order.cancel(change());
+    expect(order.pullEvents()).toEqual([new OrderCancelled(WORKSPACE, order.id, LATER)]);
+    expect(new OrderCancelled(WORKSPACE, order.id, LATER).delivery).toBe('reliable');
+  });
 });
 
 describe('Order.fulfill', () => {
@@ -262,6 +273,13 @@ describe('Order.fulfill', () => {
         payload: {},
       }),
     ]);
+  });
+
+  it('OBX-007 records OrderFulfilled, reliable', () => {
+    const order = orderIn(OrderStatus.Paid);
+    order.fulfill(change());
+    expect(order.pullEvents()).toEqual([new OrderFulfilled(WORKSPACE, order.id, LATER)]);
+    expect(new OrderFulfilled(WORKSPACE, order.id, LATER).delivery).toBe('reliable');
   });
 });
 
@@ -282,6 +300,13 @@ describe('Order.markPaid', () => {
         payload: { paymentAttempt: 1, pspChargeId: 'ch_42' },
       }),
     ]);
+  });
+
+  it('OBX-007 records OrderPaid with the attempt and the charge, reliable', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.markPaid({ ...change({ changedBy: SYSTEM_ACTOR }), attempt: 1, pspChargeId: 'ch_42' });
+    expect(order.pullEvents()).toEqual([new OrderPaid(WORKSPACE, order.id, 1, 'ch_42', LATER)]);
+    expect(new OrderPaid(WORKSPACE, order.id, 1, 'ch_42', LATER).delivery).toBe('reliable');
   });
 });
 

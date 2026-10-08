@@ -8,7 +8,7 @@ export const ORDERS_QUEUE = 'orders';
 
 /**
  * Only scheduler ticks are left here: a charge is a command to payments-service, sent through
- * the broker (`rabbit-payment-charge.adapter.ts`).
+ * the outbox and the broker (`outbox-payment-charge.adapter.ts`).
  */
 export interface OrdersJobs {
   /** A scheduler tick: no payload, the job class decides what to do (transport/cron.md §2). */

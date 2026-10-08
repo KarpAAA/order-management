@@ -9,6 +9,8 @@ import { beforeAll, describe, expect, it } from 'vitest';
 // relative: entrypoints have no alias, and test/ reaches them only here
 import { ApiModule } from '../../src/entrypoints/api.module';
 import { WorkerModule } from '../../src/entrypoints/worker.module';
+import { Outbox } from '../../src/infrastructure/outbox/outbox';
+import { OutboxRelayRunner } from '../../src/infrastructure/outbox/outbox-relay.runner';
 
 // @nestjs/bullmq keeps it in dist/bull.constants.js and does not export it
 const PROCESSOR_METADATA = 'bullmq:processor_metadata';
@@ -112,6 +114,9 @@ const subscribersOf = (nodes: ModuleNode[]): string[] =>
 const processorsOf = (nodes: ModuleNode[]): string[] =>
   nodes.flatMap((node) => node.providers.filter(isProcessor).map((ctor) => ctor.name));
 
+const providersOf = (nodes: ModuleNode[]): string[] =>
+  nodes.flatMap((node) => node.providers.map((ctor) => ctor.name));
+
 const controllersOf = (nodes: ModuleNode[]): string[] =>
   nodes.flatMap((node) => node.controllers.map((ctor) => ctor.name));
 
@@ -138,6 +143,11 @@ describe('api process', () => {
 
   it('registers no broker consumer: it only publishes', () => {
     expect(subscribersOf(apiGraph)).toEqual([]);
+  });
+
+  it('writes to the outbox and never relays it: the relay starts on its own', () => {
+    expect(providersOf(apiGraph)).toContain(Outbox.name);
+    expect(providersOf(apiGraph)).not.toContain(OutboxRelayRunner.name);
   });
 
   it('declares controllers only in *HttpModule', () => {
@@ -170,8 +180,12 @@ describe('worker process', () => {
     ).toEqual([]);
   });
 
-  it('registers the orders consumers (the walk is not vacuous)', () => {
-    expect(processorsOf(workerGraph)).toEqual(['OrdersConsumer']);
+  it('registers the consumers of orders and of the outbox (the walk is not vacuous)', () => {
+    expect(processorsOf(workerGraph)).toEqual(['OrdersConsumer', 'OutboxConsumer']);
     expect(subscribersOf(workerGraph)).toEqual(['PaymentEventsConsumer']);
+  });
+
+  it('runs the relay of the outbox', () => {
+    expect(providersOf(workerGraph)).toContain(OutboxRelayRunner.name);
   });
 });

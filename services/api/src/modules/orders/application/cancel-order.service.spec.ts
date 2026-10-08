@@ -4,8 +4,9 @@ import { WorkspaceRole } from '@shared/auth/workspace-role';
 import { StaleVersionError } from '@shared/errors/domain-error';
 import { ForbiddenError } from '@shared/errors/forbidden-error';
 
-import { LATER, ORDER, orderIn } from '../domain/__test__/builders';
+import { LATER, ORDER, orderIn, WORKSPACE } from '../domain/__test__/builders';
 import { OrderInvalidTransitionError } from '../domain/errors';
+import { OrderCancelled } from '../domain/events/order-cancelled.event';
 import { OrderStatus } from '../domain/order-status';
 
 import { enableNoOpTransactions, fixedClock, member, tenantAs } from './__test__/fixtures';
@@ -45,12 +46,12 @@ describe('CancelOrderService', () => {
     },
   );
 
-  it('publishes no events when an order is cancelled', async () => {
+  it('OBX-007 publishes OrderCancelled', async () => {
     orders.put(orderIn(OrderStatus.Draft));
 
     await cancelOrder().execute({ orderId: ORDER, version: VERSION }, member);
 
-    expect(events.published).toEqual([]);
+    expect(events.published).toEqual([new OrderCancelled(WORKSPACE, ORDER, LATER)]);
   });
 
   it('cannot cancel an order that is awaiting payment', async () => {

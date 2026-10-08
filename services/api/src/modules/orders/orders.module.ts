@@ -10,16 +10,16 @@ import { CompleteOrderPaymentService } from './application/complete-order-paymen
 import { CreateOrderService } from './application/create-order.service';
 import { FailOrderPaymentService } from './application/fail-order-payment.service';
 import { FulfillOrderService } from './application/fulfill-order.service';
-import { SchedulePaymentChargeHandler } from './application/handlers/schedule-payment-charge.handler';
 import { MaintainOrderEventPartitionsService } from './application/maintain-order-event-partitions.service';
 import { OrderInputsReader } from './application/order-inputs.reader';
 import { OrdersPolicy } from './application/orders.policy';
 import { PlaceOrderService } from './application/place-order.service';
 import { UpdateOrderService } from './application/update-order.service';
+import { OrderEventsTranslator } from './infrastructure/order-events.translator';
 import { ORDERS_QUEUE, OrdersQueue } from './infrastructure/orders.queue';
 import { OrdersRepository } from './infrastructure/orders.repository';
+import { OutboxPaymentChargeAdapter } from './infrastructure/outbox-payment-charge.adapter';
 import { PostgresOrderEventPartitions } from './infrastructure/postgres-order-event-partitions.adapter';
-import { RabbitPaymentChargeAdapter } from './infrastructure/rabbit-payment-charge.adapter';
 import { ORDER_EVENT_PARTITIONS } from './ports/order-event-partitions.port';
 import { ORDERS_REPOSITORY } from './ports/orders-repository.port';
 import { PAYMENT_CHARGE_SCHEDULER } from './ports/payment-charge-scheduler.port';
@@ -53,11 +53,12 @@ const USE_CASES = [
     ...USE_CASES,
     OrdersPolicy,
     OrderInputsReader,
-    SchedulePaymentChargeHandler,
     { provide: ORDERS_REPOSITORY, useClass: OrdersRepository },
     OrdersQueue,
-    // the charge itself happens in payments-service: the command goes through the broker
-    { provide: PAYMENT_CHARGE_SCHEDULER, useClass: RabbitPaymentChargeAdapter },
+    // the charge itself happens in payments-service: the command is a row of the outbox
+    { provide: PAYMENT_CHARGE_SCHEDULER, useClass: OutboxPaymentChargeAdapter },
+    // what the reliable events of orders become on the broker
+    OrderEventsTranslator,
     { provide: ORDER_EVENT_PARTITIONS, useClass: PostgresOrderEventPartitions },
     // read
     OrdersQueryService,

@@ -75,6 +75,21 @@ export const envSchema = z.object({
   /** The delay of `api.payment-events` alone; unset: RABBITMQ_RETRY_DELAY_MS. */
   PAYMENT_EVENTS_RETRY_DELAY_MS: z.coerce.number().int().min(1).optional(),
 
+  /** Switches the relay of the outbox off without a deploy: messages wait in the table. */
+  OUTBOX_RELAY_ENABLED: booleanString.default(true),
+  /** How long the relay sleeps after a pass that found less than a full batch. */
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(10).max(60_000).default(1000),
+  /** Messages one pass of the relay publishes, in one transaction. */
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(100),
+  /**
+   * How long the relay waits for the broker to confirm one message. A broker that is away
+   * does not refuse a publish, it never answers: without this the pass would hold its
+   * transaction for as long as the broker is down.
+   */
+  OUTBOX_PUBLISH_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5000),
+  /** Days a published message is kept before the cleanup job deletes it. */
+  OUTBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
+
   JWT_SECRET: z.string().min(32),
   // ≤ 15 min (ops/security.md §3); with refresh: none a leaked token lives this long
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().max(900).default(900),

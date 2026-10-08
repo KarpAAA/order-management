@@ -11,6 +11,9 @@ import {
   PaymentAttemptNotPendingError,
   ProductNotActiveError,
 } from './errors';
+import { OrderCancelled } from './events/order-cancelled.event';
+import { OrderFulfilled } from './events/order-fulfilled.event';
+import { OrderPaid } from './events/order-paid.event';
 import { OrderPlaced } from './events/order-placed.event';
 import { OrderLine } from './order-line';
 import { OrderEventType, OrderStatus, TRANSITIONS } from './order-status';
@@ -156,12 +159,14 @@ export class Order extends AggregateRoot {
     const from = this.transitionTo(OrderStatus.Cancelled, 'cancel');
     this.props.cancelledAt = change.now;
     this.addHistory(OrderEventType.OrderCancelled, from, change);
+    this.record(new OrderCancelled(this.workspaceId, this.id, change.now));
   }
 
   fulfill(change: Change): void {
     const from = this.transitionTo(OrderStatus.Fulfilled, 'fulfill');
     this.props.fulfilledAt = change.now;
     this.addHistory(OrderEventType.OrderFulfilled, from, change);
+    this.record(new OrderFulfilled(this.workspaceId, this.id, change.now));
   }
 
   /** Guards a payment outcome: only the attempt the order is waiting for may be settled. */
@@ -186,6 +191,9 @@ export class Order extends AggregateRoot {
       paymentAttempt: input.attempt,
       pspChargeId: input.pspChargeId,
     });
+    this.record(
+      new OrderPaid(this.workspaceId, this.id, input.attempt, input.pspChargeId, input.now),
+    );
   }
 
   markPaymentFailed(input: Change & { attempt: number; reason: string }): void {

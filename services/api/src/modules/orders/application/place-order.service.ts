@@ -9,15 +9,20 @@ import { Clock } from '@shared/domain/clock';
 import { EVENT_PUBLISHER, type EventPublisher } from '@shared/events/event-publisher';
 
 import { ORDERS_REPOSITORY, type OrdersRepositoryPort } from '../ports/orders-repository.port';
+import {
+  PAYMENT_CHARGE_SCHEDULER,
+  type PaymentChargeScheduler,
+} from '../ports/payment-charge-scheduler.port';
 
 import { OrdersPolicy } from './orders.policy';
 
 import type { OrderActionCommand } from './order-commands';
 
 /**
- * DRAFT | PAYMENT_FAILED → PENDING_PAYMENT, new payment attempt. `OrderPlaced` fires after
- * commit and its handler enqueues the charge — the first half of "pending + queue + second
- * use case" (application/write-service.md §4).
+ * DRAFT | PAYMENT_FAILED → PENDING_PAYMENT, new payment attempt, and the request to charge
+ * it: the first half of "pending + queue + second use case" (application/write-service.md §4).
+ * The order, the charge request and `OrderPlaced` are one transaction: the request is a row
+ * of the outbox, so an order never waits for a charge nobody was asked for.
  */
 @UseCase()
 export class PlaceOrderService {
@@ -26,6 +31,7 @@ export class PlaceOrderService {
     private readonly policy: OrdersPolicy,
     private readonly tenant: TenantContext,
     private readonly clock: Clock,
+    @Inject(PAYMENT_CHARGE_SCHEDULER) private readonly charges: PaymentChargeScheduler,
     @Inject(EVENT_PUBLISHER) private readonly events: EventPublisher,
   ) {}
 
@@ -36,6 +42,12 @@ export class PlaceOrderService {
     order.assertVersion(cmd.version);
     order.place({ now: this.clock.now(), changedBy: actorRef(actor) });
     await this.orders.save(order);
+    await this.charges.schedule({
+      workspaceId: order.workspaceId,
+      orderId: order.id,
+      paymentAttempt: order.paymentAttempt,
+      amount: order.amountDue,
+    });
     await this.events.publishAll(order.pullEvents());
   }
 }

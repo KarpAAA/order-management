@@ -2,6 +2,7 @@ import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { exchanges, parseMessage, PaymentFailedV1, PaymentSucceededV1 } from '@oms/contracts';
 
+import { CorrelationContext } from '@common/messaging/correlation-context';
 import { TenantContext } from '@common/tenancy/tenant-context';
 import { systemActor } from '@shared/auth/actor';
 import { ConflictError, DomainError, InvalidStateError } from '@shared/errors/domain-error';
@@ -30,6 +31,7 @@ export class PaymentEventsConsumer {
 
   constructor(
     private readonly tenant: TenantContext,
+    private readonly correlation: CorrelationContext,
     private readonly completePayment: CompleteOrderPaymentService,
     private readonly failPayment: FailOrderPaymentService,
   ) {}
@@ -49,7 +51,11 @@ export class PaymentEventsConsumer {
     const { message } = parsed;
     let handled: boolean;
     try {
-      handled = await this.tenant.runInWorkspace(message.workspaceId, () => this.settle(message));
+      handled = await this.tenant.runInWorkspace(message.workspaceId, () => {
+        // what the order publishes next belongs to the chain the charge command started
+        this.correlation.continue(message.correlationId);
+        return this.settle(message);
+      });
     } catch (err: unknown) {
       if (err instanceof InvalidStateError) {
         // Already settled, or a stale attempt: done, not failed (the event came twice or late).
@@ -69,20 +75,20 @@ export class PaymentEventsConsumer {
 
   /** False for a message this queue is not bound to. */
   private async settle(message: AnyMessage): Promise<boolean> {
-    const { orderId, paymentAttempt } = message.payload;
     switch (message.name) {
-      case PaymentSucceededV1.name:
+      case PaymentSucceededV1.name: {
+        const { orderId, paymentAttempt, chargeId } = message.payload;
         await this.completePayment.execute(
-          { orderId, paymentAttempt, pspChargeId: message.payload.chargeId },
+          { orderId, paymentAttempt, pspChargeId: chargeId },
           ACTOR,
         );
         return true;
-      case PaymentFailedV1.name:
-        await this.failPayment.execute(
-          { orderId, paymentAttempt, reason: message.payload.declineCode },
-          ACTOR,
-        );
+      }
+      case PaymentFailedV1.name: {
+        const { orderId, paymentAttempt, declineCode } = message.payload;
+        await this.failPayment.execute({ orderId, paymentAttempt, reason: declineCode }, ACTOR);
         return true;
+      }
       default:
         return false;
     }
