@@ -103,6 +103,8 @@ services:
 
   # The broker between the services: commands and events (@oms/contracts, docs/adr/0011).
   # Management UI: http://localhost:15672 (guest / guest).
+  # The shovel plugins add "Move messages" to a queue page: how a message parked in a
+  # dead-letter queue (<queue>.dlq, docs/adr/0013) is put back once its cause is fixed.
   rabbitmq:
     image: rabbitmq:4-management
     ports:
@@ -110,6 +112,7 @@ services:
       - '15672:15672'
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+      - ./devtools/rabbitmq/enabled_plugins:/etc/rabbitmq/enabled_plugins:ro
     healthcheck:
       test: ['CMD', 'rabbitmq-diagnostics', '-q', 'ping']
       interval: 5s
