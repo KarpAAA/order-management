@@ -99,3 +99,35 @@ how the two sides talk (a broker, with the contracts of ADR 0011).
   message exists for that (ADR 0011).
 - payments has no migration checker (drift, upgrade on the base seed) and no mutation run
   yet: it has one migration, applied on an empty database by its e2e suite.
+
+## What 3.3 starts from
+
+Not decisions: the state 3.2 leaves behind, for whoever builds retries and the dead-letter
+queue next.
+
+- **Where a transient failure ends today.** `ChargePaymentService.charge()` in payments
+  catches every `InfrastructureError` and turns it into a `FAILED` row and a
+  `payment-failed` event at once. A retry of the command needs the retryable ones to leave
+  the use case while deliveries remain, and to end as `psp_unavailable` only on the last one:
+  `PaymentFailedV1` is final for the attempt by contract.
+- **Where a rejected message goes today.** Nowhere. Both consumers return `Nack(false)` for a
+  message that is not a known contract, and `defaultSubscribeErrorBehavior: NACK` in
+  `rabbit-connection.ts` does the same for anything thrown. That includes a body that is not
+  JSON: the library fails to parse it before the handler is called, so the handler never sees
+  it.
+- **Queue arguments cannot be changed.** `payments.commands` and `api.payment-events` are
+  declared with `durable` only. Declaring them again with a dead-letter exchange or a TTL
+  fails with `PRECONDITION_FAILED` on a broker that already has them (a dev volume, a running
+  stack): the queue is deleted first, replaced by a new name, or given the arguments through a
+  policy. The e2e suites do not see this: every test file starts on an empty vhost.
+- **One concurrent write is rejected for no reason.** When two api workers get the same
+  event, one records it and the other fails on the version check (`ConcurrencyError`), which
+  is thrown and so rejected. With a retry the second delivery finds the order settled and is
+  acknowledged.
+- **Tests that wait for it.** `it.todo` for PAY-006 in
+  `services/payments/test/payments/charge-payment.e2e-spec.ts`; `TestPsp` already scripts
+  `unavailable` any number of times. `drained()` in the api's `payment-flow.e2e-spec.ts`
+  proves "the earlier event was handled" from `RABBITMQ_PREFETCH=1` and in-order handling; a
+  message that comes back after a delay is no longer in front of the marker.
+- **The broker wiring exists twice**, in `services/api` and `services/payments`
+  (`src/infrastructure/messaging/`): a change to one is made in the other.
