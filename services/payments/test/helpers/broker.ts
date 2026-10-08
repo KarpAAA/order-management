@@ -69,7 +69,8 @@ export async function connectTestBroker(): Promise<TestBroker> {
   );
 
   const events = (orderId: string): AnyMessage[] =>
-    received.filter((message) => message.payload.orderId === orderId);
+    // not every message is about an order (`inventory.stock-adjusted` is about a product)
+    received.filter(({ payload }) => 'orderId' in payload && payload.orderId === orderId);
 
   return {
     send: async (message) => {
