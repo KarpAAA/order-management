@@ -38,6 +38,16 @@ export const rabbitConfig = registerAs('rabbit', () => {
 });
 export type RabbitConfig = ConfigType<typeof rabbitConfig>;
 
+export const outboxConfig = registerAs('outbox', () => ({
+  relayEnabled: env().OUTBOX_RELAY_ENABLED,
+  pollIntervalMs: env().OUTBOX_POLL_INTERVAL_MS,
+  batchSize: env().OUTBOX_BATCH_SIZE,
+  publishTimeoutMs: env().OUTBOX_PUBLISH_TIMEOUT_MS,
+  retentionDays: env().OUTBOX_RETENTION_DAYS,
+  cleanupIntervalMs: env().OUTBOX_CLEANUP_INTERVAL_MS,
+}));
+export type OutboxConfig = ConfigType<typeof outboxConfig>;
+
 export const gatewayConfig = registerAs('gateway', () => ({
   gateway: env().PAYMENT_GATEWAY,
   pspBaseUrl: env().PSP_BASE_URL,
@@ -45,4 +55,4 @@ export const gatewayConfig = registerAs('gateway', () => ({
 }));
 export type GatewayConfig = ConfigType<typeof gatewayConfig>;
 
-export const allConfigs = [databaseConfig, rabbitConfig, gatewayConfig];
+export const allConfigs = [databaseConfig, rabbitConfig, outboxConfig, gatewayConfig];

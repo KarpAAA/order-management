@@ -45,3 +45,22 @@ model Payment {
   @@unique([orderId, attempt])
   @@map("payments")
 }
+
+/// A message for the broker, written in the transaction of the change it tells about and
+/// published by the relay of this process (docs/adr/0014-transactional-outbox.md).
+/// No updated_at: the only update is `published_at`, once.
+model OutboxMessage {
+  /// = `messageId` of the envelope: a message published twice is the same message
+  id          String    @id @db.Uuid
+  exchange    String
+  routingKey  String    @map("routing_key")
+  /// the whole envelope, as `Contract.create()` built it
+  payload     Json
+  occurredAt  DateTime  @map("occurred_at") @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(3)
+
+  // the relay: `published_at IS NULL ORDER BY id`; the cleanup: `published_at < …`
+  @@index([publishedAt, id])
+  @@map("outbox")
+}

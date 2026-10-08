@@ -119,9 +119,9 @@ describe('a command is charged and answered (PAY-003, PAY-004)', () => {
     await broker.send(chargeCommand({ orderId, attempt: 2 }));
     const events = await broker.waitForEvents(orderId, 2);
 
-    expect(events.map((e) => [e.name, e.payload.paymentAttempt])).toEqual([
-      ['payments.payment-failed', 1],
-      ['payments.payment-succeeded', 2],
+    expect(events).toMatchObject([
+      { name: 'payments.payment-failed', payload: { paymentAttempt: 1 } },
+      { name: 'payments.payment-succeeded', payload: { paymentAttempt: 2 } },
     ]);
     expect(psp.calls(orderId).map((c) => c.idempotencyKey)).toEqual([
       `${orderId}:1`,

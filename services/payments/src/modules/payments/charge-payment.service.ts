@@ -1,9 +1,10 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { TransactionHost } from '@nestjs-cls/transactional';
 
 import { PaymentStatus } from '@infra/database/generated/prisma/client';
 import type { Payment } from '@infra/database/generated/prisma/client';
 import { isUniqueViolation } from '@infra/database/prisma-errors';
-import { PrismaService } from '@infra/database/prisma.service';
+import type { DbTransactionAdapter } from '@infra/database/transactional.adapter';
 import type { Actor } from '@shared/auth/actor';
 import { Clock } from '@shared/domain/clock';
 import { newId } from '@shared/domain/id';
@@ -65,21 +66,24 @@ const outcomeOf = (row: PaymentRow, result: PaymentResult): PaymentOutcome => ({
 /**
  * Charges one payment attempt of an order and tells how it ended.
  *
- * No transaction: the provider is never called inside one, and each write is one statement.
+ * Three steps, and the provider is never called inside a transaction:
+ *  1. the row of the attempt, PENDING;
+ *  2. the call to the provider;
+ *  3. one transaction: the row is settled and the answer is written to the outbox. The
+ *     answer exists exactly when the row says how the attempt ended (docs/adr/0014).
  * A command is delivered at least once, so every step may run twice:
  *  - the row is unique per (order, attempt): the second delivery finds the first one's row;
  *  - the provider gets the same idempotency key and answers the same;
- *  - the row is settled only while PENDING; whoever comes second publishes what is stored.
+ *  - the row is settled only while PENDING; whoever comes second answers with what is stored.
  * A provider that does not answer leaves the row PENDING and the error to the consumer: the
  * command comes again after a delay, and its last delivery ends the attempt (docs/adr/0013).
- * The answer is published after the row is saved, not atomically with it (ROADMAP 3.4).
  */
 @Injectable()
 export class ChargePaymentService {
   private readonly logger = new Logger(ChargePaymentService.name);
 
   constructor(
-    private readonly prisma: PrismaService,
+    private readonly txHost: TransactionHost<DbTransactionAdapter>,
     private readonly policy: PaymentsPolicy,
     private readonly clock: Clock,
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGateway,
@@ -91,21 +95,20 @@ export class ChargePaymentService {
 
     const payment = await this.open(cmd);
     if (payment.status !== PaymentStatus.PENDING) {
-      // a repeated command: the first answer may have been lost, so it is given again
-      await this.publisher.publish(outcomeOf(payment, resultOf(payment)));
+      // a repeated command is answered again: whoever sent it twice is still waiting
+      await this.txHost.withTransaction(() => this.answer(payment));
       return;
     }
 
     const result = await this.charge(payment, cmd.lastDelivery);
-    const settled = await this.settle(payment, result);
-    await this.publisher.publish(outcomeOf(settled, resultOf(settled)));
+    await this.settle(payment, result);
   }
 
   /** The row of this attempt: created PENDING, or the one an earlier delivery created. */
   private async open(cmd: ChargePaymentCommand): Promise<PaymentRow> {
     const attempt = { orderId: cmd.orderId, attempt: cmd.paymentAttempt };
     try {
-      return await this.prisma.payment.create({
+      return await this.txHost.tx.payment.create({
         data: {
           id: newId(),
           workspaceId: cmd.workspaceId,
@@ -120,7 +123,7 @@ export class ChargePaymentService {
       });
     } catch (err: unknown) {
       if (!isUniqueViolation(err)) throw err;
-      return this.prisma.payment.findUniqueOrThrow({
+      return this.txHost.tx.payment.findUniqueOrThrow({
         where: { orderId_attempt: attempt },
         select: SELECT,
       });
@@ -155,17 +158,31 @@ export class ChargePaymentService {
     }
   }
 
-  /** PENDING → SUCCEEDED / FAILED, once. Returns the row as stored, ours or a concurrent one. */
-  private async settle(payment: PaymentRow, result: PaymentResult): Promise<PaymentRow> {
-    await this.prisma.payment.updateMany({
-      where: { id: payment.id, status: PaymentStatus.PENDING },
-      data: {
-        status: result.status === 'succeeded' ? PaymentStatus.SUCCEEDED : PaymentStatus.FAILED,
-        pspChargeId: result.chargeId,
-        failureCode: result.status === 'failed' ? result.failureCode : null,
-        settledAt: this.clock.now(),
-      },
+  /**
+   * PENDING → SUCCEEDED / FAILED, once, and the answer with it, in one transaction. A
+   * concurrent delivery that settled the row first wins: this one waits for its commit,
+   * changes nothing, and answers with what that delivery stored.
+   */
+  private settle(payment: PaymentRow, result: PaymentResult): Promise<void> {
+    return this.txHost.withTransaction(async () => {
+      const { tx } = this.txHost;
+      await tx.payment.updateMany({
+        where: { id: payment.id, status: PaymentStatus.PENDING },
+        data: {
+          status: result.status === 'succeeded' ? PaymentStatus.SUCCEEDED : PaymentStatus.FAILED,
+          pspChargeId: result.chargeId,
+          failureCode: result.status === 'failed' ? result.failureCode : null,
+          settledAt: this.clock.now(),
+        },
+      });
+      await this.answer(
+        await tx.payment.findUniqueOrThrow({ where: { id: payment.id }, select: SELECT }),
+      );
     });
-    return this.prisma.payment.findUniqueOrThrow({ where: { id: payment.id }, select: SELECT });
+  }
+
+  /** The outcome of a settled row, into the outbox of the transaction that is open. */
+  private answer(settled: PaymentRow): Promise<void> {
+    return this.publisher.publish(outcomeOf(settled, resultOf(settled)));
   }
 }

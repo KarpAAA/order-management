@@ -73,7 +73,9 @@ describe('the real wiring passes', () => {
     'src/modules/payments/payments.worker.module.ts',
     'src/modules/payments/payments.consumer.ts',
     'src/modules/payments/charge-payment.service.ts',
-    'src/modules/payments/infrastructure/rabbit-payment-events.adapter.ts',
+    'src/modules/payments/infrastructure/outbox-payment-events.adapter.ts',
+    'src/infrastructure/outbox/outbox.worker.module.ts',
+    'src/infrastructure/outbox/outbox-relay.ts',
     'src/modules/payments/index.ts',
   ])('%s', async (filePath) => {
     const results = await eslint.lintFiles([filePath]);

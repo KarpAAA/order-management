@@ -16,9 +16,11 @@ export interface PaymentOutcome {
 }
 
 /**
- * Tells the rest of the system how a payment attempt ended. 3.2: published to the broker
- * after the row is saved, not atomically with it. ROADMAP 3.4: an outbox row written with the
- * payment, same port, new adapter.
+ * Tells the rest of the system how a payment attempt ended.
+ *
+ * Called inside the transaction that settles the payment, and that is the contract of this
+ * port: the answer is recorded with the row it tells about (an outbox row), never sent to the
+ * outside from here. An adapter that calls a broker does not belong behind it.
  */
 export interface PaymentEventsPublisher {
   publish(outcome: PaymentOutcome): Promise<void>;

@@ -93,6 +93,9 @@ const isSubscriber = (ctor: Ctor): boolean => {
   });
 };
 
+/** What starts working on its own besides a consumer: the timers of the outbox. */
+const RUNNERS = ['OutboxRelayRunner', 'OutboxCleanupRunner'];
+
 let graph: ModuleNode[];
 
 beforeAll(async () => {
@@ -118,5 +121,13 @@ describe('worker process', () => {
     );
 
     expect(subscribers).toEqual(['PaymentsConsumer']);
+  });
+
+  it('runs the relay and the cleanup of the outbox, in a *WorkerModule', () => {
+    const owners = graph
+      .filter((node) => node.providers.some((ctor) => RUNNERS.includes(ctor.name)))
+      .map((node) => node.name);
+
+    expect(owners).toEqual(['OutboxWorkerModule']);
   });
 });
