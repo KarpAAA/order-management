@@ -18,7 +18,7 @@ outbox: no                      # 3.4; until then the event follows the row
 broker: rabbitmq                # in: queue `payments.commands`; out: exchange `events`
 queue: none                     # no BullMQ, no Redis
 processes: worker               # one process, a broker consumer; no HTTP
-dlq: alert                      # a rejected message → Logger.error, lost until 3.3
+dlq: alert                      # a command given up → `payments.commands.dlq` + Logger.error (Step 4: metric)
 cron: none
 validation: zod                 # messages through `parseMessage()` of @oms/contracts; env through zod
 logs: stdout                    # Nest built-in Logger; pino in Step 4
@@ -52,9 +52,22 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
   `(order_id, attempt)`, the provider gets the idempotency key of the command, and a row is
   settled only while `PENDING` (`updateMany … where status = PENDING`). Whoever comes second
   publishes what is stored. Keep every new step repeatable the same way.
-- **One call to the provider, no retry.** A transient failure ends the attempt as
-  `psp_unavailable`. Do not add a retry loop or `Nack(true)`: the command redelivered with a
-  delay is 3.3, the call retried with backoff and a circuit breaker is 3.11.
+- **One call to the provider per delivery** (ADR 0013). A failure that may pass
+  (`InfrastructureError.retryable`) is thrown out of the use case while a delivery is left:
+  the row stays `PENDING`, nothing is published, and the command comes again after
+  `RABBITMQ_RETRY_DELAY_MS`. On the last delivery (`lastDelivery`, from the consumer) it is
+  the outcome, `psp_unavailable`: the api waits for an answer, so a provider that is down is
+  answered, never parked. Do not add a retry loop or `Nack(true)`: the call retried with
+  backoff and a circuit breaker is 3.11.
+- **A command that fails on something else** (the database, a bug) gets
+  `PAYMENTS_COMMANDS_MAX_ATTEMPTS` deliveries and is then parked in `payments.commands.dlq`,
+  with nothing answered: the order waits until an operator puts the command back (3.7 gives
+  the api a timeout). A command that is not a known contract is parked at once
+  (`UnprocessableMessageError`).
+- **Three queues**: `payments.commands`, `.wait.<delayMs>`, `.dlq`, declared by
+  `RabbitSubscribers` from `rabbitConfig.retry`. The decorator of the consumer names the
+  exchange, the routing key and the queue only. The arguments of an existing queue cannot be
+  changed: a change is a new name.
 - **The event is published after the row is saved, not atomically with it.** Do not "fix" it
   before 3.4 (outbox).
 - **Nothing is imported from `services/api`.** `src/shared/` and `src/infrastructure/messaging/`
@@ -68,6 +81,10 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
   cannot express them and `migrate diff` does not see them.
 - The e2e suite replaces `PAYMENT_GATEWAY` with `test/doubles/test-psp.ts`; the HTTP adapter
   is tested against MSW. Each test file has its own database and its own RabbitMQ vhost.
+  There a redelivery is 200 ms away and the third delivery is the last (`.env.test`).
+  `test/helpers/broker.ts` reads a dead-letter queue (`take`), puts a message back (`put`),
+  closes the service's connection from the broker's side (`killConnection`) and plays a
+  consumer that dies with its message (`crashOn`).
 
 ## Deviations from the conventions templates
 

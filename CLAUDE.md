@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.2 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 3: microservices and brokers**, 3.3 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Two services: `services/api` (this file) and `services/payments` (its own decisions:
 `services/payments/CLAUDE.md`). They share `packages/contracts` and nothing else.
 The roadmap runs in two passes: Step 2 closed at 2.9, and 2.10–2.12, Kafka (3.8, 3.9, 3.14) and
@@ -38,7 +38,7 @@ outbox: no                      # 3.4 adds reliable events + outbox; until then 
 broker: rabbitmq                # between services only (ADR 0012): commands → exchange `commands`, events → `events`
 queue: bullmq
 processes: api+worker
-dlq: alert                      # dead job → Logger.error in OrdersConsumer (Step 4: metric); a rejected broker message → Logger.error, lost until 3.3
+dlq: alert                      # dead job → Logger.error in OrdersConsumer; a broker message given up → `<queue>.dlq` + Logger.error (Step 4: metric)
 cron: bullmq                    # job schedulers on the module's queue; first: maintain-order-event-partitions
 validation: class-validator
 swagger-prod: off
@@ -135,10 +135,11 @@ entries: the BullMQ queue `orders` (cron ticks only) and the broker queue `api.p
     consumes;
   - a consumer reads with `parseMessage()`, binds the tenant from the envelope
     (`runInWorkspace`) and calls one use case. `InvalidStateError` = already settled → return
-    (ack). A message that is not a known contract → `Nack(false)`. Anything thrown → rejected
-    without requeue by the connection (`rabbit-connection.ts`) and LOST until 3.3;
-  - no retry of a PSP failure until 3.3 / 3.11, no outbox until 3.4, no inbox until 3.5: do
-    not build them earlier, and do not "fix" a lost message with requeue (a hot loop);
+    (ack). Not a known contract, or a business refusal that will not change (`NotFoundError`)
+    → `throw new UnprocessableMessageError(…)`. `ConflictError` and anything that is not a
+    `DomainError` → let it out;
+  - no outbox until 3.4, no inbox until 3.5, no retry of the PSP call itself until 3.11: do
+    not build them earlier;
   - `MessagingModule` stands in for the library's `RabbitMQModule`, whose static state allows
     one Nest application per process; the e2e suite runs several. Do not import
     `RabbitMQModule`;
@@ -146,6 +147,31 @@ entries: the BullMQ queue `orders` (cron ticks only) and the broker queue `api.p
     through `test/helpers/broker.ts`. Each test file has its own RabbitMQ vhost (`db.ts`);
   - `RABBITMQ_PREFETCH=1` in `.env.test`: one message at a time, which is what makes "the
     event before this one was handled" provable (`drained()` in `payment-flow.e2e-spec.ts`).
+
+- **A message whose handler throws is delivered again after a delay, then parked** (ADR 0013).
+  Every queue a consumer reads has `<queue>.wait.<delayMs>` and `<queue>.dlq` beside it, all
+  quorum queues, all declared by `RabbitSubscribers` (`infrastructure/messaging/`).
+  Consequences:
+  - `@RabbitSubscribe` carries `exchange`, `routingKey` and `queue` only. The arguments of the
+    queue, the error handler (`retry-or-park.ts`) and the policy come from `rabbitConfig`;
+  - a queue a consumer reads needs an entry in `rabbitConfig.retry` (`configuration.ts`) with
+    its own `*_MAX_ATTEMPTS` (and optional `*_RETRY_DELAY_MS`): the process does not boot
+    without one;
+  - never `Nack(true)` and never a retry loop in a consumer: throw. `UnprocessableMessageError`
+    = parked at once; anything else = `maxAttempts` deliveries, then parked. A parked message
+    is a `Logger.error` and is put back by hand (management UI → Move messages);
+  - the second argument of a handler is the delivery (`{ attempt, last }`,
+    `@shared/messaging/delivery`), not the raw amqp message;
+  - the arguments of an existing queue cannot be changed (`PRECONDITION_FAILED` at boot): a
+    change is a new queue name. The delay is part of the name of the wait queue for that
+    reason. A dev broker with queues from 3.2: `rabbitmqctl delete_queue <name>` once;
+  - a failed message returns behind the ones published meanwhile: nothing may rely on the
+    order of messages in a queue;
+  - in the e2e suite a redelivery is 200 ms away and the third delivery is the last
+    (`.env.test`); "everything before this was handled" is `drained()` in
+    `payment-flow.e2e-spec.ts`, which also waits for the wait queue to be empty;
+  - `test/helpers/failing-orders.ts` makes the worker fail to load one order: the way to
+    provoke a retry without stopping the database.
 
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
   Tenant models (Membership, Product, Order, OrderItem, OrderEvent) are filtered by the
@@ -256,7 +282,10 @@ entries: the BullMQ queue `orders` (cron ticks only) and the broker queue `api.p
 - `SchedulePaymentChargeHandler` calls the scheduler port, not a use case (`events.md` §3): it
   only sends the command, and the 3.4 outbox replaces it.
 - A broker consumer has no rule file of its own (`transport/queues.md` is BullMQ): ack, reject
-  and prefetch replace attempts, backoff and concurrency. What we do: `docs/conventions-backlog.md` §4.
+  and prefetch replace attempts, backoff and concurrency. What we do: `docs/conventions-backlog.md` §4, §7.
+- `UnprocessableMessageError` extends `InfrastructureError` and lives in `shared/errors/`,
+  with `Delivery` in `shared/messaging/`: a consumer is an entry class and may not import
+  `infrastructure/` (lint), and both are plain types.
 - Orders has a repository port although Postgres is the only implementation
   (`architecture.md` §4): it lets the use-case unit tests run on the in-memory repository in
   `application/__test__/`. Details: `.claude/rules/project/testing.md`.

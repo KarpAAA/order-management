@@ -208,7 +208,10 @@ sequenceDiagram
     P->>MQ: the stored outcome, again
   else PENDING
     P->>PSP: POST /charges, Idempotency-Key {id}:{attempt}, timeout 3 s, one call
-    P->>PDB: PENDING → SUCCEEDED / FAILED (decline code, psp_unavailable, psp_rejected)
+    opt no answer (timeout, 5xx), and a delivery is left
+      P-->>MQ: reject → payments.commands.wait.30000 → back after 30 s, the row stays PENDING
+    end
+    P->>PDB: PENDING → SUCCEEDED / FAILED (decline code, psp_rejected, psp_unavailable on the last delivery)
     P->>MQ: payments.payment-succeeded / -failed → exchange events
     Note over P,MQ: NOT atomic with the row (Known gap → 3.4 outbox)
   end
@@ -216,6 +219,8 @@ sequenceDiagram
   W->>DB: load order (tenant bound from the envelope); still PENDING_PAYMENT with this attempt?
   alt stale or duplicate event
     W-->>MQ: ack, nothing happens
+  else the write fails (database, a concurrent worker)
+    W-->>MQ: reject → api.payment-events.wait.30000 → back after 30 s
   else succeeded
     W->>DB: BEGIN; → PAID + PAYMENT_SUCCEEDED; COMMIT
   else failed
@@ -230,8 +235,25 @@ the api each open their own.
 
 A charge is never made twice, by three layers: the attempt number on the order (a second
 answer for a settled attempt is acknowledged and ignored), the unique row per (order, attempt)
-in payments, and the idempotency key at the provider. A message that is not a known contract,
-or whose handler throws, is rejected without requeue (Known gaps).
+in payments, and the idempotency key at the provider.
+
+A message whose handling fails is not lost (ADR 0013). Every queue a service reads has two
+more beside it:
+
+```
+<exchange> ──► <queue> ──(rejected)──► <queue>.wait.<delayMs> ──(expired)──► <queue>
+                  └──(given up: publish + ack)──► <queue>.dlq
+```
+
+| Queue                | Deliveries | Then                                                                  |
+| -------------------- | ---------- | --------------------------------------------------------------------- |
+| `payments.commands`  | 4          | a provider still down: answered `psp_unavailable`; anything else: dlq |
+| `api.payment-events` | 10         | dlq                                                                   |
+
+A message that is not a known contract, or that business refuses for good (no such order in
+the workspace of the envelope), is parked in the dead-letter queue on its first delivery. So
+is a message the broker took back 10 times from a consumer that died holding it. A parked
+message is an error in the log; it is put back through the management UI ("Move messages").
 
 ## 7. Tenancy
 
@@ -292,20 +314,21 @@ or whose handler throws, is rejected without requeue (Known gaps).
 
 ## 8. Known gaps
 
-| Gap                                                      | Consequence today                                                                                                                                                                                      | Closed in                                                                 |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------- |
-| Publishing is not atomic with the commit, on both sides  | api: if the broker is down or the process dies between commit and publish, the order stays `PENDING_PAYMENT` and no charge is under way. payments: a charge may be made and its answer never published | 3.4 (transactional outbox)                                                |
-| No retry of a transient PSP failure                      | BullMQ retried five times; since 3.2 the first timeout or 5xx ends the attempt as `PAYMENT_FAILED psp_unavailable`, and the user places again                                                          | 3.3 (the command is redelivered with a delay), 3.11 (the call is retried) |
-| A rejected message is lost                               | A message that is not a known contract, or whose handler throws (database down, a concurrent write), is rejected without requeue and logged; an order waiting for it stays `PENDING_PAYMENT`           | 3.3 (dead-letter queue, delayed retries)                                  |
-| No inbox                                                 | A repeated message is absorbed by state (the attempt on the order, the unique row in payments), not by a table of seen message ids                                                                     | 3.5                                                                       |
-| A command sent before its queue exists is dropped        | `payments.commands` is declared by payments-service at its first start; a command published to a broker that never saw payments is unroutable                                                          | open: declared by an operator, or `mandatory` publishing                  |
-| payments has no migration checker and no mutation run    | One migration, applied on an empty database by its e2e suite; drift and upgrade are not checked                                                                                                        | when payments gets its second migration                                   |
-| `PENDING_PAYMENT` cannot be cancelled                    | A stuck order (see above) cannot be cancelled by users                                                                                                                                                 | Step 3 (saga with compensation)                                           |
-| No rate limiting                                         | A noisy tenant is not limited; brute force on `/auth/login` is not throttled                                                                                                                           | deferred: roadmap 2.10, second pass                                       |
-| Default Nest logger only                                 | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                                                              | Step 4 (pino, OpenTelemetry)                                              |
-| No health checks, no graceful shutdown                   | Compose/k8s cannot tell "started" from "ready"; in-flight jobs are cut on stop                                                                                                                         | Step 5                                                                    |
-| `Location` on two 201s points nowhere                    | `POST /auth/register` and `POST /workspaces/{id}/members` return a `Location` without a GET route behind it                                                                                            | open: a GET route or another URL, decided with the API                    |
-| No `Idempotency-Key` on HTTP writes                      | A retried `POST /orders` creates a second draft (place is protected by `version`)                                                                                                                      | Step 3 (with the saga)                                                    |
-| No reconciliation with the PSP                           | If every attempt times out after the PSP already charged (e.g. latency > 3 s), the order ends `PAYMENT_FAILED psp_unavailable` while the PSP holds a successful charge                                 | open (payments-service reconciles by idempotency key)                     |
-| Dropping a partition locks `order_events`                | `drop_order_events_partition` is a plain `DROP` (a function cannot `DETACH … CONCURRENTLY`); it gives up after 5 s and the job retries. Retention is off by default                                    | open: an owner-run task outside the application                           |
-| Seeded `PENDING_PAYMENT` orders have no charge under way | They stay pending forever: a fixture that shows the first gap                                                                                                                                          | Step 3                                                                    |
+| Gap                                                      | Consequence today                                                                                                                                                                                                                                     | Closed in                                                |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Publishing is not atomic with the commit, on both sides  | api: if the broker is down or the process dies between commit and publish, the order stays `PENDING_PAYMENT` and no charge is under way. payments: a charge may be made and its answer never published                                                | 3.4 (transactional outbox)                               |
+| The call to the PSP is made once per delivery            | A provider that does not answer is asked again only when the command is redelivered, 30 s later, four times in all; nothing retries within a delivery and nothing stops calling a provider that is down                                               | 3.11 (retries with backoff, circuit breaker)             |
+| A command parked in payments leaves the api unanswered   | When the last delivery of a command fails on something other than the provider (the database of payments), or the command is not processable, it goes to `payments.commands.dlq` and the order stays `PENDING_PAYMENT` until an operator puts it back | 3.7 (a saga step has a timeout)                          |
+| Nobody is told about a parked message                    | A message in a dead-letter queue is a `Logger.error`; no metric, no alert. Putting it back is manual, through the management UI                                                                                                                       | Step 4 (metric and alert on the depth of `*.dlq`)        |
+| No inbox                                                 | A repeated message is absorbed by state (the attempt on the order, the unique row in payments), not by a table of seen message ids                                                                                                                    | 3.5                                                      |
+| A command sent before its queue exists is dropped        | `payments.commands` is declared by payments-service at its first start; a command published to a broker that never saw payments is unroutable                                                                                                         | open: declared by an operator, or `mandatory` publishing |
+| payments has no migration checker and no mutation run    | One migration, applied on an empty database by its e2e suite; drift and upgrade are not checked                                                                                                                                                       | when payments gets its second migration                  |
+| `PENDING_PAYMENT` cannot be cancelled                    | A stuck order (see above) cannot be cancelled by users                                                                                                                                                                                                | Step 3 (saga with compensation)                          |
+| No rate limiting                                         | A noisy tenant is not limited; brute force on `/auth/login` is not throttled                                                                                                                                                                          | deferred: roadmap 2.10, second pass                      |
+| Default Nest logger only                                 | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                                                                                                             | Step 4 (pino, OpenTelemetry)                             |
+| No health checks, no graceful shutdown                   | Compose/k8s cannot tell "started" from "ready"; in-flight jobs are cut on stop                                                                                                                                                                        | Step 5                                                   |
+| `Location` on two 201s points nowhere                    | `POST /auth/register` and `POST /workspaces/{id}/members` return a `Location` without a GET route behind it                                                                                                                                           | open: a GET route or another URL, decided with the API   |
+| No `Idempotency-Key` on HTTP writes                      | A retried `POST /orders` creates a second draft (place is protected by `version`)                                                                                                                                                                     | Step 3 (with the saga)                                   |
+| No reconciliation with the PSP                           | If every attempt times out after the PSP already charged (e.g. latency > 3 s), the order ends `PAYMENT_FAILED psp_unavailable` while the PSP holds a successful charge                                                                                | open (payments-service reconciles by idempotency key)    |
+| Dropping a partition locks `order_events`                | `drop_order_events_partition` is a plain `DROP` (a function cannot `DETACH … CONCURRENTLY`); it gives up after 5 s and the job retries. Retention is off by default                                                                                   | open: an owner-run task outside the application          |
+| Seeded `PENDING_PAYMENT` orders have no charge under way | They stay pending forever: a fixture that shows the first gap                                                                                                                                                                                         | Step 3                                                   |

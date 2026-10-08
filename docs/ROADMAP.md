@@ -217,7 +217,7 @@
   - Закласти: payments-service з власною БД, логіка PSP переїжджає туди з `api`. Команда `ChargePayment` іде через RabbitMQ, відповідь — `PaymentSucceeded` або `PaymentFailed`.
   - Подивитись: RabbitMQ Management UI — exchanges, черги, повідомлення в дорозі.
 
-- [ ] **3.3 RabbitMQ глибше**
+- [x] **3.3 RabbitMQ глибше**
   - Закласти: ack/nack, prefetch, ретраї з затримкою (TTL + dead-letter exchange), DLQ, обробка «отруйних» повідомлень.
   - Подивитись:
     - вбий консюмера посеред обробки — повідомлення повертається в чергу

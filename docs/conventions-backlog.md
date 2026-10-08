@@ -249,3 +249,56 @@ folders.
 orthogonal to the level (axis B is about where the rules live); level 4 then means "a
 repository port too". `domain/ports-adapters.md` §7: narrow the anti-pattern to "a port with
 one implementation".
+
+## 7. A broker message that fails: delivered again after a delay, then parked
+
+Step 3.3 · 2026-10-08 · Status: open
+
+**Conventions say:** `transport/queues.md` §4: `attempts` and `backoff` on the BullMQ queue,
+`UnrecoverableError` for what must not be retried, a dead job goes where `dlq:` says.
+`http/error-handling.md`: errors are classes extending the `shared/errors` bases.
+
+**What we did:** every queue a consumer reads has a wait queue (`<queue>.wait.<delayMs>`, a
+TTL and a dead-letter route back) and a dead-letter queue (`<queue>.dlq`). One error handler
+for the connection decides: `UnprocessableMessageError` → parked at once; anything else →
+rejected without requeue while deliveries are left (counted from the broker's `x-death`),
+parked on the last one. The consumer only classifies: `InvalidStateError` → return,
+`ConflictError` and non-domain errors → let out, any other `DomainError` →
+`UnprocessableMessageError`. The number of deliveries and the delay are configuration, per
+queue. The subscriber registrar adds the queue arguments and the handler, so the decorator
+stays `exchange`, `routingKey`, `queue`. A use case that must answer (a command whose sender
+waits) gets "this is the last delivery" in its command and turns the failure into the answer.
+
+**Why:** BullMQ retries inside the library; a broker has no delay and no attempts, only
+reject and dead-letter, so the same four notions (attempts, backoff, unrecoverable, dead
+letter) have to be built from queues. And the errors bases have no place for "this message
+can never be processed", which is neither a domain refusal nor a vendor failure.
+
+**Assessment:** good. The rule of the queue consumer carried over word for word (never retry
+what cannot succeed, never retry at once, a dead message is somebody's work), and the
+consumer stayed thin. The cost: three queues per reader, and queue arguments that cannot be
+changed in place. One trap worth writing down: a consumer class is an entry and may not
+import `infrastructure/`, so the error and the delivery type live in `shared/`.
+
+**Example:**
+
+```ts
+@RabbitSubscribe({ exchange: 'events', routingKey: [PaymentSucceededV1.name], queue: 'api.payment-events' })
+async onPaymentEvent(raw: unknown): Promise<void> {
+  const parsed = parseMessage(raw);
+  if (!parsed.ok) throw new UnprocessableMessageError(parsed.detail); // parked at once
+  try {
+    await this.tenant.runInWorkspace(parsed.message.workspaceId, () => this.settle(parsed.message));
+  } catch (err) {
+    if (err instanceof InvalidStateError) return;                      // already settled: ack
+    if (err instanceof ConflictError || !(err instanceof DomainError)) throw err; // again, later
+    throw new UnprocessableMessageError(err.message, { cause: err });  // business refuses for good
+  }
+}
+```
+
+**Proposed change:** in the `transport/broker.md` proposed in §4: the three queues and who
+declares them; the table error → outcome; "the policy is configuration, per queue"; "a
+command handler answers on its last delivery, an event handler parks"; "queue arguments are
+immutable: a change is a new name". `shared/errors`: add `UnprocessableMessageError` to the
+bases. `ops/config-env.md`: name the two settings every consumed queue has.

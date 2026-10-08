@@ -87,6 +87,28 @@ pnpm dev
   UI shows the exchanges (`commands`, `events`), the queues (`payments.commands`,
   `api.payment-events`), their bindings and the messages on the way. Stop payments, place an
   order and the command waits in `payments.commands`; start it and the order becomes `PAID`.
+- Each of the two queues has two more beside it (ADR 0013): `<queue>.wait.30000`, where a
+  message whose handling failed waits for its next delivery, and `<queue>.dlq`, where it is
+  parked when it is given up. Things to try, with the management UI open:
+  - `docker compose stop fake-psp`, place an order: the command moves between
+    `payments.commands` and its wait queue every 30 s. Start fake-psp before the fourth
+    delivery and the order becomes `PAID`; leave it down and it becomes `PAYMENT_FAILED`
+    with `psp_unavailable`.
+  - Publish any text to the exchange `commands` with the routing key
+    `payments.charge-payment`: it is in `payments.commands.dlq` at once, with the reason in
+    the header `x-last-error`.
+  - Kill the payments process while a charge is under way (`latencyMs` of fake-psp below
+    3000 gives the time): the command goes from Unacked back to Ready, and the restarted
+    process charges once.
+  - A parked message is put back with "Move messages" on the page of its dead-letter queue
+    (destination: the queue named in `x-parked-from`).
+- A broker that still has the two queues from before 3.3 refuses to start the consumers
+  (`PRECONDITION_FAILED`: the queue type cannot be changed). Once:
+  `docker compose exec rabbitmq rabbitmqctl delete_queue payments.commands` and the same
+  for `api.payment-events`.
+- `RABBITMQ_RETRY_DELAY_MS`, `PAYMENTS_COMMANDS_MAX_ATTEMPTS` (payments) and
+  `PAYMENT_EVENTS_MAX_ATTEMPTS` (api) set the delay and the number of deliveries; a queue can
+  have a delay of its own (`.env.example` of each service).
 - `pnpm dev`: the contracts in watch mode, then api, worker and payments, side by side.
 - Then open `docs/requests.http` in WebStorm and run it top to bottom.
 
@@ -214,9 +236,9 @@ curl http://localhost:4010/charges
 
 - `declineRate: 1`: every new charge is declined → `PAYMENT_FAILED` with the decline code, no
   retry. Place the order again: a new attempt, a new idempotency key.
-- `failureRate: 1`: every call returns 503 → `PAYMENT_FAILED` with `psp_unavailable` after
-  one call. Nothing retries since payments left the BullMQ worker; retries come back with
-  roadmap 3.3 and 3.11 (`docs/architecture.md` → Known gaps).
+- `failureRate: 1`: every call returns 503 → the command is delivered again every 30 s, and
+  the fourth delivery ends the attempt: `PAYMENT_FAILED` with `psp_unavailable` after about
+  90 s. Set `failureRate` back to 0 in between and the order becomes `PAID`.
 - `latencyMs` above 3000: the 3 s timeout of payments fires → handled like a failure.
 - The same `Idempotency-Key` always returns the same response.
 
