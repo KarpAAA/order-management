@@ -11,7 +11,9 @@ import { OrderCancelledV1 } from './orders/order-cancelled.v1';
 import { OrderFulfilledV1 } from './orders/order-fulfilled.v1';
 import { OrderPaidV1 } from './orders/order-paid.v1';
 import { OrderPlacedV1 } from './orders/order-placed.v1';
+import { CancelPaymentV1 } from './payments/cancel-payment.v1';
 import { ChargePaymentV1 } from './payments/charge-payment.v1';
+import { PaymentCancelledV1 } from './payments/payment-cancelled.v1';
 import { PaymentFailedV1 } from './payments/payment-failed.v1';
 import { PaymentSucceededV1 } from './payments/payment-succeeded.v1';
 
@@ -20,6 +22,8 @@ export const contracts = [
   ChargePaymentV1,
   PaymentSucceededV1,
   PaymentFailedV1,
+  CancelPaymentV1,
+  PaymentCancelledV1,
   OrderPlacedV1,
   OrderPaidV1,
   OrderCancelledV1,

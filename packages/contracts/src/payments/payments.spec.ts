@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
+import { CancelPaymentV1 } from './cancel-payment.v1';
 import { ChargePaymentV1 } from './charge-payment.v1';
+import { PaymentCancelledV1 } from './payment-cancelled.v1';
 import { PaymentFailedV1 } from './payment-failed.v1';
 import { PaymentSucceededV1 } from './payment-succeeded.v1';
 
@@ -32,10 +34,15 @@ const failed = PaymentFailedV1.create(META, {
   chargeId: 'ch_1',
 });
 
+const cancel = CancelPaymentV1.create(META, { orderId: ORDER_ID, paymentAttempt: 1 });
+const cancelled = PaymentCancelledV1.create(META, { orderId: ORDER_ID, paymentAttempt: 1 });
+
 const CASES = [
   { contract: ChargePaymentV1, name: 'payments.charge-payment', message: charge },
   { contract: PaymentSucceededV1, name: 'payments.payment-succeeded', message: succeeded },
   { contract: PaymentFailedV1, name: 'payments.payment-failed', message: failed },
+  { contract: CancelPaymentV1, name: 'payments.cancel-payment', message: cancel },
+  { contract: PaymentCancelledV1, name: 'payments.payment-cancelled', message: cancelled },
 ];
 
 describe.each(CASES)('$name v1', ({ contract, name, message }) => {
@@ -99,6 +106,35 @@ describe('payments.charge-payment v1: amount', () => {
     const message = { ...charge, payload: { ...charge.payload, idempotencyKey: '' } };
 
     expect(ChargePaymentV1.schema.safeParse(message).success).toBe(false);
+  });
+});
+
+describe('payments.charge-payment v1: expiry', () => {
+  const withExpiry = (expiresAt: unknown): unknown => ({
+    ...charge,
+    payload: { ...charge.payload, expiresAt },
+  });
+
+  it('is read without one: a command sent before the field existed never expires', () => {
+    expect(charge.payload.expiresAt).toBeUndefined();
+    expect(ChargePaymentV1.schema.safeParse(charge).success).toBe(true);
+  });
+
+  it('carries the moment as an ISO date-time', () => {
+    const message = ChargePaymentV1.create(META, {
+      ...charge.payload,
+      expiresAt: '2026-10-06T10:18:00.000Z',
+    });
+
+    expect(message.payload.expiresAt).toBe('2026-10-06T10:18:00.000Z');
+  });
+
+  it.each([
+    ['a date without a time', '2026-10-06'],
+    ['a number', 1_791_281_880_000],
+    ['null', null],
+  ])('rejects %s', (_case, expiresAt) => {
+    expect(ChargePaymentV1.schema.safeParse(withExpiry(expiresAt)).success).toBe(false);
   });
 });
 
