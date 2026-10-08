@@ -29,6 +29,8 @@ export interface ChargePaymentCommand {
   amount: Money;
   idempotencyKey: string;
   correlationId: string;
+  /** The broker delivers this command no more: a provider that is still down ends the attempt. */
+  lastDelivery: boolean;
 }
 
 const SELECT = {
@@ -68,6 +70,8 @@ const outcomeOf = (row: PaymentRow, result: PaymentResult): PaymentOutcome => ({
  *  - the row is unique per (order, attempt): the second delivery finds the first one's row;
  *  - the provider gets the same idempotency key and answers the same;
  *  - the row is settled only while PENDING; whoever comes second publishes what is stored.
+ * A provider that does not answer leaves the row PENDING and the error to the consumer: the
+ * command comes again after a delay, and its last delivery ends the attempt (docs/adr/0013).
  * The answer is published after the row is saved, not atomically with it (ROADMAP 3.4).
  */
 @Injectable()
@@ -92,7 +96,7 @@ export class ChargePaymentService {
       return;
     }
 
-    const result = await this.charge(payment);
+    const result = await this.charge(payment, cmd.lastDelivery);
     const settled = await this.settle(payment, result);
     await this.publisher.publish(outcomeOf(settled, resultOf(settled)));
   }
@@ -124,10 +128,11 @@ export class ChargePaymentService {
   }
 
   /**
-   * One call to the provider. A failure of the call ends the attempt at once: there is no
-   * retry yet (ROADMAP 3.3 redelivers the command with a delay, 3.11 retries the call).
+   * One call to the provider (ROADMAP 3.11 retries the call itself). A failure that may pass
+   * is thrown while a delivery is left; on the last one it is the outcome, `psp_unavailable`:
+   * `payment-failed` is final for the attempt, and the api waits for an answer.
    */
-  private async charge(payment: PaymentRow): Promise<PaymentResult> {
+  private async charge(payment: PaymentRow, lastDelivery: boolean): Promise<PaymentResult> {
     try {
       const charge = await this.gateway.charge({
         amount: { amountMinor: payment.amountMinor, currency: payment.currency },
@@ -140,6 +145,7 @@ export class ChargePaymentService {
         : { status: 'failed', failureCode: charge.declineCode, chargeId: charge.chargeId };
     } catch (err: unknown) {
       if (!(err instanceof InfrastructureError)) throw err;
+      if (err.retryable && !lastDelivery) throw err;
       this.logger.warn(`charge of order ${payment.orderId} failed: ${err.message}`);
       return {
         status: 'failed',

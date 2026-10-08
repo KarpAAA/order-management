@@ -21,9 +21,10 @@ const isPspChargeResponse = (body: unknown): body is PspChargeResponse =>
   (body.status === 'succeeded' || body.status === 'declined');
 
 /**
- * Talks to the PSP (devtools/fake-psp locally) over plain HTTP. One call, no retry: a failed
- * call ends the attempt (charge-payment.service.ts). Retries arrive with ROADMAP 3.3 (the
- * command is redelivered with a delay) and 3.11 (timeouts, backoff, circuit breaker here).
+ * Talks to the PSP (devtools/fake-psp locally) over plain HTTP. One call, no retry here: a
+ * call that fails and may pass is made again when the command is redelivered
+ * (charge-payment.service.ts, docs/adr/0013). Backoff and a circuit breaker around the call
+ * itself are ROADMAP 3.11.
  */
 @Injectable()
 export class HttpPaymentGateway implements PaymentGateway {

@@ -12,9 +12,10 @@ import type {
  * - `ok` → succeeded;
  * - `declined:<code>` → a decline (a business result, not an error);
  * - `unavailable` → transient transport failure (503 / timeout);
- * - `rejected` → non-transient failure (other 4xx, malformed body).
+ * - `rejected` → non-transient failure (other 4xx, malformed body);
+ * - `broken` → not a failure of the provider at all: a bug on our side of the call.
  */
-export type PspOutcome = 'ok' | `declined:${string}` | 'unavailable' | 'rejected';
+export type PspOutcome = 'ok' | `declined:${string}` | 'unavailable' | 'rejected' | 'broken';
 
 export class TestPsp implements PaymentGateway {
   private readonly scripts = new Map<string, PspOutcome[]>();
@@ -61,6 +62,9 @@ export class TestPsp implements PaymentGateway {
     }
     if (outcome === 'rejected') {
       throw new PaymentGatewayError('PSP answered 400', false);
+    }
+    if (outcome === 'broken') {
+      throw new TypeError('cannot read the charge');
     }
     const chargeId = `ch_${request.idempotencyKey}`;
     const result: ChargeResult =

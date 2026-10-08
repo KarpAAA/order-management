@@ -16,15 +16,21 @@ export function rabbitManagementUrl(container: StartedRabbitMQContainer): string
   return `http://${container.getHost()}:${container.getMappedPort(MANAGEMENT_PORT)}`;
 }
 
-async function management(apiUrl: string, method: string, path: string, body?: object) {
+async function management(
+  apiUrl: string,
+  method: string,
+  path: string,
+  body?: object,
+): Promise<Response> {
   const response = await fetch(new URL(`/api/${path}`, apiUrl), {
     method,
     headers: { authorization: AUTH, 'content-type': 'application/json' },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
   if (!response.ok) {
-    throw new Error(`RabbitMQ ${method} ${path} answered ${response.status}`);
+    throw new Error(`RabbitMQ ${method} ${path} answered ${String(response.status)}`);
   }
+  return response;
 }
 
 /**
@@ -45,6 +51,31 @@ export async function createVhost(apiUrl: string, amqpUrl: string, name: string)
 }
 
 /** Drops the vhost with everything in it; open connections to it are closed by the broker. */
-export function dropVhost(apiUrl: string, name: string): Promise<void> {
-  return management(apiUrl, 'DELETE', `vhosts/${name}`);
+export async function dropVhost(apiUrl: string, name: string): Promise<void> {
+  await management(apiUrl, 'DELETE', `vhosts/${name}`);
+}
+
+interface BrokerConnection {
+  name: string;
+  client_properties?: { connection_name?: string };
+}
+
+/**
+ * Closes, from the broker's side, the connections a client opened under `connectionName` in
+ * the vhost: what the broker sees when a process is killed. Returns how many it closed; the
+ * management API learns of a new connection a moment after it opens.
+ */
+export async function closeConnections(
+  apiUrl: string,
+  vhost: string,
+  connectionName: string,
+): Promise<number> {
+  const response = await management(apiUrl, 'GET', `vhosts/${vhost}/connections`);
+  const open = ((await response.json()) as BrokerConnection[]).filter(
+    (connection) => connection.client_properties?.connection_name === connectionName,
+  );
+  for (const connection of open) {
+    await management(apiUrl, 'DELETE', `connections/${encodeURIComponent(connection.name)}`);
+  }
+  return open.length;
 }

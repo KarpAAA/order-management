@@ -7,14 +7,19 @@ import { ChargePaymentV1 } from '@oms/contracts';
 import { v7 as uuidv7 } from 'uuid';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
+import { CONNECTION_NAME } from '@infra/messaging/rabbit-connection';
+
 import { TestPsp } from '../doubles/test-psp';
 import { connectTestBroker, type TestBroker } from '../helpers/broker';
 import { waitFor } from '../helpers/waiting';
 import { createWorkerApp, type WorkerApp } from '../helpers/worker-app';
 import { testDb } from '../setup/db';
 
-// the queue the service declares for itself: a name on the wire, so the test spells it out
+// the queues the service declares for itself: names on the wire, so the test spells them out
 const COMMANDS_QUEUE = 'payments.commands';
+const DEAD_LETTER_QUEUE = 'payments.commands.dlq';
+// .env.test: the third delivery of a command is the last, 200 ms after the one before
+const MAX_ATTEMPTS = 3;
 const WORKSPACE = '01927f4e-8b2a-7c3d-9e4f-5a6b7c8d9e02';
 
 const psp = new TestPsp();
@@ -135,12 +140,6 @@ describe('a charge that does not succeed is answered with payment-failed (PAY-00
       hasCharge: true,
     },
     {
-      name: 'a provider that does not answer ends the attempt as psp_unavailable (PAY-007)',
-      outcome: 'unavailable' as const,
-      declineCode: 'psp_unavailable',
-      hasCharge: false,
-    },
-    {
       name: 'a provider that refuses the request ends the attempt as psp_rejected (PAY-008)',
       outcome: 'rejected' as const,
       declineCode: 'psp_rejected',
@@ -158,7 +157,7 @@ describe('a charge that does not succeed is answered with payment-failed (PAY-00
       name: 'payments.payment-failed',
       payload: { orderId, paymentAttempt: 1, declineCode, chargeId },
     });
-    // one call: nothing retries yet, whatever the failure
+    // one call: the provider answered, and asking again would get the same answer
     expect(psp.calls(orderId)).toHaveLength(1);
     expect(await rows(orderId)).toEqual([
       expect.objectContaining({
@@ -169,9 +168,101 @@ describe('a charge that does not succeed is answered with payment-failed (PAY-00
       }),
     ]);
   });
+});
 
-  // ROADMAP 3.3 (the command is redelivered with a delay) and 3.11 (the call is retried):
-  it.todo('retries a transient failure before it gives up (PAY-006)');
+describe('a provider that does not answer: the command is delivered again (PAY-006, PAY-007)', () => {
+  it('charges on the delivery the provider is back for, and answers once (PAY-006)', async () => {
+    const orderId = uuidv7();
+    psp.script(orderId, 'unavailable', 'unavailable');
+
+    await broker.send(chargeCommand({ orderId }));
+    const [event] = await broker.waitForEvents(orderId);
+
+    expect(event).toMatchObject({
+      name: 'payments.payment-succeeded',
+      payload: { orderId, paymentAttempt: 1, chargeId: `ch_${orderId}:1` },
+    });
+    // three deliveries of one command: the same key each time
+    expect(psp.calls(orderId).map((call) => call.idempotencyKey)).toEqual(
+      Array(MAX_ATTEMPTS).fill(`${orderId}:1`),
+    );
+    expect(await rows(orderId)).toEqual([expect.objectContaining({ status: 'SUCCEEDED' })]);
+    // no answer was given while the outcome was open, and nothing was given up
+    expect(broker.events(orderId)).toHaveLength(1);
+    expect(await broker.take(DEAD_LETTER_QUEUE)).toEqual([]);
+  });
+
+  it('leaves the payment PENDING between deliveries', async () => {
+    const orderId = uuidv7();
+    psp.script(orderId, 'unavailable');
+
+    await broker.send(chargeCommand({ orderId }));
+    await waitFor(
+      () => psp.calls(orderId).length,
+      (calls) => calls === 1,
+      { what: 'the first call to the PSP' },
+    );
+
+    expect(await rows(orderId)).toEqual([
+      expect.objectContaining({ status: 'PENDING', settledAt: null }),
+    ]);
+    expect(broker.events(orderId)).toEqual([]);
+    await broker.waitForEvents(orderId); // the second delivery settles it
+  });
+
+  it('ends the attempt as psp_unavailable on the last delivery (PAY-007)', async () => {
+    const orderId = uuidv7();
+    psp.script(orderId, ...Array<'unavailable'>(MAX_ATTEMPTS).fill('unavailable'));
+
+    await broker.send(chargeCommand({ orderId }));
+    const [event] = await broker.waitForEvents(orderId);
+
+    expect(event).toMatchObject({
+      name: 'payments.payment-failed',
+      payload: { orderId, paymentAttempt: 1, declineCode: 'psp_unavailable', chargeId: null },
+    });
+    expect(psp.calls(orderId)).toHaveLength(MAX_ATTEMPTS);
+    expect(await rows(orderId)).toEqual([
+      expect.objectContaining({ status: 'FAILED', failureCode: 'psp_unavailable' }),
+    ]);
+    // answered, not given up: the api has its outcome
+    expect(await broker.take(DEAD_LETTER_QUEUE)).toEqual([]);
+  });
+});
+
+describe('a command that fails on every delivery is parked (PAY-016, PAY-017)', () => {
+  it('lands in the dead-letter queue after the last delivery, and is charged when put back', async () => {
+    const orderId = uuidv7();
+    const command = chargeCommand({ orderId });
+    psp.script(orderId, ...Array<'broken'>(MAX_ATTEMPTS).fill('broken'));
+
+    await broker.send(command);
+    const [parked] = await waitFor(
+      () => broker.take(DEAD_LETTER_QUEUE),
+      (taken) => taken.length > 0,
+      { what: 'the command in the dead-letter queue' },
+    );
+
+    // the message as it was sent, with where it came from and why it was given up
+    expect(JSON.parse(parked?.content.toString() ?? '')).toMatchObject({
+      messageId: command.messageId,
+    });
+    expect(parked?.headers).toMatchObject({
+      'x-parked-from': COMMANDS_QUEUE,
+      'x-last-error': 'TypeError: cannot read the charge',
+    });
+    expect(psp.calls(orderId)).toHaveLength(MAX_ATTEMPTS);
+    // nothing was answered: the payment is still open
+    expect(broker.events(orderId)).toEqual([]);
+    expect(await rows(orderId)).toEqual([expect.objectContaining({ status: 'PENDING' })]);
+
+    // the operator fixed the cause and moves the message back
+    if (parked) broker.put(COMMANDS_QUEUE, parked.content, parked.headers);
+    const [event] = await broker.waitForEvents(orderId);
+
+    expect(event).toMatchObject({ name: 'payments.payment-succeeded' });
+    expect(await rows(orderId)).toEqual([expect.objectContaining({ status: 'SUCCEEDED' })]);
+  });
 });
 
 describe('a command delivered twice charges once (PAY-009, PAY-010)', () => {
@@ -230,7 +321,7 @@ describe('two consumers in the same charge at once (PAY-010)', () => {
   });
 });
 
-describe('a message that is not a known command is rejected, and the service goes on', () => {
+describe('a message that is not a known command is parked at once, and the service goes on (PAY-015)', () => {
   const drained = () =>
     waitFor(
       () => broker.depth(COMMANDS_QUEUE),
@@ -265,5 +356,41 @@ describe('a message that is not a known command is rejected, and the service goe
     await drained();
 
     expect(await testDb().payment.count()).toBe(before + 1);
+    // kept as it came, for whoever has to find out who sent it
+    const parked = await broker.take(DEAD_LETTER_QUEUE);
+    expect(parked.map((message) => message.content)).toEqual([content]);
+    expect(parked[0]?.headers).toMatchObject({
+      'x-parked-from': COMMANDS_QUEUE,
+      'x-last-error': expect.stringMatching(/^UnprocessableMessageError: /),
+    });
   });
+});
+
+describe('the consumer dies in the middle of a command (PAY-018)', () => {
+  it('gets the command again: one charge, one settled payment', async () => {
+    const orderId = uuidv7();
+    // the first delivery waits inside the PSP call until the second one arrives (or 5 s pass)
+    psp.holdUntilConcurrent(orderId, 2);
+
+    await broker.send(chargeCommand({ orderId }));
+    await waitFor(
+      () => psp.calls(orderId).length,
+      (calls) => calls === 1,
+      { what: 'the command to reach the PSP' },
+    );
+    // what the broker sees when the process is killed: the connection is gone, nothing was
+    // acknowledged. The service reconnects, as a restarted process would.
+    await broker.killConnection(CONNECTION_NAME);
+
+    // both deliveries answer: the interrupted one when its call returns, the second as well
+    const events = await broker.waitForEvents(orderId, 2);
+
+    expect(events.map((event) => event.name)).toEqual([
+      'payments.payment-succeeded',
+      'payments.payment-succeeded',
+    ]);
+    expect(psp.charges(orderId)).toHaveLength(1);
+    expect(await rows(orderId)).toEqual([expect.objectContaining({ status: 'SUCCEEDED' })]);
+    expect(await broker.take(DEAD_LETTER_QUEUE)).toEqual([]);
+  }, 60_000);
 });
