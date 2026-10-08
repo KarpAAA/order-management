@@ -18,10 +18,13 @@ import type { FailOrderPaymentCommand } from './order-commands';
 export const PAYMENT_TIMEOUT = 'payment_timeout';
 
 /**
- * PENDING_PAYMENT → PAYMENT_FAILED with a reason (a decline code, `psp_unavailable`,
- * `expired`, or `payment_timeout` for a charge that was cancelled), and the compensation of
- * the saga: no money was taken, so the stock that is held for the attempt is given back.
- * The order is PAYMENT_FAILED at once; the saga ends when inventory has answered.
+ * The payment of the attempt ended without a charge: declined, expired, or cancelled.
+ * PENDING_PAYMENT → PAYMENT_FAILED with the reason (a decline code, `psp_unavailable`,
+ * `expired`, or `payment_timeout` for a charge the saga cancelled), or → CANCELLED when the
+ * user had asked to cancel the order: that is what they were waiting to hear.
+ * Either way the saga compensates: no money was taken, so the stock that is held for the
+ * attempt is given back. The order has its status at once; the saga ends when inventory has
+ * answered.
  */
 @UseCase()
 export class FailOrderPaymentService {
@@ -38,14 +41,12 @@ export class FailOrderPaymentService {
     const order = await this.orders.getById(cmd.orderId);
     this.policy.assertCanSettlePayment(actor);
     const now = this.clock.now();
-    order.markPaymentFailed({
-      attempt: cmd.paymentAttempt,
-      reason: cmd.reason,
-      now,
-      changedBy: actorRef(actor),
-    });
+    const change = { now, changedBy: actorRef(actor) };
+    order.assertAwaitingPayment(cmd.paymentAttempt);
     const saga = await this.sagas.getByAttempt(cmd.orderId, cmd.paymentAttempt);
     saga.paymentEnded(now);
+    if (saga.cancelRequested) order.cancel(change);
+    else order.markPaymentFailed({ ...change, attempt: cmd.paymentAttempt, reason: cmd.reason });
 
     await this.sagas.save(saga);
     await this.orders.save(order);

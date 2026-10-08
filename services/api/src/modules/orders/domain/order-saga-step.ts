@@ -28,6 +28,17 @@ export const WAITING_STEPS: readonly WaitingStep[] = [
   OrderSagaStep.Releasing,
 ];
 
+/** What a request to cancel the order means while its saga is in a given step. */
+export type CancelDecision =
+  /** No charge was asked for: the order is cancelled now, and whatever is held is released. */
+  | 'cancel-now'
+  /** A charge is under way: payments is asked not to make it, and its answer decides. */
+  | 'cancel-payment'
+  /** Payments was asked already (a timeout): the request is remembered for its answer. */
+  | 'remember'
+  /** The request is known: nothing to do. */
+  | 'already-requested';
+
 /** What is to be sent when a step was not answered in time. */
 export type TimeoutAction =
   /** Inventory never said: give back whatever it may hold. */

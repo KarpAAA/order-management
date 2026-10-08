@@ -21,6 +21,7 @@ import {
   OrderSagaNotWaitingError,
   PaymentAttemptNotPendingError,
 } from '../domain/errors';
+import { OrderCancelled } from '../domain/events/order-cancelled.event';
 import { OrderPaid } from '../domain/events/order-paid.event';
 import { OrderSagaStep } from '../domain/order-saga-step';
 import { OrderEventType, OrderStatus } from '../domain/order-status';
@@ -289,6 +290,17 @@ describe('the steps of the order saga', () => {
   describe('CompleteOrderPaymentService', () => {
     const cmd = { orderId: ORDER, paymentAttempt: 1, pspChargeId: 'ch_1' };
 
+    it('SAGA-021 pays an order the user asked to cancel: the charge was made first', async () => {
+      orders.put(orderIn(OrderStatus.PendingPayment));
+      sagas.put(sagaIn(OrderSagaStep.CancellingPayment, { cancelRequestedAt: LATER }));
+
+      await completePayment().execute(cmd, paymentConsumer);
+
+      expect(await order()).toMatchObject({ status: OrderStatus.Paid, cancelledAt: null });
+      expect(await saga()).toMatchObject({ step: OrderSagaStep.Completed });
+      expect(stock.released).toEqual([]);
+    });
+
     it.each([OrderSagaStep.Charging, OrderSagaStep.CancellingPayment])(
       'SAGA-004 PAY-004 marks the order PAID and ends the saga that was %s',
       async (step) => {
@@ -381,6 +393,50 @@ describe('the steps of the order saga', () => {
       expect(stock.released).toEqual([PLACING]);
       expect(timeouts.scheduled).toEqual([{ ...PLACING, step: OrderSagaStep.Releasing }]);
       expect(charges.cancelled).toEqual([]);
+    });
+
+    it.each([
+      ['declined', 'card_declined'],
+      ['cancelled by payments', 'payment_timeout'],
+    ])(
+      'SAGA-021 ends the order CANCELLED when the user had asked for it and the charge was %s',
+      async (_case, reason) => {
+        orders.put(orderIn(OrderStatus.PendingPayment));
+        sagas.put(sagaIn(OrderSagaStep.CancellingPayment, { cancelRequestedAt: LATER }));
+
+        await failPayment().execute({ ...cmd, reason }, paymentConsumer);
+
+        expect(await order()).toMatchObject({
+          status: OrderStatus.Cancelled,
+          cancelledAt: LATER,
+          // not a failure of the payment: the user got what they asked for
+          failureReason: null,
+        });
+        expect(events.published).toEqual([new OrderCancelled(WORKSPACE, ORDER, LATER)]);
+        expect(orders.history).toMatchObject([
+          {
+            type: OrderEventType.OrderCancelled,
+            fromStatus: OrderStatus.PendingPayment,
+            toStatus: OrderStatus.Cancelled,
+            changedBy: SYSTEM_ACTOR,
+          },
+        ]);
+        // the stock goes back either way
+        expect(stock.released).toEqual([PLACING]);
+        expect(await saga()).toMatchObject({ step: OrderSagaStep.Releasing });
+      },
+    );
+
+    it('SAGA-022 a timeout alone does not cancel: the order is PAYMENT_FAILED with payment_timeout', async () => {
+      waitingIn(OrderSagaStep.CancellingPayment);
+
+      await failPayment().execute({ ...cmd, reason: 'payment_timeout' }, paymentConsumer);
+
+      expect(await order()).toMatchObject({
+        status: OrderStatus.PaymentFailed,
+        failureReason: 'payment_timeout',
+      });
+      expect(events.published).toEqual([]);
     });
 
     it('SAGA-011 releases nothing twice: a second failure finds the saga RELEASING', async () => {

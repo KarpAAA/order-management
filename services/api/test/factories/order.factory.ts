@@ -158,6 +158,7 @@ export const orderFactory = Factory.define<OrderSpec, unknown, Order>(({ onCreat
         attempt: order.paymentAttempt,
         step,
         deadlineAt: ENDED.includes(step) ? null : new Date(now + SAGA_DEADLINE_MS),
+        cancelRequestedAt: null,
         version: 0,
         createdAt: at,
         updatedAt: at,

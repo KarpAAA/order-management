@@ -84,6 +84,7 @@ describe('OrderSaga.start', () => {
       attempt: 2,
       step: OrderSagaStep.Reserving,
       deadlineAt: DEADLINE,
+      cancelRequestedAt: null,
       version: 0,
       createdAt: NOW,
       updatedAt: NOW,
@@ -190,6 +191,85 @@ describe('OrderSaga.timedOut', () => {
       expect(saga.snapshot()).toEqual(before);
     },
   );
+});
+
+describe('OrderSaga.requestCancel', () => {
+  const DECISIONS = [
+    { step: OrderSagaStep.Reserving, decision: 'cancel-now', next: OrderSagaStep.Releasing },
+    {
+      step: OrderSagaStep.Charging,
+      decision: 'cancel-payment',
+      next: OrderSagaStep.CancellingPayment,
+    },
+    {
+      step: OrderSagaStep.CancellingPayment,
+      decision: 'remember',
+      next: OrderSagaStep.CancellingPayment,
+    },
+  ] as const;
+
+  it.each(DECISIONS)(
+    'SAGA-020 SAGA-021 SAGA-022 in $step it decides $decision, moves to $next and remembers the request',
+    ({ step, decision, next }) => {
+      const saga = sagaIn(step);
+
+      expect(saga.requestCancel(LATER)).toBe(decision);
+
+      expect(saga.step).toBe(next);
+      expect(saga.cancelRequested).toBe(true);
+      expect(saga.snapshot()).toMatchObject({ cancelRequestedAt: LATER, updatedAt: LATER });
+    },
+  );
+
+  it.each(DECISIONS.filter(({ step, next }) => step !== next))(
+    'in $step the step that begins is still to be given its deadline',
+    ({ step }) => {
+      const saga = sagaIn(step);
+
+      saga.requestCancel(LATER);
+
+      expect(saga.deadlineAt).toBeNull();
+    },
+  );
+
+  it('SAGA-022 keeps the deadline of a cancellation that is already under way', () => {
+    const saga = sagaIn(OrderSagaStep.CancellingPayment);
+
+    saga.requestCancel(LATER);
+
+    expect(saga.deadlineAt).toEqual(DEADLINE);
+  });
+
+  it('SAGA-022 a second request changes nothing', () => {
+    const saga = sagaIn(OrderSagaStep.CancellingPayment, { cancelRequestedAt: NOW });
+    const before = saga.snapshot();
+
+    expect(saga.requestCancel(LATER)).toBe('already-requested');
+
+    expect(saga.snapshot()).toEqual(before);
+  });
+
+  it.each([OrderSagaStep.Releasing, OrderSagaStep.Completed, OrderSagaStep.Aborted])(
+    'refuses a cancellation once the saga is %s: there is nothing left to cancel',
+    (step) => {
+      const saga = sagaIn(step);
+      const before = saga.snapshot();
+
+      expect(() => saga.requestCancel(LATER)).toThrow(OrderSagaNotWaitingError);
+
+      expect(saga.snapshot()).toEqual(before);
+      expect(saga.cancelRequested).toBe(false);
+    },
+  );
+
+  it('is not asked for by a timeout: a saga nobody cancelled says so', () => {
+    const saga = sagaIn(OrderSagaStep.Charging);
+
+    saga.timedOut(OrderSagaStep.Charging, LATER);
+
+    expect(saga.step).toBe(OrderSagaStep.CancellingPayment);
+    expect(saga.cancelRequested).toBe(false);
+  });
 });
 
 describe('OrderSaga.waitUntil', () => {

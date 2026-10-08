@@ -233,8 +233,8 @@ describe('Order.place', () => {
 });
 
 describe('Order.cancel', () => {
-  it.each([OrderStatus.Draft, OrderStatus.PaymentFailed])(
-    'ORD-014 cancels a %s order and records ORDER_CANCELLED',
+  it.each([OrderStatus.Draft, OrderStatus.PaymentFailed, OrderStatus.PendingPayment])(
+    'ORD-014 SAGA-020 cancels a %s order and records ORDER_CANCELLED',
     (status) => {
       const order = orderIn(status);
       order.cancel(change());
@@ -403,6 +403,7 @@ describe('Order.note', () => {
     OrderEventType.StockReserved,
     OrderEventType.StockReleased,
     OrderEventType.PaymentTimedOut,
+    OrderEventType.CancellationRequested,
   ] as const)('ORD-018 ORD-021 records %s from and to the status the order has', (type) => {
     const order = orderIn(OrderStatus.PendingPayment);
     const before = order.snapshot();

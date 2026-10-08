@@ -136,6 +136,7 @@ enum OrderEventType {
   STOCK_RESERVATION_FAILED
   STOCK_RELEASED
   PAYMENT_TIMED_OUT
+  CANCELLATION_REQUESTED
 }
 
 enum OrderSagaStep {
@@ -242,6 +243,9 @@ model OrderSaga {
   step        OrderSagaStep
   /// until when the step waits for its answer; null once the saga has ended
   deadlineAt  DateTime?     @map("deadline_at") @db.Timestamptz(3)
+  /// when the user asked to cancel the order while this saga was running; the saga ends the
+  /// order as CANCELLED, unless the charge was made first
+  cancelRequestedAt DateTime? @map("cancel_requested_at") @db.Timestamptz(3)
   version     Int           @default(0)
   createdAt   DateTime      @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime      @map("updated_at") @db.Timestamptz(3)

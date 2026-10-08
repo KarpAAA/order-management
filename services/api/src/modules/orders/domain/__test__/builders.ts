@@ -123,6 +123,7 @@ export function sagaIn(step: OrderSagaStep, overrides: Partial<OrderSagaProps> =
     attempt: 1,
     step,
     deadlineAt: ENDED.includes(step) ? null : DEADLINE,
+    cancelRequestedAt: null,
     version: 2,
     createdAt: NOW,
     updatedAt: NOW,

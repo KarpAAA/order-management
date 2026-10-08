@@ -10,6 +10,7 @@ export const orderSagaSelect = {
   attempt: true,
   step: true,
   deadlineAt: true,
+  cancelRequestedAt: true,
   version: true,
   createdAt: true,
   updatedAt: true,
@@ -23,6 +24,7 @@ function columns(saga: OrderSaga) {
   return {
     step: s.step,
     deadlineAt: s.deadlineAt,
+    cancelRequestedAt: s.cancelRequestedAt,
     createdAt: s.createdAt,
     updatedAt: s.updatedAt,
   };
@@ -37,6 +39,7 @@ export const OrderSagaMapper = {
       attempt: row.attempt,
       step: row.step as OrderSagaStep, // Prisma enum → domain enum, identical values
       deadlineAt: row.deadlineAt,
+      cancelRequestedAt: row.cancelRequestedAt,
       version: row.version,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,

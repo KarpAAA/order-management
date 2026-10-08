@@ -98,7 +98,11 @@ export const ARCHIVED_PRODUCTS: ReadonlySet<number> = new Set([4, 11, 16]);
 /** The seed writes the status changes of an order, not the steps of its saga in between. */
 export type SeedEventType = Exclude<
   OrderEventType,
-  'STOCK_RESERVED' | 'STOCK_RESERVATION_FAILED' | 'STOCK_RELEASED' | 'PAYMENT_TIMED_OUT'
+  | 'STOCK_RESERVED'
+  | 'STOCK_RESERVATION_FAILED'
+  | 'STOCK_RELEASED'
+  | 'PAYMENT_TIMED_OUT'
+  | 'CANCELLATION_REQUESTED'
 >;
 
 export interface SeedOrder {

@@ -1,4 +1,4 @@
-// The timeouts of the saga steps (SAGA-007…010, 016), with the real broker doing the waiting:
+// The timeouts of the saga steps (SAGA-007…010, 016, 022), with the real broker doing the waiting:
 // a timeout is a row of the outbox, published by the relay to a delay queue and handed to the
 // worker when its delay is over. A file of its own: it runs with timeouts of a fraction of a
 // second, where every other file has ones that never go off (.env.test).
@@ -300,6 +300,46 @@ describe('a compensation that is not answered is asked for again (SAGA-009)', ()
 
     await broker.publish(stockReleased(attempt(orderId)));
     await sagaIn(orderId, 'ABORTED');
+  });
+});
+
+describe('the user cancels after the charge has timed out (SAGA-022)', () => {
+  it('202; the cancellation that is under way is not asked for again, and the order ends CANCELLED', async () => {
+    const orderId = await charging();
+    await broker.waitForSent('payments.cancel-payment', orderId);
+    await sagaIn(orderId, 'CANCELLING_PAYMENT');
+    const { version } = (await read(orderId)) as { version: number };
+    const asked = broker.sent('payments.cancel-payment', orderId).length;
+
+    const res = await api
+      .http()
+      .post(`${orderPath(WS_ACME, orderId)}/cancel`)
+      .set(member)
+      .send({ version });
+
+    expect(res.status).toBe(202);
+    expect(await sagaOf(orderId)).toMatchObject({
+      step: 'CANCELLING_PAYMENT',
+      cancelRequestedAt: expect.any(Date),
+    });
+    // the request itself sent nothing: payments was asked by the timeout
+    expect(broker.sent('payments.cancel-payment', orderId).length).toBeGreaterThanOrEqual(asked);
+
+    await broker.publish(paymentCancelled(attempt(orderId)));
+    const order = await settled(orderId, ['CANCELLED', 'PAYMENT_FAILED']);
+    await released(orderId);
+
+    // CANCELLED, not PAYMENT_FAILED with payment_timeout: the user asked for it
+    expect(order).toMatchObject({ status: 'CANCELLED', failureReason: null });
+    expect(await historyTypes(orderId)).toEqual([
+      'ORDER_CREATED',
+      'ORDER_PLACED',
+      'STOCK_RESERVED',
+      'PAYMENT_TIMED_OUT',
+      'CANCELLATION_REQUESTED',
+      'ORDER_CANCELLED',
+      'STOCK_RELEASED',
+    ]);
   });
 });
 

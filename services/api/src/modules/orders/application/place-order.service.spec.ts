@@ -91,6 +91,7 @@ describe('PlaceOrderService', () => {
       attempt: 1,
       step: OrderSagaStep.Reserving,
       deadlineAt: TIMEOUT_AT,
+      cancelRequestedAt: null,
       version: 0,
       createdAt: LATER,
       updatedAt: LATER,

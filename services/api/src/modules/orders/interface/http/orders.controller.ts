@@ -8,6 +8,7 @@ import {
   Patch,
   Post,
   Query,
+  UseInterceptors,
 } from '@nestjs/common';
 import {
   ApiAcceptedResponse,
@@ -24,6 +25,7 @@ import { CurrentActor } from '@common/decorators/current-actor.decorator';
 import { UuidParam } from '@common/decorators/uuid-param.decorator';
 import { WorkspaceScoped } from '@common/decorators/workspace-scoped.decorator';
 import { CreatedDto, CursorPageQueryDto, VersionDto } from '@common/dto/common.dto';
+import { AcceptedWhenPendingInterceptor } from '@common/interceptors/accepted-when-pending.interceptor';
 import type { UserActor } from '@shared/auth/actor';
 
 import { CancelOrderService } from '../../application/cancel-order.service';
@@ -150,19 +152,28 @@ export class OrdersController {
 
   @Post(':orderId/cancel')
   @HttpCode(204)
+  @UseInterceptors(AcceptedWhenPendingInterceptor)
   @ApiOperation({
-    summary: 'Cancel a DRAFT or PAYMENT_FAILED order (MEMBER and above)',
-    description: 'PENDING_PAYMENT cannot be cancelled in Step 0 (422): it races with the charge.',
+    summary: 'Cancel a DRAFT, PAYMENT_FAILED or PENDING_PAYMENT order (MEMBER and above)',
+    description:
+      '204: the order is CANCELLED. 202: the order is PENDING_PAYMENT and its charge is under ' +
+      'way; payments was asked not to make it. Poll GET /orders/{orderId} until the status ' +
+      'becomes CANCELLED, or PAID when the charge was made first.',
   })
-  @ApiNoContentResponse()
+  @ApiNoContentResponse({ description: 'Cancelled.' })
+  @ApiAcceptedResponse({ type: OrderAcceptedDto, description: 'Asked for; the charge decides.' })
   @ApiErrors(400, 409, 422)
   async cancelOrder(
     @Param('workspaceId', ParseUUIDPipe) _workspaceId: string,
     @UuidParam('orderId') orderId: string,
     @Body() dto: VersionDto,
     @CurrentActor() actor: UserActor,
-  ): Promise<void> {
-    await this.cancelOrderService.execute({ orderId, version: dto.version }, actor);
+  ): Promise<OrderAcceptedDto | undefined> {
+    const outcome = await this.cancelOrderService.execute({ orderId, version: dto.version }, actor);
+    // a body makes the answer 202 (AcceptedWhenPendingInterceptor)
+    return outcome === 'cancelled'
+      ? undefined
+      : { id: orderId, status: OrderStatus.PendingPayment };
   }
 
   @Post(':orderId/fulfill')

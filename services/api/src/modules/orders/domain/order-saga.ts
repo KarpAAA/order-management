@@ -1,7 +1,7 @@
 import { OrderSagaNotWaitingError } from './errors';
 import { OrderSagaStep, WAITING_STEPS } from './order-saga-step';
 
-import type { TimeoutAction, WaitingStep } from './order-saga-step';
+import type { CancelDecision, TimeoutAction, WaitingStep } from './order-saga-step';
 
 export interface OrderSagaProps {
   workspaceId: string;
@@ -11,6 +11,8 @@ export interface OrderSagaProps {
   step: OrderSagaStep;
   /** Until when the current step waits for its answer; null once the saga has ended. */
   deadlineAt: Date | null;
+  /** When the user asked to cancel the order while this saga ran; null: nobody did. */
+  cancelRequestedAt: Date | null;
   version: number;
   createdAt: Date;
   updatedAt: Date;
@@ -50,6 +52,7 @@ export class OrderSaga {
       attempt: input.attempt,
       step: OrderSagaStep.Reserving,
       deadlineAt: input.deadline,
+      cancelRequestedAt: null,
       version: 0,
       createdAt: input.now,
       updatedAt: input.now,
@@ -109,6 +112,37 @@ export class OrderSaga {
         this.waitIn(step, now);
         return 'repeat-release-stock';
     }
+  }
+
+  /**
+   * The user wants the order cancelled while it is PENDING_PAYMENT. What that takes depends
+   * on what was asked of the other services so far; a saga that is past the charge, or has
+   * given the order back, has nothing to cancel.
+   */
+  requestCancel(now: Date): CancelDecision {
+    this.leave(
+      [OrderSagaStep.Reserving, OrderSagaStep.Charging, OrderSagaStep.CancellingPayment],
+      'a cancellation',
+    );
+    if (this.props.cancelRequestedAt !== null) return 'already-requested';
+    this.props.cancelRequestedAt = now;
+    switch (this.props.step) {
+      case OrderSagaStep.Reserving:
+        // a reservation that is still on its way is undone by the release (ADR 0016)
+        this.waitIn(OrderSagaStep.Releasing, now);
+        return 'cancel-now';
+      case OrderSagaStep.Charging:
+        this.waitIn(OrderSagaStep.CancellingPayment, now);
+        return 'cancel-payment';
+      default:
+        this.props.updatedAt = now;
+        return 'remember';
+    }
+  }
+
+  /** Whether the user asked to cancel the order: a payment that ends unpaid ends it CANCELLED. */
+  get cancelRequested(): boolean {
+    return this.props.cancelRequestedAt !== null;
   }
 
   /**

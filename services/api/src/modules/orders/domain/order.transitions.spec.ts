@@ -55,6 +55,13 @@ const ALLOWED: readonly {
     recorded: OrderEventType.PaymentFailed,
   },
   {
+    // the domain allows it; whether it is safe is the saga's decision (SAGA-020, SAGA-021)
+    from: OrderStatus.PendingPayment,
+    action: 'cancel',
+    to: OrderStatus.Cancelled,
+    recorded: OrderEventType.OrderCancelled,
+  },
+  {
     from: OrderStatus.PendingPayment,
     action: 'returnToDraft',
     to: OrderStatus.Draft,
@@ -122,9 +129,9 @@ function run(order: Order, action: Action): void {
 }
 
 describe('Order state machine', () => {
-  it('covers 6 statuses × 6 actions: 8 allowed, 28 forbidden', () => {
-    expect(ALLOWED).toHaveLength(8);
-    expect(FORBIDDEN).toHaveLength(28);
+  it('covers 6 statuses × 6 actions: 9 allowed, 27 forbidden', () => {
+    expect(ALLOWED).toHaveLength(9);
+    expect(FORBIDDEN).toHaveLength(27);
   });
 
   it.each(ALLOWED)(

@@ -64,6 +64,7 @@ describe('OrderSagasRepository — a saga is stored as it is', () => {
       attempt: 1,
       step: OrderSagaStep.Reserving,
       deadlineAt: DEADLINE,
+      cancelRequestedAt: null,
       version: 0,
       createdAt: NOW,
       updatedAt: NOW,
