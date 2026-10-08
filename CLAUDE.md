@@ -1,9 +1,10 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.5 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
-Two services: `services/api` (this file) and `services/payments` (its own decisions:
-`services/payments/CLAUDE.md`). They share `packages/contracts` and nothing else.
+Current step: **Step 3: microservices and brokers**, 3.6 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Three services: `services/api` (this file), `services/payments` and `services/inventory`
+(their own decisions: `services/payments/CLAUDE.md`, `services/inventory/CLAUDE.md`). They
+share `packages/contracts` and nothing else. The api does not talk to inventory yet: 3.7.
 The roadmap runs in two passes: Step 2 closed at 2.9, and 2.10–2.12, Kafka (3.8, 3.9, 3.14) and
 the other deferred items wait in `docs/ROADMAP.md` → «Другий прохід». Do not build a deferred
 item unless asked.
@@ -62,10 +63,12 @@ Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces: `services/*`, `packages/*`, `d
 ## Commands (CMD-friendly, from the repo root)
 
 ```
-pnpm infra:up          # postgres, postgres-replica, pgbouncer, postgres-payments, redis, rabbitmq, fake-psp (healthy)
+pnpm infra:up          # postgres, postgres-replica, pgbouncer, postgres-payments, postgres-inventory, redis, rabbitmq, fake-psp (healthy)
 pnpm db:migrate        # prisma migrate dev (api)
 pnpm db:migrate:payments     # prisma migrate dev (payments, its own Postgres on 5434)
+pnpm db:migrate:inventory    # prisma migrate dev (inventory, its own Postgres on 5435)
 pnpm db:seed           # fixed-id dev data (README → Seeded data)
+pnpm db:seed:inventory       # stock for the seeded products (inventory)
 pnpm db:reset          # drop, migrate, seed
 pnpm db:datagen        # Step 2 volume data after db:reset: 100 tenants, 2M orders (--scale smoke)
 pnpm db:explain        # plans of the list queries on the datagen data (docs/perf/2.2-indexes-explain.md)
@@ -74,21 +77,22 @@ pnpm db:explain:rls    # what oms_app sees, plans under the RLS policy (docs/per
 pnpm db:explain:pgbouncer    # 500 clients on 20 server connections, limits, the leak (docs/perf/2.7-pgbouncer.md)
 pnpm db:explain:replica      # replication lag, read-your-writes with a 5 s delay (docs/perf/2.8-read-replica.md)
 pnpm db:explain:cache        # catalog cache: hit vs database, hit ratio, 200 callers on an empty key (docs/perf/2.9-cache.md)
-pnpm dev               # contracts (tsc --watch) + api + worker + payments in watch mode
+pnpm db:explain:stock        # four ways to reserve the last unit, lock order (docs/perf/3.6-stock-locking.md)
+pnpm dev               # contracts (tsc --watch) + api + worker + payments + inventory in watch mode
 pnpm lint && pnpm typecheck
-pnpm test              # every package: Vitest project unit of api (domain, VOs, policies, use cases, adapters, architecture) and of payments (adapters (MSW), policy, architecture) + contracts (no Docker)
+pnpm test              # every package: Vitest project unit of api (domain, VOs, policies, use cases, adapters, architecture) of payments (adapters (MSW), policy, architecture) and of inventory (domain, use cases, adapter, policy, architecture) + contracts (no Docker)
 pnpm --filter @oms/contracts build   # packages/contracts → dist (CommonJS + .d.ts)
-pnpm test:e2e          # Vitest project e2e of api, then of payments: *.int-spec.ts + *.e2e-spec.ts (Testcontainers), each service to its boundary
+pnpm test:e2e          # Vitest project e2e of api, then of inventory and payments: *.int-spec.ts + *.e2e-spec.ts (Testcontainers), each service to its boundary
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
 pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
 pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
-docker compose --profile app up --build   # migrate + api + worker from one image; migrate-payments + payments from another
+docker compose --profile app up --build   # migrate + api + worker from one image; payments and inventory each from its own, with its migrate step
 ```
 
 Root `lint`, `typecheck`, `test`, `test:e2e` and `dev` build `@oms/contracts` first; run through
 a filter (`pnpm --filter @oms/api …`) they need `pnpm build:contracts` once.
 New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<object>`
-(`@oms/payments` for the payments database).
+(`@oms/payments`, `@oms/inventory` for their databases).
 
 ## Modules and their combinations
 
@@ -197,8 +201,8 @@ entries: the BullMQ queues `orders`, `outbox` and `inbox` (cron ticks only), the
     needs the worker app (`createWorkerApp()`), and `OUTBOX_POLL_INTERVAL_MS=50` in `.env.test`;
   - `outbox` is not a tenant table (no `workspace_id`, no policy), and the relay and the
     cleanup use the unscoped `PrismaService`;
-  - the relay and `Outbox` are copied in `services/payments`: a fix in one is made in the
-    other. The passes of the relay are tested here (`test/outbox/`).
+  - the relay and `Outbox` are copied in `services/payments` and `services/inventory`: a
+    fix in one is made in the others. The passes of the relay are tested here (`test/outbox/`).
 - **A broker message takes effect once per consumer: the consumer records it in the inbox**
   (ADR 0015; `infrastructure/inbox/`, port `INBOX` in `@shared/messaging/inbox`).
   `inbox.once(queue, messageId, handle)` opens a transaction, inserts `(consumer, message_id)`

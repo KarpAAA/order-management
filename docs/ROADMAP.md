@@ -231,12 +231,13 @@
   - Закласти: inbox — таблиця оброблених повідомлень у кожному консюмері.
   - Подивитись: відправ те саме повідомлення 5 разів — ефект буде один.
 
-- [ ] **3.6 inventory-service**
-  - Закласти: запаси й резервації (reserve / release) з власною БД. Команди `ReserveStock` і `ReleaseStock` через RabbitMQ.
+- [x] **3.6 inventory-service**
+  - Закласти: запаси й резервації (reserve / release) з власною БД. Команди `ReserveStock` і `ReleaseStock` через RabbitMQ. Запас приходить командою `inventory.adjust-stock` (різниця, не рівень). `api` у цьому пункті не змінюється: сервіс збудований і протестований до своєї межі, команди шлють тести й seed.
   - Подивитись: конкурентні резервації останньої одиниці товару — хто виграє і чому (блокування чи optimistic locking).
 
 - [ ] **3.7 Сага (оркестрація в `api`)**
   - Закласти:
+    - `api` після 3.6 нічого не знає про inventory. Тут з'являються: відправка `inventory.reserve-stock` / `inventory.release-stock` з outbox (ключ резервації `orderId + attempt`), консюмер подій `inventory.*` і ендпойнт каталогу, що шле `inventory.adjust-stock` (`docs/adr/0016-inventory-service.md` → «What 3.7 starts from»)
     - кроки: place → reserve stock → charge → confirm
     - компенсації: оплата не пройшла → release stock
     - стан саги зберігається в БД, у кроків є таймаути (BullMQ delayed job)

@@ -478,3 +478,141 @@ consumer calls its use case through the inbox port; when the use case calls the 
 before its transaction, the use case records the message. `transport/webhooks.md` §2: say
 how `webhook_inbox` (what arrived, with a status, processed later) differs from this table
 (what was handled, no status).
+
+## 11. A use case that must change two aggregates in one transaction
+
+Step 3.6 · 2026-10-09 · Status: open
+
+**Conventions say:** `domain/domain-model.md` §1: the aggregate boundary is the transactional
+consistency boundary; everything that must be consistent in one write is inside, everything
+else is another aggregate and may be eventually consistent. §8: a domain service is for a
+rule that needs two aggregates.
+
+**What we did:** `ReserveStockService` changes the stock items of several products and writes
+the reservation that holds them, in one transaction. `StockItem` (one per product) and
+`Reservation` (one per attempt of an order) stay two aggregates. The rule across them, "every
+line or none", is the domain function `allocate(request, stock, now)`, which reserves on the
+items and returns the reservation.
+
+**Why:** §1 gives two ways out and neither fits. One aggregate "the stock of everything an
+order touches" does not exist: a stock item is shared by every order. Eventual consistency
+between the stock and the reservation would mean units that are held with no reservation to
+release them, or the reverse, for as long as the second write is on its way. §8 names the
+domain service but does not say that the use case then saves both aggregates in one
+transaction, which §1 reads as forbidden.
+
+**Assessment:** good, and unavoidable when one of the aggregates is a shared counter and the
+other is the record of who took from it (stock and reservation, balance and transfer, seats
+and booking). The cost is that the transaction locks rows of two tables, so the order of the
+locks has to be designed (§12).
+
+**Example:**
+
+```ts
+// application/reserve-stock.service.ts — inside @Transactional()
+const stock = await this.stock.lockMany(cmd.workspaceId, productIds);
+const reservation = allocate(cmd, stock, this.clock.now()); // domain: both aggregates
+if (reservation.holdsStock) await this.stock.saveAll([...stock.values()]);
+await this.reservations.insert(reservation);
+```
+
+**Proposed change:** `domain/domain-model.md` §1: add the exception. Two aggregates may be
+written in one transaction when one is a shared quantity and the other records a claim on it,
+both live in the same module and database, and the rule is a domain service (§8). Say what it
+costs (lock order) and that across modules or services it is still an event.
+
+## 12. A repository whose only read takes a lock
+
+Step 3.6 · 2026-10-09 · Status: open
+
+**Conventions say:** `domain/repository-mapper.md` §1: a repository is `findById` / `getById`
+/ `insert` / `save`. Concurrency: the default is a `version` column; `SELECT … FOR UPDATE` in
+`getById` is the alternative "when a conflict should wait rather than fail".
+
+**What we did:** `StockRepositoryPort` has `lockMany(workspaceId, productIds)`, `insert` and
+`saveAll`. There is no read without a lock, `lockMany` throws outside a transaction, and it
+takes all the rows a use case needs in one statement, `ORDER BY product_id FOR UPDATE`.
+`Reservation`, in the same module, uses the default (`version`).
+
+**Why:** the text does not say when a conflict "should wait", and it describes a lock on one
+aggregate. Three things are missing:
+
+1. the criterion. A version lock on a row that many writers want at once makes every loser of
+   a round read and try again: 340 retries against none for 50 writers and 25 units
+   (`docs/perf/3.6-stock-locking.md`). The criterion is how often a conflict happens, not how
+   it should feel;
+2. several aggregates of one type locked together, and the deadlock that two use cases get
+   when they lock the same rows in a different order;
+3. that a plain `findById` next to the locking read is a trap: the next use case reads without
+   the lock, and the lost update is back with no error.
+
+**Assessment:** good. The port says in its shape that stock cannot be looked at without being
+held. The cost: a transaction holds the row for its whole length, so everything in it must be
+short, and nothing outside the database may be called while it runs.
+
+**Example:**
+
+```ts
+// ports/stock-repository.port.ts
+lockMany(workspaceId: string, productIds: readonly string[]): Promise<Map<string, StockItem>>;
+
+// infrastructure/stock.repository.ts
+if (!this.txHost.isTransactionActive()) throw new Error('lockMany() must be called inside a transaction');
+const rows = await this.txHost.tx.$queryRaw<StockItemRow[]>`
+  SELECT … FROM stock_items
+   WHERE workspace_id = ${workspaceId}::uuid AND product_id = ANY(${ids}::uuid[])
+   ORDER BY product_id
+     FOR UPDATE`;
+```
+
+**Proposed change:** `domain/repository-mapper.md` → Concurrency: state the criterion
+(optimistic when a conflict is the exception and can be shown to the caller; pessimistic for
+a row many writers want at the same moment: counters, balances, stock). For the pessimistic
+case: the locking read replaces `findById`/`getById` instead of joining them; it refuses to
+run outside a transaction; several rows are locked in one statement with a fixed order.
+`application/transactions.md`: a paragraph on lock order across the tables one use case
+touches.
+
+## 13. The answer to a command is read from the state, not recorded as a domain event
+
+Step 3.6 · 2026-10-09 · Status: open
+
+**Conventions say:** `domain/domain-model.md` §2, §7: a factory records the creation event;
+events are recorded by the aggregate (`this.record()`) and published by the use case
+(`pullEvents()`). `application/events.md`: a `reliable` event goes to the outbox.
+
+**What we did:** `StockItem` and `Reservation` record no events and do not extend
+`AggregateRoot`. The use case hands the aggregate to a port after saving it
+(`publisher.reservationAnswered(reservation, correlationId)`), and the adapter builds the
+message from what the aggregate is: `RESERVED` → `stock-reserved`, `REJECTED` →
+`stock-reservation-failed` with its shortages, `RELEASED` → `stock-released`. payments does
+the same since 3.2 with a row instead of an aggregate.
+
+**Why:** an event recorded by a change exists only when something changed. A command that is
+delivered again (another message id, the same key) finds its work done and changes nothing,
+and its sender is still waiting for an answer. With recorded events that case needs a second
+path that builds the same message from the state, next to the first that builds it from the
+event. The conventions describe events as facts for whoever listens, not answers that
+somebody waits for.
+
+**Assessment:** good for a module whose every entry is a command that must be answered. One
+path, and the answer cannot disagree with the state, since it is derived from it. What is
+lost: the domain no longer says what happened, only what is; a module that has both facts for
+listeners and answers for a caller would need both mechanisms.
+
+**Example:**
+
+```ts
+const settled = await this.reservations.findByAttempt(cmd);
+if (settled) {
+  // asked again: nothing changes, the answer does not
+  await this.publisher.reservationAnswered(settled, cmd.correlationId);
+  return;
+}
+```
+
+**Proposed change:** `application/events.md`: distinguish an event (a fact, recorded by the
+change, nobody is waiting) from an answer to a command (derived from the state, given every
+time the command is handled, carries the correlation id of that command). Say that a module
+that only answers commands may skip `record()`/`pullEvents()`, and that a repeated command is
+answered again.

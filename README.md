@@ -5,9 +5,10 @@ users with roles, a product catalog, orders with an asynchronous payment flow) t
 area at a time: testing, database scaling, microservices and brokers, observability,
 Kubernetes, load and chaos testing, AI.
 
-**Current state: Step 3, microservices and brokers (3.2).** Two NestJS services that talk
+**Current state: Step 3, microservices and brokers (3.6).** Three NestJS services that talk
 through **RabbitMQ**: `services/api` (an HTTP **api** and a **worker**, two processes from one
-image) and `services/payments` (one broker consumer, its own image and database). A tiny
+image), `services/payments` and `services/inventory` (one broker consumer each, with its own
+image and database; the api does not use inventory yet, that is 3.7). A tiny
 **fake-psp** (`devtools/fake-psp`) plays an external payment provider.
 
 ## Architecture in one minute
@@ -51,14 +52,18 @@ Prerequisites: Docker Desktop running, **Node 24** (`.node-version`), pnpm 10.
 pnpm install
 copy services\api\.env.example services\api\.env
 copy services\payments\.env.example services\payments\.env
+copy services\inventory\.env.example services\inventory\.env
 pnpm infra:up
 pnpm db:migrate
 pnpm db:migrate:payments
+pnpm db:migrate:inventory
 pnpm db:seed
+pnpm db:seed:inventory
 pnpm dev
 ```
 
-- `pnpm infra:up`: Postgres, its read replica, PgBouncer, the Postgres of payments, Redis,
+- `pnpm infra:up`: Postgres, its read replica, PgBouncer, the Postgres of payments and of
+  inventory, Redis,
   RabbitMQ and fake-psp, waits until healthy. The replica's first start copies the whole primary.
 - Two database roles (ADR 0006): `pnpm db:*` connect as the owner `oms`
   (`DATABASE_ADMIN_URL`); api and worker connect as `oms_app` (`DATABASE_URL`), which sees only
@@ -132,10 +137,20 @@ pnpm dev
 - `RABBITMQ_RETRY_DELAY_MS`, `PAYMENTS_COMMANDS_MAX_ATTEMPTS` (payments) and
   `PAYMENT_EVENTS_MAX_ATTEMPTS` (api) set the delay and the number of deliveries; a queue can
   have a delay of its own (`.env.example` of each service).
-- `pnpm dev`: the contracts in watch mode, then api, worker and payments, side by side.
+- inventory-service has its own Postgres on port 5435 (ADR 0016), with the roles `inventory`
+  (owner) and `inventory_app`. Nothing sends it commands yet; to see it work, publish one from
+  the management UI (exchange `commands`, routing key = the `name` of the message, payload as
+  in `packages/contracts/src/inventory/`) and watch `stock_items`, `reservations` and the
+  `events` exchange. Two `inventory.reserve-stock` for the product with one unit (below), for
+  two orders: one `inventory.stock-reserved`, one `inventory.stock-reservation-failed`.
+- `pnpm db:explain:stock`: the last unit and 50 buyers under four locking strategies
+  (`docs/perf/3.6-stock-locking.md`).
+- `pnpm dev`: the contracts in watch mode, then api, worker, payments and inventory, side by
+  side.
 - Then open `docs/requests.http` in WebStorm and run it top to bottom.
 
-Everything in containers instead (api and worker from **one** image, payments from its own,
+Everything in containers instead (api and worker from **one** image, payments and inventory
+each from its own,
 migrations as a one-shot step before each):
 
 ```cmd
@@ -339,6 +354,11 @@ Hooks install with `pnpm install` (`prepare`). By hand only: e2e and migration c
 pushing a change to repositories or `schema.prisma`, `pnpm test:contract` while fixing DTOs,
 Stryker on one file (`pnpm --filter @oms/api exec stryker run --mutate <file>`).
 
+**Stock** (`pnpm db:seed:inventory`, the database of inventory): 100 units on hand of every
+seeded product in both workspaces, except product 18 (`…12`), which has **one** unit, and
+product 17 (`…11`), which has no stock item at all. The seed keeps the levels of a product
+that already has stock.
+
 ## Repository layout
 
 ```
@@ -353,6 +373,9 @@ services/api/        NestJS service: src/entrypoints/main.api.ts + main.worker.t
 services/payments/   NestJS service: src/entrypoints/main.worker.ts, its own image and database
   prisma/            schema and migrations of the payments database
   src/modules/       payments (L1): one use case, the gateway and publisher ports
+services/inventory/  NestJS service: src/entrypoints/main.worker.ts, its own image and database
+  prisma/            schema, migration and seed of the inventory database; explain/locking.ts
+  src/modules/       inventory (L4): stock and reservations, three use cases
 packages/contracts/  message contracts between services: versioned zod schemas, exchange
                      names (ADR 0011, ADR 0012)
 devtools/fake-psp/   external PSP simulator (not part of the system)

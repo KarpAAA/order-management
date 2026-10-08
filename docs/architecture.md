@@ -1,7 +1,7 @@
 # Architecture
 
 A multi-tenant order management backend that grows one step at a time. This document
-describes the **target** architecture and marks what exists today (Step 3.2).
+describes the **target** architecture and marks what exists today (Step 3.6).
 
 ## 1. Target architecture
 
@@ -29,8 +29,11 @@ flowchart LR
   payments --> paydb[("PostgreSQL<br/>payments db")]
   payments -- "HTTP, idempotent" --> psp["fake-psp<br/>(external PSP simulator)"]
 
+  subgraph invSvc["inventory-service: its own image"]
+    inventory["inventory<br/>(main.worker.ts)<br/>broker consumer"]
+  end
+
   subgraph later["Step 3 (not built yet)"]
-    inventory["inventory-service"]
     notifications["notifications-service"]
   end
 
@@ -39,30 +42,33 @@ flowchart LR
     kafka{{Kafka<br/>domain event log}}
   end
 
-  api -. "ReserveStock" .-> rabbit
+  rabbit -- "inventory.commands" --> inventory
+  inventory -- "stock-reserved / -failed / -released / -adjusted" --> rabbit
+  inventory --> invdb[("PostgreSQL<br/>inventory db")]
+  api -. "inventory.reserve-stock (3.7)" .-> rabbit
   api -. "OrderPlaced, OrderPaid…" .-> rabbit
-  rabbit -.-> inventory & notifications
+  rabbit -.-> notifications
   api -. "same events, second publisher" .-> kafka
   kafka -.-> analytics
 
   classDef built fill:#d8f5d0,stroke:#3a7d2c;
   classDef future fill:#eee,stroke:#999,stroke-dasharray: 4 3;
   classDef deferred fill:#fff,stroke:#ccc,stroke-dasharray: 2 4,color:#999;
-  class api,worker,pg,psp,payments,paydb,rabbit built;
-  class inventory,notifications future;
+  class api,worker,pg,psp,payments,paydb,rabbit,inventory,invdb built;
+  class notifications future;
   class analytics,kafka deferred;
 ```
 
-| Component               | Responsibility                                                                      | Status       |
-| ----------------------- | ----------------------------------------------------------------------------------- | ------------ |
-| `api` (HTTP)            | identity & tenancy, catalog, orders; later orchestrates the order saga              | **Step 0**   |
-| `api` worker            | payment outcomes from the broker, scheduled jobs (BullMQ); later saga timeouts      | **Step 0**   |
-| `fake-psp`              | simulated external payment provider (`devtools/`, not part of the system)           | **Step 0**   |
-| RabbitMQ                | commands and events between the services (`@oms/contracts`, ADR 0011)               | **Step 3.2** |
-| `payments-service`      | one payment attempt per command, charged once at the PSP; later retries and refunds | **Step 3.2** |
-| `inventory-service`     | stock levels, reservations                                                          | Step 3       |
-| `notifications-service` | emails on order events                                                              | Step 3       |
-| `analytics-service`     | read-model aggregates from Kafka events                                             | deferred     |
+| Component               | Responsibility                                                                       | Status       |
+| ----------------------- | ------------------------------------------------------------------------------------ | ------------ |
+| `api` (HTTP)            | identity & tenancy, catalog, orders; later orchestrates the order saga               | **Step 0**   |
+| `api` worker            | payment outcomes from the broker, scheduled jobs (BullMQ); later saga timeouts       | **Step 0**   |
+| `fake-psp`              | simulated external payment provider (`devtools/`, not part of the system)            | **Step 0**   |
+| RabbitMQ                | commands and events between the services (`@oms/contracts`, ADR 0011)                | **Step 3.2** |
+| `payments-service`      | one payment attempt per command, charged once at the PSP; later retries and refunds  | **Step 3.2** |
+| `inventory-service`     | stock on hand and held per product; reserve, release, adjust on a command (ADR 0016) | **Step 3.6** |
+| `notifications-service` | emails on order events                                                               | Step 3       |
+| `analytics-service`     | read-model aggregates from Kafka events                                              | deferred     |
 
 Communication: **RabbitMQ** for commands and replies between services and, in the
 first pass of the roadmap, for domain events too. A command goes to the direct exchange
@@ -74,10 +80,11 @@ message (ADR 0012); **BullMQ** for jobs inside one service; **PostgreSQL** datab
 
 ## 2. Process model
 
-- One repository, two services. `services/api`: one image, two entrypoints,
+- One repository, three services. `services/api`: one image, two entrypoints,
   `src/entrypoints/main.api.ts` (HTTP) and `main.worker.ts` (queue and broker consumers, the
   relay of the outbox, no HTTP). `services/payments`: its own image, one entrypoint,
   `main.worker.ts` (a broker consumer and the relay of its outbox, no HTTP).
+  `services/inventory`: the same shape as payments, with a database of its own.
 - Every business module is a **core module** (domain, application, persistence, read side)
   plus one **transport module** per transport (`*.http.module.ts`, `*.worker.module.ts`).
   Only transport modules reach an entrypoint; anything that starts on its own (the
@@ -87,8 +94,8 @@ message (ADR 0012); **BullMQ** for jobs inside one service; **PostgreSQL** datab
   consumer routes the tick to a `*.job.ts` class.
 - The services share one package, `@oms/contracts`: the schemas of the messages and the names
   of the exchanges. Everything else a second service needs is copied into it (ADR 0012).
-- Migrations are a separate one-shot step per service (`migrate`, `migrate-payments` compose
-  services), never part of `CMD`.
+- Migrations are a separate one-shot step per service (`migrate`, `migrate-payments`,
+  `migrate-inventory` compose services), never part of `CMD`.
 
 ## 3. Modules and allowed dependencies
 
@@ -373,6 +380,11 @@ message is an error in the log; it is put back through the management UI ("Move 
 | Nobody is told about a parked message                    | A message in a dead-letter queue is a `Logger.error`; no metric, no alert. Putting it back is manual, through the management UI                                                                                                                       | Step 4 (metric and alert on the depth of `*.dlq`)                |
 | The relay of the outbox is watched by nobody             | A relay that cannot publish logs one error; the unpublished rows and the age of the oldest are not measured                                                                                                                                           | Step 4 (metrics outbox_pending_total, outbox_oldest_age_seconds) |
 | payments has no migration checker and no mutation run    | Three migrations, applied on an empty database by its e2e suite; drift was checked by hand for the second, upgrade is not checked                                                                                                                     | open: a checker like the one of the api                          |
+| Nobody sends the commands of inventory                   | The api places and charges an order without asking for stock; the stock changes only by the seed, the test suite or a message published by hand. `inventory.adjust-stock` has no sender at all                                                        | 3.7 (the saga reserves and releases; a catalog endpoint adjusts) |
+| A command parked in inventory is not answered            | When every delivery of a command fails (the database of inventory), or a refusal will not change (stock below what is held), it goes to `inventory.commands.dlq` and whoever sent it hears nothing                                                    | 3.7 (a saga step has a timeout)                                  |
+| The stock cannot be read                                 | No HTTP in inventory and no read model in the api: what is in stock is visible in the database only. `inventory.stock-adjusted` is published for a future reader                                                                                      | open: a read model in the api, fed by `inventory.*` events       |
+| Units of a paid order stay `reserved`                    | Nothing lowers `on_hand` when an order is fulfilled, and adjustments keep no ledger (levels, not movements)                                                                                                                                           | open: fulfilment is not in the roadmap of Step 3                 |
+| inventory has no migration checker and no mutation run   | One migration, applied on an empty database by its e2e suite                                                                                                                                                                                          | open: a checker like the one of the api                          |
 | `PENDING_PAYMENT` cannot be cancelled                    | A stuck order (see above) cannot be cancelled by users                                                                                                                                                                                                | Step 3 (saga with compensation)                                  |
 | No rate limiting                                         | A noisy tenant is not limited; brute force on `/auth/login` is not throttled                                                                                                                                                                          | deferred: roadmap 2.10, second pass                              |
 | Default Nest logger only                                 | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                                                                                                             | Step 4 (pino, OpenTelemetry)                                     |
