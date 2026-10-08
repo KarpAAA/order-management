@@ -1,14 +1,15 @@
 # payments-service
 
 The second service of order-management (ROADMAP 3.2, `docs/adr/0012-payments-service-over-rabbitmq.md`).
-It charges one payment attempt of an order at the PSP when the api asks, and tells how it ended.
+It charges one payment attempt of an order at the PSP when the api asks, cancels an attempt
+that has not ended when the api takes the question back, and tells how the attempt ended.
 The root `CLAUDE.md` describes the api and the shared conventions; this file holds what differs.
 
 ## Project decisions
 
 ```
 role-scope: none                # no users: every entry is a message, the only actor is a system one
-authz: policy                   # PaymentsPolicy: only `system:consumer:payments` may charge
+authz: policy                   # PaymentsPolicy: only `system:consumer:payments` may charge or cancel
 ids: uuid7
 cross-module-fk: n/a            # one module; `order_id` and `workspace_id` belong to the api: plain columns
 transactions: cls               # `txHost.withTransaction()` in the use case: settle + outbox row; the provider is never called inside one
@@ -60,6 +61,21 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
   case records, not the consumer: the provider is called before that transaction, outside
   any. `Inbox.record()` throws outside a transaction. `infrastructure/inbox/` follows the
   api's inbox but is not a copy of it: there the consumer wraps the use case in `inbox.once()`.
+- **An attempt may be cancelled at any moment** (ADR 0017; `cancel-payment.service.ts`).
+  `payments.cancel-payment` ends a `PENDING` row as `CANCELLED` in one transaction, without
+  the provider, and answers with what the row says: `payment-cancelled`, or the stored outcome
+  when the attempt had ended. Consequences for the charge:
+  - a cancellation may be the first thing heard of an attempt: its row has no amount
+    (`payments_charge_known`), and the charge command that arrives later charges nothing;
+  - a call to the provider may be in flight: `settle()` finds the row no longer `PENDING`,
+    writes a successful charge on the cancelled row and `voidIfCharged()` takes it back at
+    the provider. A `CANCELLED` row with a charge id and no `voided_at` is voided by the next
+    delivery of its charge command. Do not answer `payment-succeeded` for such a row;
+  - `amountMinor`, `currency` and `idempotencyKey` are nullable in the types for that one
+    case: read them through `chargeOf()`.
+- **A charge command may expire** (`expiresAt`, optional in the contract). Checked before
+  every call to the provider: at or after that moment nothing is charged and the attempt ends
+  `FAILED` with `expired`. The sender stopped waiting, and tells so with this field.
 - **One call to the provider per delivery** (ADR 0013). A failure that may pass
   (`InfrastructureError.retryable`) is thrown out of the use case while a delivery is left:
   the row stays `PENDING`, nothing is published, and the command comes again after
@@ -99,6 +115,8 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
   and `inbox` have it: the retention deletes old rows.
 - CHECK constraints (`payments_status_shape` and others) live in the migration SQL; Prisma
   cannot express them and `migrate diff` does not see them.
+- **A new value of a Postgres enum is a migration of its own**: it cannot be used in the
+  transaction that adds it, and Prisma runs a migration file as one.
 - The e2e suite replaces `PAYMENT_GATEWAY` with `test/doubles/test-psp.ts`; the HTTP adapter
   is tested against MSW. Each test file has its own database and its own RabbitMQ vhost.
   There a redelivery is 200 ms away and the third delivery is the last (`.env.test`).
@@ -112,16 +130,17 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
   but one or two rules do not justify a domain model (`docs/conventions-backlog.md` §6). The
   publisher port has one adapter since 3.4 (the outbox replaced the broker): it stays because
   it keeps `@oms/contracts` out of the use case, which may not import it (lint).
-- The use case is `charge-payment.service.ts` at the module root and writes through the
-  Prisma transaction host (L1). It has no `@UseCase()` decorator and no `@Transactional()`:
-  only its last step is a transaction, opened with `txHost.withTransaction()`.
+- The use cases are `charge-payment.service.ts` and `cancel-payment.service.ts` at the module
+  root and write through the Prisma transaction host (L1). No `@UseCase()` decorator and no
+  `@Transactional()`: only the last step of a charge is a transaction, opened with
+  `txHost.withTransaction()`. What both read from a row is in `payment-row.ts`.
 - The publisher port is called inside that transaction (`write-service.md` §4 forbids an
   adapter call there): it writes an outbox row and calls nothing
   (`docs/conventions-backlog.md` §8).
 - The cleanups of the outbox and of the inbox are timers in the process, not scheduled jobs
   (`transport/cron.md`): the service has no queue.
-- `ChargePaymentCommand` carries the message id and the queue of the command: the use case
-  writes the inbox row in its own last transaction (`docs/conventions-backlog.md` §10).
-- Three migrations, no migration checker and no mutation run yet (`docs/architecture.md` →
+- `ChargePaymentCommand` and `CancelPaymentCommand` carry the message id and the queue of
+  the command: the use case writes the inbox row in its own last transaction (`docs/conventions-backlog.md` §10).
+- Five migrations, no migration checker and no mutation run yet (`docs/architecture.md` →
   Known gaps).
 - `Actor` is the system actor only; `role-scope`, guards and HTTP rules do not apply.

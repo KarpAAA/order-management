@@ -20,4 +20,6 @@ export type ChargeResult =
  */
 export interface PaymentGateway {
   charge(request: ChargeRequest): Promise<ChargeResult>;
+  /** Takes a charge back. Repeatable: a charge that is already void stays void. */
+  void(chargeId: string): Promise<void>;
 }

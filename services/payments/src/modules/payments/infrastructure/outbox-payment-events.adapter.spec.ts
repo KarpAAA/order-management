@@ -65,6 +65,18 @@ describe('OutboxPaymentEventsPublisher', () => {
     });
   });
 
+  it('writes a cancellation as payments.payment-cancelled (PAY-020)', async () => {
+    const entry = await publish({ status: 'cancelled' });
+
+    expect(entry.exchange).toBe('events');
+    expect(entry.message).toMatchObject({
+      name: 'payments.payment-cancelled',
+      version: 1,
+      payload: { orderId: '01927f4e-8b2a-7c3d-9e4f-5a6b7c8d9e04', paymentAttempt: 2 },
+    });
+    expect(parseMessage(entry.message).ok).toBe(true);
+  });
+
   it('writes what a consumer accepts, with a new message id each time', async () => {
     const first = await publish({ status: 'succeeded', chargeId: 'ch_1' });
     const second = await publish({ status: 'succeeded', chargeId: 'ch_1' });

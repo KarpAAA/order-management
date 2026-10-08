@@ -5,18 +5,21 @@ import { ForbiddenError } from '@shared/errors/forbidden-error';
 
 import { PaymentsPolicy } from './payments.policy';
 
-describe('PaymentsPolicy.assertCanCharge', () => {
-  const policy = new PaymentsPolicy();
+const policy = new PaymentsPolicy();
 
-  it('lets the payments consumer charge', () => {
+describe.each([
+  ['assertCanCharge', policy.assertCanCharge.bind(policy)],
+  ['assertCanCancel', policy.assertCanCancel.bind(policy)],
+])('PaymentsPolicy.%s (PAY-013)', (_name, assert) => {
+  it('lets the payments consumer through', () => {
     expect(() => {
-      policy.assertCanCharge(systemActor('consumer:payments'));
+      assert(systemActor('consumer:payments'));
     }).not.toThrow();
   });
 
   it.each(['consumer:orders', 'job:reconcile', 'consumer:payments2'])('refuses %s', (source) => {
     expect(() => {
-      policy.assertCanCharge(systemActor(source));
+      assert(systemActor(source));
     }).toThrow(ForbiddenError);
   });
 });

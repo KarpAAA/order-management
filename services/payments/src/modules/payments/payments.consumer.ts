@@ -1,11 +1,12 @@
 import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
 import { Injectable } from '@nestjs/common';
-import { ChargePaymentV1, exchanges, parseMessage } from '@oms/contracts';
+import { CancelPaymentV1, ChargePaymentV1, exchanges, parseMessage } from '@oms/contracts';
 
 import { systemActor } from '@shared/auth/actor';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
 import type { Delivery } from '@shared/messaging/delivery';
 
+import { CancelPaymentService } from './cancel-payment.service';
 import { ChargePaymentService } from './charge-payment.service';
 
 const ACTOR = systemActor('consumer:payments');
@@ -22,12 +23,15 @@ const PAYMENTS_COMMANDS_QUEUE = 'payments.commands';
  */
 @Injectable()
 export class PaymentsConsumer {
-  constructor(private readonly chargePayment: ChargePaymentService) {}
+  constructor(
+    private readonly chargePayment: ChargePaymentService,
+    private readonly cancelPayment: CancelPaymentService,
+  ) {}
 
   // the queue's arguments and its retry policy are added by RabbitSubscribers, from the config
   @RabbitSubscribe({
     exchange: exchanges.commands.name,
-    routingKey: ChargePaymentV1.name,
+    routingKey: [ChargePaymentV1.name, CancelPaymentV1.name],
     queue: PAYMENTS_COMMANDS_QUEUE,
   })
   async onCommand(raw: unknown, delivery: Delivery): Promise<void> {
@@ -37,24 +41,37 @@ export class PaymentsConsumer {
       throw new UnprocessableMessageError(`${parsed.reason}: ${parsed.detail}`);
     }
     const { message } = parsed;
-    if (message.name !== ChargePaymentV1.name) {
-      throw new UnprocessableMessageError(`${message.name} is not a command of this queue`);
-    }
+    const envelope = {
+      messageId: message.messageId,
+      queue: PAYMENTS_COMMANDS_QUEUE,
+      workspaceId: message.workspaceId,
+      correlationId: message.correlationId,
+    };
 
-    const { orderId, paymentAttempt, amount, idempotencyKey } = message.payload;
-    await this.chargePayment.execute(
-      {
-        messageId: message.messageId,
-        queue: PAYMENTS_COMMANDS_QUEUE,
-        workspaceId: message.workspaceId,
-        orderId,
-        paymentAttempt,
-        amount: { amountMinor: BigInt(amount.amountMinor), currency: amount.currency },
-        idempotencyKey,
-        correlationId: message.correlationId,
-        lastDelivery: delivery.last,
-      },
-      ACTOR,
-    );
+    switch (message.name) {
+      case ChargePaymentV1.name: {
+        const { orderId, paymentAttempt, amount, idempotencyKey, expiresAt } = message.payload;
+        await this.chargePayment.execute(
+          {
+            ...envelope,
+            orderId,
+            paymentAttempt,
+            amount: { amountMinor: BigInt(amount.amountMinor), currency: amount.currency },
+            idempotencyKey,
+            expiresAt: expiresAt === undefined ? null : new Date(expiresAt),
+            lastDelivery: delivery.last,
+          },
+          ACTOR,
+        );
+        return;
+      }
+      case CancelPaymentV1.name: {
+        const { orderId, paymentAttempt } = message.payload;
+        await this.cancelPayment.execute({ ...envelope, orderId, paymentAttempt }, ACTOR);
+        return;
+      }
+      default:
+        throw new UnprocessableMessageError(`${message.name} is not a command of this queue`);
+    }
   }
 }

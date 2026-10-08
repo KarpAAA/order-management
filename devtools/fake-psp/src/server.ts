@@ -21,6 +21,8 @@ interface Charge {
   reference: string;
   idempotencyKey: string;
   createdAt: string;
+  /** Set when the charge was taken back. A declined charge moved no money and is never void. */
+  voidedAt?: string;
 }
 
 const DECLINE_CODES = ['insufficient_funds', 'card_declined', 'expired_card'] as const;
@@ -118,6 +120,26 @@ function publicView(c: Charge) {
   return { id: c.id, status: c.status, ...(c.declineCode && { declineCode: c.declineCode }) };
 }
 
+// Takes a charge back. Repeatable: a charge that is void stays void, with its first date.
+async function voidCharge(id: string, res: ServerResponse): Promise<void> {
+  await sleep(latency());
+
+  const charge = [...chargesByKey.values()].find((c) => c.id === id);
+  if (!charge) {
+    send(res, 404, { error: `no charge ${id}` });
+    return;
+  }
+  if (Math.random() < behaviour.failureRate) {
+    send(res, 503, { error: 'temporarily unavailable' });
+    return;
+  }
+  if (charge.status === 'succeeded' && charge.voidedAt === undefined) {
+    charge.voidedAt = new Date().toISOString();
+    log(`void ${charge.id} key=${charge.idempotencyKey}`);
+  }
+  send(res, 200, { id: charge.id, status: 'voided' });
+}
+
 async function updateConfig(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJson(req);
   const next = { ...behaviour };
@@ -140,9 +162,13 @@ function log(message: string): void {
   process.stdout.write(`[fake-psp] ${new Date().toISOString()} ${message}\n`);
 }
 
+const VOID_ROUTE = /^POST \/charges\/([^/]+)\/void$/;
+
 const server = createServer((req, res) => {
   const route = `${req.method ?? ''} ${(req.url ?? '').split('?')[0] ?? ''}`;
   const handle = async () => {
+    const voided = VOID_ROUTE.exec(route)?.[1];
+    if (voided !== undefined) return voidCharge(decodeURIComponent(voided), res);
     switch (route) {
       case 'POST /charges':
         return createCharge(req, res);

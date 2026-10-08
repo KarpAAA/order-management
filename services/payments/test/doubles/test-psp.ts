@@ -23,6 +23,9 @@ export class TestPsp implements PaymentGateway {
   /** What the provider settled, by idempotency key: a repeated key gets the same answer. */
   private readonly settled = new Map<string, ChargeResult>();
   private readonly barriers = new Map<string, { expected: number; arrived: (() => void)[] }>();
+  private readonly held = new Map<string, Promise<void>>();
+  private readonly voided: string[] = [];
+  private voidFailures = 0;
 
   /** Answers for the next charges of `orderId`, in order; after the script runs out: `ok`. */
   script(orderId: string, ...outcomes: PspOutcome[]): void {
@@ -36,6 +39,34 @@ export class TestPsp implements PaymentGateway {
    */
   holdUntilConcurrent(orderId: string, calls: number): void {
     this.barriers.set(orderId, { expected: calls, arrived: [] });
+  }
+
+  /**
+   * Holds every charge of `orderId` inside the provider until the returned function is called:
+   * the test does something else while the call is in flight.
+   */
+  hold(orderId: string): () => void {
+    let release: () => void = () => undefined;
+    this.held.set(
+      orderId,
+      new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+    );
+    return () => {
+      this.held.delete(orderId);
+      release();
+    };
+  }
+
+  /** The next `times` voids fail as a provider that is away does. */
+  failVoids(times: number): void {
+    this.voidFailures = times;
+  }
+
+  /** Charge ids the provider was asked to take back, repetitions included. */
+  voids(orderId: string): string[] {
+    return this.voided.filter((chargeId) => chargeId.startsWith(`ch_${orderId}:`));
   }
 
   /** Every charge request for the order, including retries and replays. */
@@ -53,6 +84,7 @@ export class TestPsp implements PaymentGateway {
   async charge(request: ChargeRequest): Promise<ChargeResult> {
     this.requests.push(request);
     await this.meet(request.reference);
+    await this.held.get(request.reference);
     const known = this.settled.get(request.idempotencyKey);
     if (known) return known;
 
@@ -73,6 +105,15 @@ export class TestPsp implements PaymentGateway {
         : { status: 'declined', chargeId, declineCode: outcome.slice('declined:'.length) };
     this.settled.set(request.idempotencyKey, result);
     return result;
+  }
+
+  void(chargeId: string): Promise<void> {
+    this.voided.push(chargeId);
+    if (this.voidFailures > 0) {
+      this.voidFailures -= 1;
+      return Promise.reject(new PaymentGatewayError('PSP answered 503', true));
+    }
+    return Promise.resolve();
   }
 
   private async meet(orderId: string): Promise<void> {

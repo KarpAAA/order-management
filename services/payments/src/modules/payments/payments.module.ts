@@ -4,6 +4,7 @@ import { Module } from '@nestjs/common';
 import { gatewayConfig } from '@config/configuration';
 import type { GatewayConfig } from '@config/configuration';
 
+import { CancelPaymentService } from './cancel-payment.service';
 import { ChargePaymentService } from './charge-payment.service';
 import { FakePaymentGateway } from './infrastructure/fake-payment-gateway.adapter';
 import { HttpPaymentGateway } from './infrastructure/http-payment-gateway.adapter';
@@ -16,6 +17,7 @@ import { PAYMENT_GATEWAY } from './ports/payment-gateway.port';
   providers: [
     // write
     ChargePaymentService,
+    CancelPaymentService,
     PaymentsPolicy,
     {
       provide: PAYMENT_GATEWAY,
@@ -28,8 +30,8 @@ import { PAYMENT_GATEWAY } from './ports/payment-gateway.port';
     // the answer is a row of the outbox, written with the payment it tells about
     { provide: PAYMENT_EVENTS_PUBLISHER, useClass: OutboxPaymentEventsPublisher },
   ],
-  // No facade: no other module exists. The use case is exported to the module's own transport
-  // module only (Nest needs it exported to inject it into the consumer).
-  exports: [ChargePaymentService],
+  // No facade: no other module exists. The use cases are exported to the module's own
+  // transport module only (Nest needs them exported to inject them into the consumer).
+  exports: [ChargePaymentService, CancelPaymentService],
 })
 export class PaymentsModule {}

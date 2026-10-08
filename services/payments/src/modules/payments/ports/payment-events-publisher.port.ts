@@ -4,13 +4,15 @@ export const PAYMENT_EVENTS_PUBLISHER = Symbol('PAYMENT_EVENTS_PUBLISHER');
 export type PaymentResult =
   | { status: 'succeeded'; chargeId: string }
   /** `chargeId` is null when the provider never answered: there is no charge to point at. */
-  | { status: 'failed'; failureCode: string; chargeId: string | null };
+  | { status: 'failed'; failureCode: string; chargeId: string | null }
+  /** Cancelled before it was charged: nothing was taken, and nothing will be. */
+  | { status: 'cancelled' };
 
 export interface PaymentOutcome {
   workspaceId: string;
   orderId: string;
   paymentAttempt: number;
-  /** Of the command that asked for the charge. */
+  /** Of the command that first named the attempt: the charge, or its cancellation. */
   correlationId: string;
   result: PaymentResult;
 }

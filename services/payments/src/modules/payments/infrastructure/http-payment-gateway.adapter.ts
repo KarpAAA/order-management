@@ -33,10 +33,40 @@ export class HttpPaymentGateway implements PaymentGateway {
   constructor(@Inject(gatewayConfig.KEY) private readonly config: GatewayConfig) {}
 
   async charge(request: ChargeRequest): Promise<ChargeResult> {
+    const response = await this.post('charge', '/charges', {
+      headers: { 'idempotency-key': request.idempotencyKey },
+      body: {
+        amountMinor: Number(request.amount.amountMinor),
+        currency: request.amount.currency,
+        reference: request.reference,
+      },
+    });
+
+    const body = await this.readBody(response);
+    if (!isPspChargeResponse(body)) {
+      throw new PaymentGatewayError('PSP returned an unexpected body', false);
+    }
+    return body.status === 'succeeded'
+      ? { status: 'succeeded', chargeId: body.id }
+      : { status: 'declined', chargeId: body.id, declineCode: body.declineCode ?? 'declined' };
+  }
+
+  async void(chargeId: string): Promise<void> {
+    const response = await this.post('void', `/charges/${encodeURIComponent(chargeId)}/void`);
+    // the status is the answer; the body is released, not read
+    void response.body?.cancel().catch(() => undefined);
+  }
+
+  /** One POST to the PSP; resolves with a 2xx response, throws a `PaymentGatewayError` else. */
+  private async post(
+    operation: string,
+    path: string,
+    { headers = {}, body = {} }: { headers?: Record<string, string>; body?: unknown } = {},
+  ): Promise<Response> {
     const startedAt = performance.now();
-    const response = await this.post(request);
+    const response = await this.send(path, headers, body);
     const durationMs = Math.round(performance.now() - startedAt);
-    this.logger.log(`psp charge status=${response.status} durationMs=${durationMs}`);
+    this.logger.log(`psp ${operation} status=${response.status} durationMs=${durationMs}`);
 
     // 5xx and 429 are transient; any other non-2xx means our request is wrong. The body is
     // not read there: release it, or the connection stays taken until garbage collection.
@@ -48,29 +78,19 @@ export class HttpPaymentGateway implements PaymentGateway {
     if (!response.ok) {
       throw new PaymentGatewayError(`PSP rejected the request (${response.status})`, false);
     }
-
-    const body = await this.readBody(response);
-    if (!isPspChargeResponse(body)) {
-      throw new PaymentGatewayError('PSP returned an unexpected body', false);
-    }
-    return body.status === 'succeeded'
-      ? { status: 'succeeded', chargeId: body.id }
-      : { status: 'declined', chargeId: body.id, declineCode: body.declineCode ?? 'declined' };
+    return response;
   }
 
-  private async post(request: ChargeRequest): Promise<Response> {
+  private async send(
+    path: string,
+    headers: Record<string, string>,
+    body: unknown,
+  ): Promise<Response> {
     try {
-      return await fetch(new URL('/charges', this.config.pspBaseUrl), {
+      return await fetch(new URL(path, this.config.pspBaseUrl), {
         method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'idempotency-key': request.idempotencyKey,
-        },
-        body: JSON.stringify({
-          amountMinor: Number(request.amount.amountMinor),
-          currency: request.amount.currency,
-          reference: request.reference,
-        }),
+        headers: { 'content-type': 'application/json', ...headers },
+        body: JSON.stringify(body),
         signal: AbortSignal.timeout(this.config.pspTimeoutMs),
       });
     } catch (err: unknown) {

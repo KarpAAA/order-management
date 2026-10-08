@@ -24,4 +24,9 @@ export class FakePaymentGateway implements PaymentGateway {
     this.results.set(request.idempotencyKey, result);
     return Promise.resolve(result);
   }
+
+  /** Nothing to take back: no money moved. */
+  void(): Promise<void> {
+    return Promise.resolve();
+  }
 }

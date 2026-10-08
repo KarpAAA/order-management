@@ -12,4 +12,9 @@ export class PaymentsPolicy {
     if (actor.source === CHARGER_SOURCE) return;
     throw new ForbiddenError('payments.charge');
   }
+
+  assertCanCancel(actor: Actor): void {
+    if (actor.source === CHARGER_SOURCE) return;
+    throw new ForbiddenError('payments.cancel');
+  }
 }

@@ -43,7 +43,15 @@ const fakePsp = http.post(CHARGES_URL, async ({ request: req }) => {
   return HttpResponse.json(charge, { status: 201 });
 });
 
-const server = setupServer(fakePsp);
+const voided = new Set<string>();
+const fakeVoid = http.post(`${CHARGES_URL}/:id/void`, ({ params }) => {
+  const known = [...chargesByKey.values()].some((charge) => charge.id === params.id);
+  if (!known) return HttpResponse.json({ error: 'no such charge' }, { status: 404 });
+  voided.add(String(params.id));
+  return HttpResponse.json({ id: params.id, status: 'voided' });
+});
+
+const server = setupServer(fakePsp, fakeVoid);
 
 beforeAll(() => {
   Logger.overrideLogger(false);
@@ -52,6 +60,7 @@ beforeAll(() => {
 afterEach(() => {
   server.resetHandlers();
   chargesByKey.clear();
+  voided.clear();
 });
 afterAll(() => {
   server.close();
@@ -105,6 +114,14 @@ describe.each([
     const second = await gateway.charge(request({ idempotencyKey: 'order-1:2' }));
 
     expect(second.chargeId).not.toBe(first.chargeId);
+  });
+
+  it('takes a charge back, as often as it is asked to (PAY-023)', async () => {
+    const gateway = create();
+    const { chargeId } = await gateway.charge(request());
+
+    await expect(gateway.void(chargeId)).resolves.toBeUndefined();
+    await expect(gateway.void(chargeId)).resolves.toBeUndefined();
   });
 });
 
@@ -203,6 +220,57 @@ describe('HttpPaymentGateway', () => {
       status: 'succeeded',
       chargeId: 'ch_1',
     });
+  });
+
+  it('posts a void to the charge it names (PAY-023)', async () => {
+    const { chargeId } = await gateway.charge(request());
+
+    await gateway.void(chargeId);
+
+    expect([...voided]).toEqual([chargeId]);
+  });
+
+  it('escapes the charge id in the path of a void', async () => {
+    let path: string | undefined;
+    server.use(
+      http.post(`${CHARGES_URL}/:id/void`, ({ request: req }) => {
+        path = new URL(req.url).pathname;
+        return HttpResponse.json({ status: 'voided' });
+      }),
+    );
+
+    await gateway.void('ch_order-1:1/x');
+
+    expect(path).toBe('/charges/ch_order-1%3A1%2Fx/void');
+  });
+
+  it.each([
+    [503, true],
+    [429, true],
+    [404, false],
+  ])('treats HTTP %i on a void as retryable = %s', async (status, retryable) => {
+    server.use(
+      http.post(`${CHARGES_URL}/:id/void`, () => HttpResponse.json({ error: 'nope' }, { status })),
+    );
+
+    const err: unknown = await gateway.void('ch_1').then(
+      () => undefined,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(PaymentGatewayError);
+    expect((err as PaymentGatewayError).retryable).toBe(retryable);
+  });
+
+  it('treats a void slower than the timeout as transient', async () => {
+    server.use(
+      http.post(`${CHARGES_URL}/:id/void`, async () => {
+        await delay(TIMEOUT_MS * 3);
+        return HttpResponse.json({ status: 'voided' });
+      }),
+    );
+
+    await expect(gateway.void('ch_1')).rejects.toMatchObject({ retryable: true });
   });
 
   // Not covered: a body cut off by the timeout after the headers arrived. MSW does not
