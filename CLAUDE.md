@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.3 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 3: microservices and brokers**, 3.4 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Two services: `services/api` (this file) and `services/payments` (its own decisions:
 `services/payments/CLAUDE.md`). They share `packages/contracts` and nothing else.
 The roadmap runs in two passes: Step 2 closed at 2.9, and 2.10–2.12, Kafka (3.8, 3.9, 3.14) and
@@ -34,12 +34,12 @@ pii-encryption: no
 ids: uuid7
 cross-module-fk: yes            # identity/catalog/orders stay together in api, also in Step 3
 transactions: cls
-outbox: no                      # 3.4 adds reliable events + outbox; until then publishing follows the commit
+outbox: yes                     # table `outbox` + a relay in the worker (ADR 0014); relayed to RabbitMQ, not to BullMQ
 broker: rabbitmq                # between services only (ADR 0012): commands → exchange `commands`, events → `events`
 queue: bullmq
 processes: api+worker
 dlq: alert                      # dead job → Logger.error in OrdersConsumer; a broker message given up → `<queue>.dlq` + Logger.error (Step 4: metric)
-cron: bullmq                    # job schedulers on the module's queue; first: maintain-order-event-partitions
+cron: bullmq                    # job schedulers on the owner's queue: maintain-order-event-partitions (orders), cleanup-outbox (outbox)
 validation: class-validator
 swagger-prod: off
 async-push: poll
@@ -100,8 +100,9 @@ New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<ob
 | catalog  | layered (flat) | L1    | CQS            | http         |
 | orders   | layered        | L4    | CQS + EventBus | http, worker |
 
-Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image. The worker has two
-entries: the BullMQ queue `orders` (cron ticks only) and the broker queue `api.payment-events`.
+Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image. The worker has four
+entries: the BullMQ queues `orders` and `outbox` (cron ticks only), the broker queue
+`api.payment-events`, and the relay of the outbox (a timer, `infrastructure/outbox/`).
 
 ## Gotchas specific to this project
 
@@ -122,8 +123,8 @@ entries: the BullMQ queue `orders` (cron ticks only) and the broker queue `api.p
   - a schema is never `.strict()`: a consumer must keep reading a message that gained a field;
   - the package is consumed from `dist`: build it before whatever imports it.
 
-- **Payment is a command to payments-service and an event back** (ADR 0012). `place` publishes
-  `payments.charge-payment` (`RabbitPaymentChargeAdapter`, after commit); the worker reads
+- **Payment is a command to payments-service and an event back** (ADR 0012). `place` writes
+  `payments.charge-payment` to the outbox (`OutboxPaymentChargeAdapter`); the worker reads
   `payments.payment-succeeded` / `-failed` from `api.payment-events` (`PaymentEventsConsumer`)
   and calls `CompleteOrderPayment` / `FailOrderPayment`. Consequences:
   - the api knows nothing about the PSP: no gateway port, no `PSP_*` setting. The command
@@ -131,20 +132,19 @@ entries: the BullMQ queue `orders` (cron ticks only) and the broker queue `api.p
   - the routing key of a message is its `name`; a queue is declared by the consumer that
     reads it, never by a publisher;
   - `@RabbitSubscribe` only in a `*.consumer.ts`, provided only by a `*.worker.module.ts`
-    (lint + `test/architecture/process-graph.spec.ts`): the api process publishes and never
-    consumes;
+    (lint + `test/architecture/process-graph.spec.ts`): the api process never consumes;
   - a consumer reads with `parseMessage()`, binds the tenant from the envelope
     (`runInWorkspace`) and calls one use case. `InvalidStateError` = already settled → return
     (ack). Not a known contract, or a business refusal that will not change (`NotFoundError`)
     → `throw new UnprocessableMessageError(…)`. `ConflictError` and anything that is not a
     `DomainError` → let it out;
-  - no outbox until 3.4, no inbox until 3.5, no retry of the PSP call itself until 3.11: do
-    not build them earlier;
+  - no inbox until 3.5, no retry of the PSP call itself until 3.11: do not build them earlier;
   - `MessagingModule` stands in for the library's `RabbitMQModule`, whose static state allows
     one Nest application per process; the e2e suite runs several. Do not import
     `RabbitMQModule`;
   - the e2e suite has no payments-service: a test reads the command and publishes the answer
-    through `test/helpers/broker.ts`. Each test file has its own RabbitMQ vhost (`db.ts`);
+    through `test/helpers/broker.ts`, which also subscribes to `orders.*`
+    (`broker.orderEvents()`). Each test file has its own RabbitMQ vhost (`db.ts`);
   - `RABBITMQ_PREFETCH=1` in `.env.test`: one message at a time, which is what makes "the
     event before this one was handled" provable (`drained()` in `payment-flow.e2e-spec.ts`).
 
@@ -173,11 +173,38 @@ entries: the BullMQ queue `orders` (cron ticks only) and the broker queue `api.p
   - `test/helpers/failing-orders.ts` makes the worker fail to load one order: the way to
     provoke a retry without stopping the database.
 
+- **Nothing is published to the broker from a use case or an adapter: it is written to the
+  outbox** (ADR 0014; `infrastructure/outbox/`). `Outbox.append()` inserts the message in the
+  current transaction and throws outside one; the relay of the worker (`OutboxRelay`, one
+  pass = one transaction) publishes the rows oldest first and marks them. Consequences:
+  - a command is a port called inside `@Transactional()` (`PaymentChargeScheduler` →
+    `OutboxPaymentChargeAdapter`); an event is a domain event with `delivery = 'reliable'`
+    given to `publishAll()`. A reliable event needs a translation into its contract,
+    registered by its module (`orders/infrastructure/order-events.translator.ts`):
+    `publishAll()` throws for one that has none;
+  - `AmqpConnection` is injected in `infrastructure/messaging/` and
+    `infrastructure/outbox/rabbit-outbox.publisher.ts` only;
+  - the id of a row is the `messageId` of its envelope; `correlationId` comes from
+    `CorrelationContext` (CLS): a consumer calls `continue()` inside the scope of its message;
+  - at-least-once: the relay may publish a message twice, with the same id. A consumer must
+    absorb it (by state today, an inbox in 3.5);
+  - one relay at a time (`pg_try_advisory_xact_lock`), and the first message that cannot be
+    published stops the ones behind it: order over throughput. Do not remove the lock to go
+    faster;
+  - a command is published `mandatory`: while its receiver has not declared its queue, the row
+    stays unpublished and the relay logs one error. An event needs no subscriber;
+  - the api app alone publishes nothing: an e2e test that waits for a command or an event
+    needs the worker app (`createWorkerApp()`), and `OUTBOX_POLL_INTERVAL_MS=50` in `.env.test`;
+  - `outbox` is not a tenant table (no `workspace_id`, no policy), and the relay and the
+    cleanup use the unscoped `PrismaService`;
+  - the relay and `Outbox` are copied in `services/payments`: a fix in one is made in the
+    other. The passes of the relay are tested here (`test/outbox/`).
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
   Tenant models (Membership, Product, Order, OrderItem, OrderEvent) are filtered by the
   workspace in CLS; a query without a tenant throws. Never inject `PrismaService` for tenant
   data: its only users are the extension, identity's documented cross-tenant reads
-  (`asUser`), and the partition adapter in orders (table structure, no tenant rows).
+  (`asUser`), the partition adapter in orders (table structure, no tenant rows), and the relay
+  and the cleanup of the outbox (rows of no tenant).
 - **Row-Level Security is the second layer** (ADR 0006). Two database roles: `DATABASE_URL` is
   `oms_app` (api + worker: owns nothing, sees only rows of `app.workspace_id`),
   `DATABASE_ADMIN_URL` is the owner (Prisma CLI, seed, datagen, `testDb()` in tests; not in
@@ -236,8 +263,6 @@ entries: the BullMQ queue `orders` (cron ticks only) and the broker queue `api.p
   HTTP module must import `IdentityModule` (it provides `MEMBERSHIP_READER`).
 - Invalid state transitions are `InvalidStateError` → **422** (conventions), not 409.
   409 = stale `version` or duplicate.
-- Publishing the charge command after commit is NOT atomic with the commit (Known gap → 3.4
-  outbox). Do not "fix" it with the outbox before 3.4.
 - BullMQ 6 rejects `:` in custom job ids (no custom id is left since the charge job went).
 - `@nestjs-cls/transactional-adapter-prisma` types clash with `exactOptionalPropertyTypes`;
   the host is typed via `DbTransactionAdapter` (see `database.tokens.ts`).
@@ -279,8 +304,17 @@ entries: the BullMQ queue `orders` (cron ticks only) and the broker queue `api.p
   class-transformer and Nest, never by a constructor.
 - `register` and `login` take no `Actor` (the caller is anonymous); `createWorkspace` has no
   policy call, because any signed-in user may create one (`principles.md` §2.2).
-- `SchedulePaymentChargeHandler` calls the scheduler port, not a use case (`events.md` §3): it
-  only sends the command, and the 3.4 outbox replaces it.
+- `PlaceOrderService` calls an adapter inside `@Transactional()` (`write-service.md` §4 forbids
+  it for a call to the outside): `PaymentChargeScheduler` writes an outbox row through
+  `txHost.tx` and calls nothing. The outbox itself differs from `transactions.md` §5 in three
+  ways (relayed to a broker through a port, the row carries its address, a command goes
+  through it too): `docs/conventions-backlog.md` §8.
+- The outbox has entry classes in `infrastructure/` (`outbox.consumer.ts`, `cleanup-outbox.job.ts`,
+  `outbox-relay.runner.ts`, wired by `outbox.worker.module.ts`): it is a technical capability
+  with work of its own, not a business module. `process-graph.spec.ts` checks that the api
+  process gets none of them.
+- `OutboxCleanup` is called by its job directly, with no use case and no `Actor`
+  (`transport/cron.md` §1 asks for a use case): one `DELETE` on a table of no tenant.
 - A broker consumer has no rule file of its own (`transport/queues.md` is BullMQ): ack, reject
   and prefetch replace attempts, backoff and concurrency. What we do: `docs/conventions-backlog.md` §4, §7.
 - `UnprocessableMessageError` extends `InfrastructureError` and lives in `shared/errors/`,

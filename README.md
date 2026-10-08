@@ -18,8 +18,10 @@ image) and `services/payments` (one broker consumer, its own image and database)
 - **Tenancy**: every workspace is a tenant. Tenant tables have composite keys
   `(workspace_id, id)`; tenant filtering happens in exactly one place (a Prisma extension).
   A caller who is not a member of a workspace always gets 404.
-- **Payments**: `place` → `PENDING_PAYMENT` → `202`; after the commit the api publishes the
-  command `payments.charge-payment`. payments-service charges the PSP once (idempotency key
+- **Payments**: `place` → `PENDING_PAYMENT` → `202`; in the same transaction the api writes the
+  command `payments.charge-payment` to its outbox, and the relay of the worker publishes it
+  (ADR 0014: no message is published next to a commit, in either service). payments-service
+  charges the PSP once (idempotency key
   per attempt, 3 s timeout) and answers with `payments.payment-succeeded` or
   `payments.payment-failed`; the worker of the api turns that into `PAID` or
   `PAYMENT_FAILED`. The messages are versioned contracts in `packages/contracts`. In
@@ -106,6 +108,21 @@ pnpm dev
   (`PRECONDITION_FAILED`: the queue type cannot be changed). Once:
   `docker compose exec rabbitmq rabbitmqctl delete_queue payments.commands` and the same
   for `api.payment-events`.
+- A message reaches the broker through the outbox of its service (ADR 0014): a row of the
+  table `outbox`, written with the change, published by the relay in the worker within a
+  second. Things to try:
+  - `docker compose stop rabbitmq`, place an order: the answer is still 202, and
+    `SELECT routing_key, published_at FROM outbox ORDER BY id DESC LIMIT 2` (database `oms`)
+    shows the command and `orders.order-placed` with no `published_at`. The worker logs
+    `outbox relay stuck` once. `docker compose start rabbitmq`: the rows get their
+    `published_at`, the order becomes `PAID`.
+  - Stop the worker (`pnpm dev` runs it; or `docker compose stop worker` in the `app`
+    profile) and place an order: the same, with the broker up. The api process never
+    publishes.
+  - Bind a queue to the exchange `events` with the routing key `orders.*` in the management
+    UI: every order now leaves `orders.order-placed`, `-paid`, `-cancelled`, `-fulfilled` there.
+- `OUTBOX_POLL_INTERVAL_MS`, `OUTBOX_BATCH_SIZE`, `OUTBOX_PUBLISH_TIMEOUT_MS` and
+  `OUTBOX_RETENTION_DAYS` tune the relay; `OUTBOX_RELAY_ENABLED=false` stops it.
 - `RABBITMQ_RETRY_DELAY_MS`, `PAYMENTS_COMMANDS_MAX_ATTEMPTS` (payments) and
   `PAYMENT_EVENTS_MAX_ATTEMPTS` (api) set the delay and the number of deliveries; a queue can
   have a delay of its own (`.env.example` of each service).
@@ -166,7 +183,7 @@ where `NN` = 01…12 in hex (1…18); SKUs `ACM-001…018` / `GBX-001…018`. Pr
 | --- | --------------- | --------------------------------------------------------- |
 | 1   | DRAFT           | 1 item                                                    |
 | 2   | DRAFT           | no items (placing it → 422)                               |
-| 3   | PENDING_PAYMENT | has **no job**: shows the enqueue gap, stays pending      |
+| 3   | PENDING_PAYMENT | seeded past `place`: no command in the outbox, stays so   |
 | 4   | PAID            | 2 items, 10 % discount                                    |
 | 5   | PAYMENT_FAILED  | `insufficient_funds`, FIXED discount; can be placed again |
 | 6   | FULFILLED       | full history                                              |
@@ -325,7 +342,7 @@ services/api/        NestJS service: src/entrypoints/main.api.ts + main.worker.t
   src/config/        zod-validated env, typed namespaces
   src/common/        HTTP frame: guards, filter, decorators, DTOs, tenant context
   src/shared/        framework-free: errors, Actor, Money, Clock, ids, events, pagination
-  src/infrastructure/ database (tenant choke point), queues, messaging (broker), events
+  src/infrastructure/ database (tenant choke point), queues, messaging (broker), outbox, events
   src/modules/       identity (L1), catalog (L1), orders (L4)
 services/payments/   NestJS service: src/entrypoints/main.worker.ts, its own image and database
   prisma/            schema and migrations of the payments database

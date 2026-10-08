@@ -302,3 +302,77 @@ declares them; the table error → outcome; "the policy is configuration, per qu
 command handler answers on its last delivery, an event handler parks"; "queue arguments are
 immutable: a change is a new name". `shared/errors`: add `UnprocessableMessageError` to the
 bases. `ops/config-env.md`: name the two settings every consumed queue has.
+
+## 8. The outbox between services: relayed to a broker, addressed, and used for commands too
+
+Step 3.4 · 2026-10-08 · Status: open
+
+**Conventions say:** `application/transactions.md` §5: a `reliable` event is written to the
+`outbox` table in the same transaction; the row is `{ id, name, payload, occurredAt,
+publishedAt }`; a polling job takes rows with `FOR UPDATE SKIP LOCKED`, pushes them to
+BullMQ and marks them published; the handler is a queue consumer in another module of the
+same application. `application/write-service.md` §4: never an adapter call inside
+`@Transactional()`. `application/events.md` §1: a domain event that must not be lost is
+translated into an integration event class and published as `reliable`.
+
+**What we did:** four things the text does not cover.
+
+1. The relay publishes to the broker between services, through a port (`OutboxPublisher`,
+   RabbitMQ adapter; Kafka later), not to BullMQ. It marks a row only after the broker's
+   confirm, with a timeout on every publish.
+2. The row carries its address (`exchange`, `routing_key`) and the whole envelope of the
+   contract. Its id is the message id, chosen when the row is written.
+3. A command to another service goes through the outbox as well. It is not an event: the use
+   case calls a port inside its transaction (`PaymentChargeScheduler.schedule()`), and the
+   adapter appends a row. So an adapter is called inside `@Transactional()`, and that is
+   correct: it writes through `txHost.tx` and calls nothing.
+4. The translation "reliable domain event → contract" is registered by the module
+   (`ReliableEvents.register(OrderPaid, …)`) and applied by `publishAll()`. A reliable event
+   with no translation throws.
+
+Two more decisions the text leaves open: one relay at a time (an advisory lock; with
+`SKIP LOCKED` alone two relays publish the events of one aggregate out of order), and the
+first message that fails ends the pass, so the ones behind it wait.
+
+**Why:** the conventions describe one application whose modules share a Redis. Between
+services there is no shared queue: the receiver has its own database and reads a broker, and
+a broker needs an address and has failure modes BullMQ does not (a publish that is never
+confirmed, a message with no queue). And the conventions know only events, where a
+cross-service write is a command (§3 of this file).
+
+**Assessment:** good. The core of the rule carried over unchanged: the message is written
+with the change, published afterwards, at least once, and every reader is idempotent. The
+cost: more than the `outbox.append(e)` of the text (a publisher port, a registry of
+translations, a lock), and the rule "an adapter is never called inside a transaction" now has
+a named exception that a reviewer has to recognise. A port that is meant to be called inside
+a transaction says so in its comment.
+
+**Example:**
+
+```ts
+@Transactional()
+async execute(cmd: OrderActionCommand, actor: Actor): Promise<void> {
+  const order = await this.orders.getById(cmd.orderId);
+  order.place({ now: this.clock.now(), changedBy: actorRef(actor) });
+  await this.orders.save(order);
+  await this.charges.schedule({ orderId: order.id, … });  // a command: a port, an outbox row
+  await this.events.publishAll(order.pullEvents());        // reliable events: outbox rows
+}
+
+// the relay, one pass = one transaction
+SELECT pg_try_advisory_xact_lock(…);                       -- one relay at a time
+SELECT … FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED;
+-- publish one by one, each confirmed; stop at the first failure
+UPDATE outbox SET published_at = now() WHERE id IN (…);
+```
+
+**Proposed change:** `application/transactions.md` §5: split "the relay" from "where it
+publishes": inside one application, BullMQ; between services, a broker through a publisher
+port, marked only on confirm. Add `exchange`/`topic` and the routing key to the row for the
+second case, and "the id of the row is the message id". Say that order needs one relay (or a
+key per aggregate), and that `SKIP LOCKED` alone does not give it. `application/write-service.md`
+§4: narrow "never an adapter call inside `@Transactional()`" to "never a call to the outside";
+an adapter that only writes through `txHost.tx` (the outbox) is the allowed case.
+`application/events.md` §1: where contracts are schemas in a shared package (§1 of this file),
+the translation is registered by the module and applied by the publisher. `transport/cron.md`:
+a service without a queue cleans its outbox from a timer.
