@@ -236,3 +236,22 @@ model OutboxMessage {
   @@index([publishedAt, id])
   @@map("outbox")
 }
+
+// ── inbox ───────────────────────────────────────────────────────────────────
+
+/// A broker message a consumer of this service has handled, written in the transaction of
+/// what the message caused (docs/adr/0015-idempotent-consumers.md): the same message is
+/// handled once per consumer. Not a tenant table: a row is an id and a time, and the cleanup
+/// reads every tenant's rows.
+model InboxMessage {
+  /// the queue the message was read from: two consumers of one event each handle it once
+  consumer    String
+  /// = `messageId` of the envelope
+  messageId   String   @map("message_id") @db.Uuid
+  processedAt DateTime @map("processed_at") @db.Timestamptz(3)
+
+  @@id([consumer, messageId])
+  // the cleanup: `processed_at < …`
+  @@index([processedAt])
+  @@map("inbox")
+}

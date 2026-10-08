@@ -70,6 +70,11 @@ export const outboxConfig = registerAs('outbox', () => ({
 }));
 export type OutboxConfig = ConfigType<typeof outboxConfig>;
 
+export const inboxConfig = registerAs('inbox', () => ({
+  retentionDays: env().INBOX_RETENTION_DAYS,
+}));
+export type InboxConfig = ConfigType<typeof inboxConfig>;
+
 export const authConfig = registerAs('auth', () => ({
   jwtSecret: env().JWT_SECRET,
   accessTtlSeconds: env().JWT_ACCESS_TTL_SECONDS,
@@ -95,6 +100,7 @@ export const allConfigs = [
   cacheConfig,
   rabbitConfig,
   outboxConfig,
+  inboxConfig,
   authConfig,
   ordersQueueConfig,
   orderEventsConfig,

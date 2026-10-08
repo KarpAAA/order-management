@@ -90,6 +90,9 @@ export const envSchema = z.object({
   /** Days a published message is kept before the cleanup job deletes it. */
   OUTBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
 
+  /** Days the record of a handled message is kept: longer than the message may come again. */
+  INBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
+
   JWT_SECRET: z.string().min(32),
   // ≤ 15 min (ops/security.md §3); with refresh: none a leaked token lives this long
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().max(900).default(900),

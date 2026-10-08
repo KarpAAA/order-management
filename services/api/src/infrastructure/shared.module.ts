@@ -13,6 +13,7 @@ import { Clock, SystemClock } from '@shared/domain/clock';
 import { DatabaseModule } from './database/database.module';
 import { createTransactionalAdapter } from './database/transactional.adapter';
 import { EventsModule } from './events/events.module';
+import { InboxModule } from './inbox/inbox.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { OutboxModule } from './outbox/outbox.module';
 import { QueuesModule } from './queues/queues.module';
@@ -20,7 +21,8 @@ import { ReadRoutingModule } from './read-routing/read-routing.module';
 
 /**
  * The frame every entrypoint imports: config, CLS + transactions, database, events, queue
- * and broker connections, the write side of the outbox, and the global HTTP pipeline (filter, auth guard, Location header, read routing).
+ * and broker connections, the write side of the outbox, the inbox, and the global HTTP
+ * pipeline (filter, auth guard, Location header, read routing).
  * The HTTP pieces are inert in the worker, which serves no HTTP.
  */
 @Global()
@@ -42,6 +44,7 @@ import { ReadRoutingModule } from './read-routing/read-routing.module';
     QueuesModule,
     MessagingModule,
     OutboxModule,
+    InboxModule,
     ReadRoutingModule,
     JwtModule.register({}),
   ],

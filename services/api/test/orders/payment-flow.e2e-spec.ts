@@ -254,6 +254,28 @@ describe('an outcome is recorded once (PAY-009, PAY-010)', () => {
     expect(before.history.filter((type) => type === 'PAYMENT_SUCCEEDED')).toHaveLength(1);
   });
 
+  it('IBX-001 the same message five times is handled once: one record, one order-paid', async () => {
+    const { id } = await orderFactory.create();
+    await place(id);
+    const event = paymentSucceeded(attempt(id), 'ch_five');
+
+    for (let delivery = 0; delivery < 5; delivery += 1) await broker.publish(event);
+    await settle(id);
+    await drained();
+
+    const after = await stored(id);
+    expect(after).toMatchObject({ status: 'PAID', version: 2 });
+    expect(after.history.filter((type) => type === 'PAYMENT_SUCCEEDED')).toHaveLength(1);
+    expect(await testDb().inboxMessage.findMany({ where: { messageId: event.messageId } })).toEqual(
+      [expect.objectContaining({ consumer: EVENTS_QUEUE })],
+    );
+    const paid = (await broker.waitForOrderEvents(id, 2)).filter(
+      (e) => e.name === 'orders.order-paid',
+    );
+    expect(paid).toHaveLength(1);
+    expect(await broker.take(DEAD_LETTER_QUEUE)).toEqual([]);
+  });
+
   it('a failure that arrives after the success does not undo it', async () => {
     const { id } = await orderFactory.create();
     await place(id);

@@ -180,8 +180,12 @@ describe('worker process', () => {
     ).toEqual([]);
   });
 
-  it('registers the consumers of orders and of the outbox (the walk is not vacuous)', () => {
-    expect(processorsOf(workerGraph)).toEqual(['OrdersConsumer', 'OutboxConsumer']);
+  it('registers the consumers of orders, of the outbox and of the inbox (the walk is not vacuous)', () => {
+    expect(processorsOf(workerGraph)).toEqual([
+      'OrdersConsumer',
+      'OutboxConsumer',
+      'InboxConsumer',
+    ]);
     expect(subscribersOf(workerGraph)).toEqual(['PaymentEventsConsumer']);
   });
 

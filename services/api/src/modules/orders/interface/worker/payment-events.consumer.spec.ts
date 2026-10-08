@@ -6,6 +6,7 @@ import type { CorrelationContext } from '@common/messaging/correlation-context';
 import type { TenantContext } from '@common/tenancy/tenant-context';
 import { ConcurrencyError, InvalidStateError, NotFoundError } from '@shared/errors/domain-error';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
+import type { Inbox } from '@shared/messaging/inbox';
 
 import { PaymentEventsConsumer } from './payment-events.consumer';
 
@@ -39,6 +40,19 @@ class OrderNotFound extends NotFoundError {
   readonly code = 'ORDER_NOT_FOUND';
 }
 
+/** The inbox without a database: a message is recorded when its handler returns, as on commit. */
+class MemoryInbox implements Inbox {
+  readonly handled: string[] = [];
+
+  async once(consumer: string, messageId: string, handle: () => Promise<void>): Promise<boolean> {
+    const key = `${consumer}/${messageId}`;
+    if (this.handled.includes(key)) return false;
+    await handle();
+    this.handled.push(key);
+    return true;
+  }
+}
+
 /** The consumer with its use cases replaced by spies; the tenant runs the work directly. */
 function consumerWith({
   complete = vi.fn().mockResolvedValue(undefined),
@@ -49,13 +63,15 @@ function consumerWith({
 } = {}) {
   const runInWorkspace = vi.fn((_workspaceId: string, work: () => Promise<unknown>) => work());
   const continued: string[] = [];
+  const inbox = new MemoryInbox();
   const consumer = new PaymentEventsConsumer(
     { runInWorkspace } as unknown as TenantContext,
     { continue: (id: string) => continued.push(id) } as unknown as CorrelationContext,
+    inbox,
     { execute: complete } as CompleteOrderPaymentService,
     { execute: fail } as FailOrderPaymentService,
   );
-  return { consumer, runInWorkspace, continued, complete, fail };
+  return { consumer, runInWorkspace, continued, inbox, complete, fail };
 }
 
 describe('PaymentEventsConsumer', () => {
@@ -105,6 +121,43 @@ describe('PaymentEventsConsumer', () => {
     await consumer.onPaymentEvent(succeeded);
 
     expect(continued).toEqual([META.correlationId]);
+  });
+
+  it('IBX-001 handles a message once: the same one delivered again calls no use case', async () => {
+    const { consumer, inbox, complete } = consumerWith();
+
+    await consumer.onPaymentEvent(succeeded);
+    await expect(consumer.onPaymentEvent(succeeded)).resolves.toBeUndefined();
+
+    expect(complete).toHaveBeenCalledTimes(1);
+    expect(inbox.handled).toEqual([`api.payment-events/${META.messageId}`]);
+  });
+
+  it('IBX-001 tells messages apart by their id, not by what they say', async () => {
+    const { consumer, complete } = consumerWith();
+    const again = PaymentSucceededV1.create(
+      { ...META, messageId: '01990000-0000-7000-8000-a30000000009' },
+      { ...ATTEMPT, chargeId: 'ch_1' },
+    );
+
+    await consumer.onPaymentEvent(succeeded);
+    await consumer.onPaymentEvent(again);
+
+    expect(complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('IBX-002 a message whose handling failed is not recorded: the next delivery handles it', async () => {
+    const complete = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('database is down'))
+      .mockResolvedValue(undefined);
+    const { consumer, inbox } = consumerWith({ complete });
+
+    await expect(consumer.onPaymentEvent(succeeded)).rejects.toThrow('database is down');
+    expect(inbox.handled).toEqual([]);
+    await consumer.onPaymentEvent(succeeded);
+
+    expect(complete).toHaveBeenCalledTimes(2);
   });
 
   it('PAY-009 acknowledges an event whose attempt is already settled (delivered twice or late)', async () => {
