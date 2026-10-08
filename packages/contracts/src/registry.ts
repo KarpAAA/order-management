@@ -1,11 +1,23 @@
 import { z } from 'zod';
 
+import { OrderCancelledV1 } from './orders/order-cancelled.v1';
+import { OrderFulfilledV1 } from './orders/order-fulfilled.v1';
+import { OrderPaidV1 } from './orders/order-paid.v1';
+import { OrderPlacedV1 } from './orders/order-placed.v1';
 import { ChargePaymentV1 } from './payments/charge-payment.v1';
 import { PaymentFailedV1 } from './payments/payment-failed.v1';
 import { PaymentSucceededV1 } from './payments/payment-succeeded.v1';
 
 /** Every contract of the system. A new `*.v<N>.ts` is added here, or no consumer can read it. */
-export const contracts = [ChargePaymentV1, PaymentSucceededV1, PaymentFailedV1] as const;
+export const contracts = [
+  ChargePaymentV1,
+  PaymentSucceededV1,
+  PaymentFailedV1,
+  OrderPlacedV1,
+  OrderPaidV1,
+  OrderCancelledV1,
+  OrderFulfilledV1,
+] as const;
 
 export type Contract = (typeof contracts)[number];
 export type AnyMessage = z.infer<Contract['schema']>;
