@@ -26,6 +26,7 @@ beforeAll(async () => {
     prefetch: 1,
     redeliveryLimit: 3,
     retry: {},
+    delays: {},
   });
   publisher = new RabbitOutboxPublisher(connection, CONFIG);
 });

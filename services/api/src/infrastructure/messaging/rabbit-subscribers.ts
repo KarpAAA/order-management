@@ -7,6 +7,7 @@ import type { RabbitConfig } from '@config/configuration';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
 import type { Delivery } from '@shared/messaging/delivery';
 
+import { declareDelayQueues } from './delay-topology';
 import { deliveryOf, retryOrPark } from './retry-or-park';
 import { declareRetryQueues, redeliveries, workQueueOptions } from './retry-topology';
 
@@ -72,7 +73,7 @@ export class RabbitSubscribers implements OnApplicationBootstrap, OnApplicationS
   /**
    * The decorator names the exchange, the routing keys and the queue. What a failed message
    * does is the same for every queue and comes from the configuration, so it is added here:
-   * the queue's arguments, its wait and dead-letter queues, and the error handler.
+   * the queue's arguments, its wait, dead-letter and delay queues, and the error handler.
    */
   private async subscribe(
     provider: string,
@@ -92,6 +93,13 @@ export class RabbitSubscribers implements OnApplicationBootstrap, OnApplicationS
     await this.connection.managedChannel.addSetup((channel: ConfirmChannel) =>
       declareRetryQueues(channel, queue, policy),
     );
+    // a queue that is the reader of delayed messages gets its delay queues beside it
+    const delays = this.config.delays[queue];
+    if (delays !== undefined) {
+      await this.connection.managedChannel.addSetup((channel: ConfirmChannel) =>
+        declareDelayQueues(channel, queue, delays),
+      );
+    }
     await this.connection.createSubscriber(
       async (message, raw) => {
         // A message that kills its consumer never reaches an error handler, so the count of

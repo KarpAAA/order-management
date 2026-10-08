@@ -43,10 +43,10 @@ export function redeliveries(message: ConsumeMessage | undefined): number {
 }
 
 // Replicated when the broker is a cluster, and the only type that counts deliveries.
-const QUORUM = { 'x-queue-type': 'quorum' };
+export const QUORUM = { 'x-queue-type': 'quorum' };
 
 /** Through the default exchange, which routes to the queue named by the routing key. */
-const deadLetterTo = (queue: string) => ({
+export const deadLetterTo = (queue: string) => ({
   'x-dead-letter-exchange': '',
   'x-dead-letter-routing-key': queue,
   // the message leaves this queue once the target has it; the strategy needs reject-publish

@@ -114,6 +114,20 @@ describe('RabbitOutboxPublisher', () => {
     expect(sent.map((s) => s.options.mandatory)).toEqual([true, false]);
   });
 
+  it('OBX-012 publishes a delayed message mandatory: it has one reader, like a command', async () => {
+    const { publisher, sent } = brokerWith();
+
+    await publisher.publish(
+      record({ exchange: 'api.delayed', routingKey: 'api.saga-timeouts.delay.60000' }),
+    );
+
+    expect(sent[0]).toMatchObject({
+      exchange: 'api.delayed',
+      routingKey: 'api.saga-timeouts.delay.60000',
+      options: { mandatory: true },
+    });
+  });
+
   it('OBX-005 fails a command the broker handed back: no queue is bound for it', async () => {
     const { publisher } = brokerWith({ unroutable: ['payments.charge-payment'] });
 

@@ -52,11 +52,16 @@ export const rabbitConfig = registerAs('rabbit', () => {
       delayMs: env().PAYMENT_EVENTS_RETRY_DELAY_MS ?? env().RABBITMQ_RETRY_DELAY_MS,
     },
   };
+  // By the queue that reads the messages when their wait is over: the delays a message for it
+  // may be given. Each is a queue `<queue>.delay.<ms>`, declared with the consumer of `queue`
+  // (infrastructure/messaging/delay-topology.ts).
+  const delays: Record<string, number[]> = {};
   return {
     url: env().RABBITMQ_URL,
     prefetch: env().RABBITMQ_PREFETCH,
     redeliveryLimit: env().RABBITMQ_REDELIVERY_LIMIT,
     retry,
+    delays,
   };
 });
 export type RabbitConfig = ConfigType<typeof rabbitConfig>;

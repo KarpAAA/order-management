@@ -26,8 +26,8 @@ const correlationOf = (payload: unknown): string | undefined => {
  *    disk, not when it left the socket;
  *  - a broker that is away never answers, so every publish has a timeout;
  *  - a command is published `mandatory`: with no queue bound for it the broker hands it back
- *    instead of dropping it, and the row stays unpublished. An event with no subscriber is
- *    not a loss, and is not mandatory.
+ *    instead of dropping it, and the row stays unpublished. So is a delayed message, which
+ *    has one reader as well. An event with no subscriber is not a loss, and is not mandatory.
  */
 @Injectable()
 export class RabbitOutboxPublisher implements OutboxPublisher, OnModuleDestroy {
@@ -54,7 +54,7 @@ export class RabbitOutboxPublisher implements OutboxPublisher, OnModuleDestroy {
     const content = Buffer.from(JSON.stringify(record.payload));
     await this.channel.publish(record.exchange, record.routingKey, content, {
       persistent: true,
-      mandatory: record.exchange === exchanges.commands.name,
+      mandatory: record.exchange !== exchanges.events.name,
       messageId: record.id,
       correlationId: correlationOf(record.payload),
     });

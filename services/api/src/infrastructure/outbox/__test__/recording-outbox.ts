@@ -1,17 +1,26 @@
 import type { CorrelationContext } from '@common/messaging/correlation-context';
 
-import type { Outbox, OutboxEntry } from '../outbox';
+import type { DelayedOutboxEntry, Outbox, OutboxEntry } from '../outbox';
 
 /** Spy: what was appended, in order. The table itself is covered by the int suite. */
-export function recordingOutbox(): { outbox: Outbox; appended: OutboxEntry[] } {
+export function recordingOutbox(): {
+  outbox: Outbox;
+  appended: OutboxEntry[];
+  delayed: DelayedOutboxEntry[];
+} {
   const appended: OutboxEntry[] = [];
+  const delayed: DelayedOutboxEntry[] = [];
   const outbox = {
     append: (entry: OutboxEntry) => {
       appended.push(entry);
       return Promise.resolve();
     },
+    appendDelayed: (entry: DelayedOutboxEntry) => {
+      delayed.push(entry);
+      return Promise.resolve();
+    },
   } as unknown as Outbox;
-  return { outbox, appended };
+  return { outbox, appended, delayed };
 }
 
 /** Stub: every message belongs to the chain `correlationId`. */
