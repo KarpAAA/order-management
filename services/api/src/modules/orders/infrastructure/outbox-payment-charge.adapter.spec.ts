@@ -12,6 +12,8 @@ import { OutboxPaymentChargeAdapter } from './outbox-payment-charge.adapter';
 
 import type { ScheduledCharge } from '../ports/payment-charge-scheduler.port';
 
+const EXPIRES_AT = new Date('2026-01-15T11:02:30.000Z');
+
 const CORRELATION = '01990000-0000-7000-8000-c00000000001';
 
 const charge = (overrides: Partial<ScheduledCharge> = {}): ScheduledCharge => ({
@@ -19,6 +21,7 @@ const charge = (overrides: Partial<ScheduledCharge> = {}): ScheduledCharge => ({
   orderId: ORDER,
   paymentAttempt: 2,
   amount: Money.of(40_50n, 'EUR'),
+  expiresAt: EXPIRES_AT,
   ...overrides,
 });
 
@@ -58,6 +61,12 @@ describe('OutboxPaymentChargeAdapter', () => {
     });
   });
 
+  it('SAGA-002 tells payments until when the saga waits for the charge', async () => {
+    const entry = await schedule();
+
+    expect(entry.message).toMatchObject({ payload: { expiresAt: '2026-01-15T11:02:30.000Z' } });
+  });
+
   it('writes what the consumer accepts', async () => {
     const entry = await schedule();
 
@@ -79,5 +88,41 @@ describe('OutboxPaymentChargeAdapter', () => {
       adapter.schedule(charge({ amount: Money.of(2n ** 53n + 1n, 'EUR') })),
     ).rejects.toThrow();
     expect(appended).toEqual([]);
+  });
+
+  describe('cancel', () => {
+    async function cancel(): Promise<OutboxEntry> {
+      const { outbox, appended } = recordingOutbox();
+      await new OutboxPaymentChargeAdapter(outbox, fixedClock, correlationOf(CORRELATION)).cancel({
+        workspaceId: WORKSPACE,
+        orderId: ORDER,
+        paymentAttempt: 2,
+      });
+      expect(appended).toHaveLength(1);
+      return appended[0]!;
+    }
+
+    it('SAGA-008 writes payments.cancel-payment for the commands exchange', async () => {
+      const entry = await cancel();
+
+      expect(entry.exchange).toBe('commands');
+      expect(entry.routingKey).toBeUndefined();
+      expect(entry.message).toMatchObject({
+        name: 'payments.cancel-payment',
+        version: 1,
+        occurredAt: LATER.toISOString(),
+        workspaceId: WORKSPACE,
+        correlationId: CORRELATION,
+        payload: { orderId: ORDER, paymentAttempt: 2 },
+      });
+    });
+
+    it('writes what the consumer accepts, with a message id of its own', async () => {
+      const first = await cancel();
+      const second = await cancel();
+
+      expect(parseMessage(first.message)).toMatchObject({ ok: true });
+      expect(first.message.messageId).not.toBe(second.message.messageId);
+    });
   });
 });

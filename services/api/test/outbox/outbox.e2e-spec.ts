@@ -2,6 +2,8 @@
 // the broker, with the two processes started one after the other. The api app writes rows and
 // never publishes them; the worker app runs the relay. A file of its own: the first test
 // needs a moment in which no worker exists.
+// Since the saga (3.7) `place` asks inventory first; the test broker answers "reserved" at
+// once, and the charge command follows from the worker.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
 import { orderFactory } from '../factories';
@@ -69,6 +71,10 @@ const allPublished = (orderId: string) =>
     { what: `every outbox row of order ${orderId} to be published` },
   );
 
+// .env.test: ORDER_SAGA_RESERVE_TIMEOUT_MS and ORDER_SAGA_CHARGE_TIMEOUT_MS
+const RESERVE_TIMEOUT = 'api.saga-timeouts.delay.600000';
+const CHARGE_TIMEOUT = 'api.saga-timeouts.delay.900000';
+
 describe('place commits the order and its messages; the relay publishes them (OBX-001, OBX-002)', () => {
   let orderId: string;
 
@@ -81,24 +87,38 @@ describe('place commits the order and its messages; the relay publishes them (OB
     expect(order.status).toBe('PENDING_PAYMENT');
     expect(await outboxOf(orderId)).toEqual(
       expect.arrayContaining([
-        { exchange: 'commands', routingKey: 'payments.charge-payment', published: false },
+        { exchange: 'commands', routingKey: 'inventory.reserve-stock', published: false },
+        { exchange: 'api.delayed', routingKey: RESERVE_TIMEOUT, published: false },
         { exchange: 'events', routingKey: 'orders.order-placed', published: false },
       ]),
     );
-    expect(await outboxOf(orderId)).toHaveLength(2);
+    expect(await outboxOf(orderId)).toHaveLength(3);
     // nothing has left the database: no process of this file publishes
-    expect(broker.commands(orderId)).toEqual([]);
+    expect(broker.sent('inventory.reserve-stock', orderId)).toEqual([]);
     expect(broker.orderEvents(orderId)).toEqual([]);
   });
 
-  it('when the worker starts: both are published, once, and marked', async () => {
+  it('when the worker starts: they are published, once, and marked, and the saga goes on', async () => {
     worker = await createWorkerApp();
 
-    const [command] = await broker.waitForCommands(orderId);
+    const [reservation] = await broker.waitForSent('inventory.reserve-stock', orderId);
     const [event] = await broker.waitForOrderEvents(orderId);
+    // the test broker said "reserved": the worker asks for the charge
+    const [command] = await broker.waitForCommands(orderId);
     const rows = await allPublished(orderId);
 
-    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => `${row.exchange}:${row.routingKey}`).sort()).toEqual([
+      `api.delayed:${RESERVE_TIMEOUT}`,
+      `api.delayed:${CHARGE_TIMEOUT}`,
+      'commands:inventory.reserve-stock',
+      'commands:payments.charge-payment',
+      'events:orders.order-placed',
+    ]);
+    expect(reservation).toMatchObject({
+      name: 'inventory.reserve-stock',
+      workspaceId: WS_ACME,
+      payload: { orderId, attempt: 1, lines: [{ quantity: 1 }] },
+    });
     expect(command).toMatchObject({
       name: 'payments.charge-payment',
       payload: { orderId, paymentAttempt: 1, idempotencyKey: `${orderId}:1` },
@@ -108,6 +128,7 @@ describe('place commits the order and its messages; the relay publishes them (OB
       workspaceId: WS_ACME,
       payload: { orderId, paymentAttempt: 1, amount: command?.payload.amount },
     });
+    expect(broker.sent('inventory.reserve-stock', orderId)).toHaveLength(1);
     expect(broker.commands(orderId)).toHaveLength(1);
     expect(broker.orderEvents(orderId)).toHaveLength(1);
   });
@@ -123,12 +144,15 @@ describe('place commits the order and its messages; the relay publishes them (OB
     expect(row?.payload).toEqual(command);
   });
 
-  it('OBX-008 the command and the event of one request share a correlation id', () => {
+  it('OBX-008 the commands and the event one request causes share a correlation id', () => {
+    const [reservation] = broker.sent('inventory.reserve-stock', orderId);
     const [command] = broker.commands(orderId);
     const [event] = broker.orderEvents(orderId);
 
-    expect(event?.correlationId).toBe(command?.correlationId);
-    expect(event?.messageId).not.toBe(command?.messageId);
+    expect(event?.correlationId).toBe(reservation?.correlationId);
+    expect(event?.messageId).not.toBe(reservation?.messageId);
+    // the charge follows the answer of inventory, which is in the chain of the reservation
+    expect(command?.correlationId).toBe(reservation?.correlationId);
   });
 });
 

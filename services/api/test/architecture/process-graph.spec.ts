@@ -186,7 +186,11 @@ describe('worker process', () => {
       'OutboxConsumer',
       'InboxConsumer',
     ]);
-    expect(subscribersOf(workerGraph)).toEqual(['PaymentEventsConsumer']);
+    expect(subscribersOf(workerGraph)).toEqual([
+      'InventoryEventsConsumer',
+      'PaymentEventsConsumer',
+      'SagaTimeoutsConsumer',
+    ]);
   });
 
   it('runs the relay of the outbox', () => {

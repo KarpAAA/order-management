@@ -34,6 +34,12 @@ export class OrdersPolicy {
     throw new ForbiddenError('orders.settle-payment');
   }
 
+  /** Moving the saga of an order on an answer or a timeout is that consumer's job too. */
+  assertCanAdvanceSaga(actor: Actor): void {
+    if (actor.kind === 'system' && actor.source === PAYMENT_SETTLER_SOURCE) return;
+    throw new ForbiddenError('orders.advance-saga');
+  }
+
   /** Creating and dropping history partitions is the maintenance job's work, nobody else's. */
   assertCanMaintainPartitions(actor: Actor): void {
     if (actor.kind === 'system' && actor.source === PARTITION_MAINTAINER_SOURCE) return;

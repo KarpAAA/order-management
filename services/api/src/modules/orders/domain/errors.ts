@@ -1,5 +1,6 @@
 import { DomainError, InvalidStateError, NotFoundError } from '@shared/errors/domain-error';
 
+import type { OrderSagaStep } from './order-saga-step';
 import type { OrderStatus } from './order-status';
 
 export class OrderNotFoundError extends NotFoundError {
@@ -47,6 +48,29 @@ export class PaymentAttemptNotPendingError extends InvalidStateError {
       attempt,
       status,
       currentAttempt,
+    });
+  }
+}
+
+/** No placing of this order with this attempt is known here (in this workspace). */
+export class OrderSagaNotFoundError extends NotFoundError {
+  readonly code = 'ORDER_SAGA_NOT_FOUND';
+
+  constructor(orderId: string, attempt: number) {
+    super(`Order ${orderId} has no saga for attempt ${attempt}`, { orderId, attempt });
+  }
+}
+
+/** A fact arrived that the saga is not waiting for: a late answer, a repeated one, a stale timeout. */
+export class OrderSagaNotWaitingError extends InvalidStateError {
+  readonly code = 'ORDER_SAGA_NOT_WAITING';
+
+  constructor(orderId: string, attempt: number, fact: string, step: OrderSagaStep) {
+    super(`The saga of order ${orderId}, attempt ${attempt}, is ${step}: not waiting for ${fact}`, {
+      orderId,
+      attempt,
+      fact,
+      step,
     });
   }
 }

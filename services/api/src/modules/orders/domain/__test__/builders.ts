@@ -3,10 +3,13 @@ import { Money } from '@shared/domain/money';
 import { NO_DISCOUNT } from '../discount';
 import { Order } from '../order';
 import { OrderLine } from '../order-line';
+import { OrderSaga } from '../order-saga';
+import { OrderSagaStep } from '../order-saga-step';
 import { OrderStatus } from '../order-status';
 
 import type { OrderLineInput, OrderProps } from '../order';
 import type { OrderLineProps } from '../order-line';
+import type { OrderSagaProps } from '../order-saga';
 
 export const CURRENCY = 'EUR';
 export const TAX_RATE_BPS = 2000;
@@ -105,4 +108,24 @@ export function orderProps(status: OrderStatus, overrides: Partial<OrderProps> =
 
 export function orderIn(status: OrderStatus, overrides: Partial<OrderProps> = {}): Order {
   return Order.restore(orderProps(status, overrides));
+}
+
+/** When the timeout of the step a restored saga waits in goes off. */
+export const DEADLINE = new Date('2026-01-15T10:05:00.000Z');
+
+const ENDED: readonly OrderSagaStep[] = [OrderSagaStep.Completed, OrderSagaStep.Aborted];
+
+/** The saga of attempt 1 of ORDER in `step`, at version 2; tests override only what they test. */
+export function sagaIn(step: OrderSagaStep, overrides: Partial<OrderSagaProps> = {}): OrderSaga {
+  return OrderSaga.restore({
+    workspaceId: WORKSPACE,
+    orderId: ORDER,
+    attempt: 1,
+    step,
+    deadlineAt: ENDED.includes(step) ? null : DEADLINE,
+    version: 2,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  });
 }

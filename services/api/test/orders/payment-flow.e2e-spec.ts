@@ -1,5 +1,6 @@
-// The payment path of the api, to its boundary (PAY-001…013): HTTP place → commit, with
-// `payments.charge-payment` in the outbox → the relay of the WORKER app publishes it to
+// The payment path of the api, to its boundary (PAY-001…013): HTTP place → the saga reserves
+// the stock (the test broker answers "reserved" at once; the saga itself is saga.e2e-spec.ts)
+// → `payments.charge-payment` in the outbox → the relay of the WORKER app publishes it to
 // RabbitMQ; `payments.payment-succeeded` / `-failed` comes back → PaymentEventsConsumer in the
 // WORKER app → PAID / PAYMENT_FAILED. The outbox itself: test/outbox/.
 // payments-service is not here: the test is the other side of the broker (helpers/broker.ts),
@@ -56,13 +57,20 @@ afterAll(async () => {
 const member = asUser(USER_ACME_MEMBER);
 const FINAL = ['PAID', 'PAYMENT_FAILED'] as const;
 
+/**
+ * Places the order and waits until the api has asked for the charge of the new attempt: only
+ * then does its saga wait for an answer of payments. The order is at `version + 2` after it
+ * (placed, stock reserved).
+ */
 async function place(orderId: string, version = 0, ws = WS_ACME, as = member) {
+  const asked = broker.commands(orderId).length;
   await api
     .http()
     .post(`${orderPath(ws, orderId)}/place`)
     .set(as)
     .send({ version })
     .expect(202);
+  await broker.waitForCommands(orderId, asked + 1);
 }
 const settle = (orderId: string, ws = WS_ACME, as = member) =>
   waitForStatus(api, orderPath(ws, orderId), as, FINAL);
@@ -165,7 +173,7 @@ describe('payment-succeeded → PAID (PAY-004)', () => {
     await broker.publish(paymentSucceeded(attempt(id), 'ch_42'));
     const order = await settle(id);
 
-    expect(order).toMatchObject({ status: 'PAID', pspChargeId: 'ch_42', version: 2 });
+    expect(order).toMatchObject({ status: 'PAID', pspChargeId: 'ch_42', version: 3 });
     expect(order.paidAt).toEqual(expect.any(String));
     const { body } = await api
       .http()
@@ -264,7 +272,7 @@ describe('an outcome is recorded once (PAY-009, PAY-010)', () => {
     await drained();
 
     const after = await stored(id);
-    expect(after).toMatchObject({ status: 'PAID', version: 2 });
+    expect(after).toMatchObject({ status: 'PAID', version: 3 });
     expect(after.history.filter((type) => type === 'PAYMENT_SUCCEEDED')).toHaveLength(1);
     expect(await testDb().inboxMessage.findMany({ where: { messageId: event.messageId } })).toEqual(
       [expect.objectContaining({ consumer: EVENTS_QUEUE })],
@@ -285,7 +293,7 @@ describe('an outcome is recorded once (PAY-009, PAY-010)', () => {
     await broker.publish(paymentFailed(attempt(id), 'psp_unavailable'));
     await drained();
 
-    expect(await stored(id)).toMatchObject({ status: 'PAID', version: 2 });
+    expect(await stored(id)).toMatchObject({ status: 'PAID', version: 3 });
   });
 });
 
@@ -308,7 +316,7 @@ describe('two workers get the same outcome at once (PAY-010)', () => {
     await drained(); // one marker per worker
 
     const after = await stored(id);
-    expect(after).toMatchObject({ status: 'PAID', version: 2 });
+    expect(after).toMatchObject({ status: 'PAID', version: 3 });
     expect(after.history.filter((type) => type === 'PAYMENT_SUCCEEDED')).toHaveLength(1);
     // the worker that lost the write got the event again and found the order settled
     expect(await broker.take(DEAD_LETTER_QUEUE)).toEqual([]);
@@ -322,7 +330,7 @@ describe('a new attempt after a failure (PAY-009, PAY-011)', () => {
     await broker.publish(paymentFailed(attempt(id, 1), 'card_declined'));
     expect((await settle(id)).status).toBe('PAYMENT_FAILED');
 
-    await place(id, 2); // place → 1, payment failed → 2
+    await place(id, 3); // place → 1, stock reserved → 2, payment failed → 3
     const commands = await broker.waitForCommands(id, 2);
     expect(commands.map((c) => [c.payload.paymentAttempt, c.payload.idempotencyKey])).toEqual([
       [1, `${id}:1`],
@@ -355,7 +363,7 @@ describe('an event whose handling fails is delivered again (PAY-016, PAY-017)', 
     const order = await settle(id);
     await drained();
 
-    expect(order).toMatchObject({ status: 'PAID', pspChargeId: 'ch_retried', version: 2 });
+    expect(order).toMatchObject({ status: 'PAID', pspChargeId: 'ch_retried', version: 3 });
     expect((await stored(id)).history.filter((type) => type === 'PAYMENT_SUCCEEDED')).toHaveLength(
       1,
     );
@@ -387,7 +395,7 @@ describe('an event whose handling fails is delivered again (PAY-016, PAY-017)', 
       ]),
     });
     // the charge is made and the order does not know: this is what the dead-letter queue is for
-    expect(await stored(id)).toMatchObject({ status: 'PENDING_PAYMENT', version: 1 });
+    expect(await stored(id)).toMatchObject({ status: 'PENDING_PAYMENT', version: 2 });
 
     // the operator fixed the cause and moves the message back
     repair();

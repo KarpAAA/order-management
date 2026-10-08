@@ -51,11 +51,26 @@ export const rabbitConfig = registerAs('rabbit', () => {
       maxAttempts: env().PAYMENT_EVENTS_MAX_ATTEMPTS,
       delayMs: env().PAYMENT_EVENTS_RETRY_DELAY_MS ?? env().RABBITMQ_RETRY_DELAY_MS,
     },
+    'api.inventory-events': {
+      maxAttempts: env().INVENTORY_EVENTS_MAX_ATTEMPTS,
+      delayMs: env().INVENTORY_EVENTS_RETRY_DELAY_MS ?? env().RABBITMQ_RETRY_DELAY_MS,
+    },
+    'api.saga-timeouts': {
+      maxAttempts: env().SAGA_TIMEOUTS_MAX_ATTEMPTS,
+      delayMs: env().SAGA_TIMEOUTS_RETRY_DELAY_MS ?? env().RABBITMQ_RETRY_DELAY_MS,
+    },
   };
   // By the queue that reads the messages when their wait is over: the delays a message for it
   // may be given. Each is a queue `<queue>.delay.<ms>`, declared with the consumer of `queue`
   // (infrastructure/messaging/delay-topology.ts).
-  const delays: Record<string, number[]> = {};
+  const delays: Record<string, number[]> = {
+    // the timeouts of the saga steps (orderSagaConfig): each is a queue of its own
+    'api.saga-timeouts': [
+      env().ORDER_SAGA_RESERVE_TIMEOUT_MS,
+      env().ORDER_SAGA_CHARGE_TIMEOUT_MS,
+      env().ORDER_SAGA_COMPENSATION_TIMEOUT_MS,
+    ],
+  };
   return {
     url: env().RABBITMQ_URL,
     prefetch: env().RABBITMQ_PREFETCH,
@@ -98,6 +113,13 @@ export const orderEventsConfig = registerAs('orderEvents', () => ({
 }));
 export type OrderEventsConfig = ConfigType<typeof orderEventsConfig>;
 
+export const orderSagaConfig = registerAs('orderSaga', () => ({
+  reserveTimeoutMs: env().ORDER_SAGA_RESERVE_TIMEOUT_MS,
+  chargeTimeoutMs: env().ORDER_SAGA_CHARGE_TIMEOUT_MS,
+  compensationTimeoutMs: env().ORDER_SAGA_COMPENSATION_TIMEOUT_MS,
+}));
+export type OrderSagaConfig = ConfigType<typeof orderSagaConfig>;
+
 export const allConfigs = [
   appConfig,
   databaseConfig,
@@ -109,4 +131,5 @@ export const allConfigs = [
   authConfig,
   ordersQueueConfig,
   orderEventsConfig,
+  orderSagaConfig,
 ];

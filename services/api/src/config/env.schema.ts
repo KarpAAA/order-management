@@ -75,6 +75,15 @@ export const envSchema = z.object({
   /** The delay of `api.payment-events` alone; unset: RABBITMQ_RETRY_DELAY_MS. */
   PAYMENT_EVENTS_RETRY_DELAY_MS: z.coerce.number().int().min(1).optional(),
 
+  /** Deliveries of one answer of inventory before it is parked (as PAYMENT_EVENTS_MAX_ATTEMPTS). */
+  INVENTORY_EVENTS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(10),
+  /** The delay of `api.inventory-events` alone; unset: RABBITMQ_RETRY_DELAY_MS. */
+  INVENTORY_EVENTS_RETRY_DELAY_MS: z.coerce.number().int().min(1).optional(),
+  /** Deliveries of one timeout of a saga step before it is parked. */
+  SAGA_TIMEOUTS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(10),
+  /** The delay of `api.saga-timeouts` alone; unset: RABBITMQ_RETRY_DELAY_MS. */
+  SAGA_TIMEOUTS_RETRY_DELAY_MS: z.coerce.number().int().min(1).optional(),
+
   /** Switches the relay of the outbox off without a deploy: messages wait in the table. */
   OUTBOX_RELAY_ENABLED: booleanString.default(true),
   /** How long the relay sleeps after a pass that found less than a full batch. */
@@ -98,6 +107,30 @@ export const envSchema = z.object({
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().max(900).default(900),
 
   ORDERS_WORKER_CONCURRENCY: z.coerce.number().int().positive().default(10),
+
+  /**
+   * How long the saga of an order waits for inventory to answer a reservation before it gives
+   * the order back to DRAFT and releases whatever may be held (docs/adr/0017).
+   */
+  ORDER_SAGA_RESERVE_TIMEOUT_MS: z.coerce.number().int().min(100).max(3_600_000).default(60_000),
+  /**
+   * How long the saga waits for payments to answer a charge before it asks to cancel it; also
+   * the moment after which payments charges nothing for the command. Above what payments
+   * needs when the provider is away: every delivery of the command, with its delays
+   * (PAYMENTS_COMMANDS_MAX_ATTEMPTS × RABBITMQ_RETRY_DELAY_MS there), or a charge that would
+   * have gone through on a later delivery is given up.
+   */
+  ORDER_SAGA_CHARGE_TIMEOUT_MS: z.coerce.number().int().min(100).max(3_600_000).default(150_000),
+  /**
+   * How long the saga waits for the answer to a cancellation of the payment or a release of
+   * the stock before it asks again. Nothing is decided without that answer.
+   */
+  ORDER_SAGA_COMPENSATION_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(3_600_000)
+    .default(60_000),
 
   /** Monthly `order_events` partitions kept ready after the current month. */
   ORDER_EVENTS_PARTITIONS_AHEAD: z.coerce.number().int().min(1).max(12).default(3),

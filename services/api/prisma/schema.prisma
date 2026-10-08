@@ -1,6 +1,7 @@
 // Tenancy model (docs/adr/0002-composite-tenant-keys.md):
 // - global tables: users, workspaces (future Citus reference tables)
 // - tenant tables: PK (workspace_id, id); FKs between tenant tables include workspace_id
+//   (order_sagas: PK (workspace_id, order_id, attempt), a saga has no id of its own)
 // - order_events: PK (workspace_id, id, created_at); PARTITION BY RANGE (created_at), monthly.
 //   Prisma cannot express that: the DDL is in migration 20261001120000_partition_order_events,
 //   later partitions come from the worker job (docs/adr/0005-order-events-partitioning.md)
@@ -54,6 +55,7 @@ model Workspace {
   orders      Order[]
   orderItems  OrderItem[]
   orderEvents OrderEvent[]
+  orderSagas  OrderSaga[]
 
   @@map("workspaces")
 }
@@ -130,6 +132,19 @@ enum OrderEventType {
   PAYMENT_FAILED
   ORDER_FULFILLED
   ORDER_CANCELLED
+  STOCK_RESERVED
+  STOCK_RESERVATION_FAILED
+  STOCK_RELEASED
+  PAYMENT_TIMED_OUT
+}
+
+enum OrderSagaStep {
+  RESERVING
+  CHARGING
+  CANCELLING_PAYMENT
+  RELEASING
+  COMPLETED
+  ABORTED
 }
 
 model Order {
@@ -161,6 +176,7 @@ model Order {
   creator   User         @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   items     OrderItem[]
   events    OrderEvent[]
+  sagas     OrderSaga[]
 
   @@id([workspaceId, id])
   @@index([workspaceId, createdAt(sort: Desc), id(sort: Desc)])
@@ -213,6 +229,28 @@ model OrderEvent {
   // keyset history: oldest first with the id tiebreak (read/query-service.md §4)
   @@index([workspaceId, orderId, createdAt, id])
   @@map("order_events")
+}
+
+/// Where one placing of an order is in its process across inventory and payments
+/// (docs/adr/0017-order-saga.md). One row per payment attempt: placed again, an order starts a
+/// new saga, and a late answer of the old one finds the old row.
+model OrderSaga {
+  workspaceId String        @map("workspace_id") @db.Uuid
+  orderId     String        @map("order_id") @db.Uuid
+  /// = `payment_attempt` of the order when it was placed
+  attempt     Int
+  step        OrderSagaStep
+  /// until when the step waits for its answer; null once the saga has ended
+  deadlineAt  DateTime?     @map("deadline_at") @db.Timestamptz(3)
+  version     Int           @default(0)
+  createdAt   DateTime      @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime      @map("updated_at") @db.Timestamptz(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  order     Order     @relation(fields: [workspaceId, orderId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@id([workspaceId, orderId, attempt])
+  @@map("order_sagas")
 }
 
 // ── outbox ──────────────────────────────────────────────────────────────────

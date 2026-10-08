@@ -1,5 +1,7 @@
 import type { RequestedItem } from './order-inputs.reader';
 import type { DiscountType } from '../domain/discount';
+import type { StockShortage } from '../domain/order';
+import type { WaitingStep } from '../domain/order-saga-step';
 
 /** Use case inputs. Plain objects built by the controller or the consumer from their DTOs. */
 
@@ -38,6 +40,23 @@ export interface FailOrderPaymentCommand {
   orderId: string;
   paymentAttempt: number;
   reason: string;
+}
+
+/** An answer of inventory about the reservation of one placing of the order. */
+export interface StockAnswerCommand {
+  orderId: string;
+  attempt: number;
+}
+
+export interface RejectStockReservationCommand extends StockAnswerCommand {
+  shortages: readonly StockShortage[];
+}
+
+export interface ExpireSagaStepCommand {
+  orderId: string;
+  attempt: number;
+  /** The step the timeout was written for. */
+  step: WaitingStep;
 }
 
 export interface MaintainOrderEventPartitionsCommand {

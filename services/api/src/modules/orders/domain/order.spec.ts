@@ -332,6 +332,113 @@ describe('Order.markPaymentFailed', () => {
   });
 });
 
+describe('Order.returnToDraft', () => {
+  const shortages = [{ productId: PRODUCT_1, requested: 3, available: 1 }];
+
+  it('SAGA-003 makes the awaited attempt a DRAFT again, with the reason, and no longer placed', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.returnToDraft({
+      ...change({ changedBy: SYSTEM_ACTOR }),
+      attempt: 1,
+      reason: 'out_of_stock',
+      shortages,
+    });
+
+    expect(order.snapshot()).toMatchObject({
+      status: OrderStatus.Draft,
+      failureReason: 'out_of_stock',
+      placedAt: null,
+      // the attempt was made: the next placing is another one
+      paymentAttempt: 1,
+    });
+    expect(order.pullEvents()).toEqual([]);
+  });
+
+  it('ORD-021 records STOCK_RESERVATION_FAILED with the attempt, the reason and the shortages', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.returnToDraft({
+      ...change({ changedBy: SYSTEM_ACTOR }),
+      attempt: 1,
+      reason: 'out_of_stock',
+      shortages,
+    });
+
+    expect(order.pullHistory()).toEqual([
+      expect.objectContaining({
+        type: OrderEventType.StockReservationFailed,
+        fromStatus: OrderStatus.PendingPayment,
+        toStatus: OrderStatus.Draft,
+        changedBy: SYSTEM_ACTOR,
+        payload: { paymentAttempt: 1, reason: 'out_of_stock', shortages },
+      }),
+    ]);
+  });
+
+  it('SAGA-007 records no shortages when inventory never said', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.returnToDraft({ ...change(), attempt: 1, reason: 'inventory_unavailable' });
+
+    expect(order.pullHistory()[0]?.payload).toEqual({
+      paymentAttempt: 1,
+      reason: 'inventory_unavailable',
+    });
+  });
+
+  it('SAGA-003 can be placed again, as the next attempt', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.returnToDraft({ ...change(), attempt: 1, reason: 'out_of_stock' });
+
+    order.place(change());
+
+    expect(order.snapshot()).toMatchObject({
+      status: OrderStatus.PendingPayment,
+      paymentAttempt: 2,
+      failureReason: null,
+    });
+  });
+});
+
+describe('Order.note', () => {
+  it.each([
+    OrderEventType.StockReserved,
+    OrderEventType.StockReleased,
+    OrderEventType.PaymentTimedOut,
+  ] as const)('ORD-018 ORD-021 records %s from and to the status the order has', (type) => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    const before = order.snapshot();
+
+    order.note(type, { ...change({ changedBy: SYSTEM_ACTOR }), attempt: 1 });
+
+    expect(order.pullHistory()).toEqual([
+      expect.objectContaining({
+        type,
+        fromStatus: OrderStatus.PendingPayment,
+        toStatus: OrderStatus.PendingPayment,
+        changedBy: SYSTEM_ACTOR,
+        payload: { paymentAttempt: 1 },
+        at: LATER,
+      }),
+    ]);
+    // nothing but the time of the last change moves
+    expect(order.snapshot()).toEqual({ ...before, updatedAt: LATER });
+    expect(order.pullEvents()).toEqual([]);
+  });
+
+  it('SAGA-006 notes a release on an order that was placed again since', () => {
+    const order = orderIn(OrderStatus.PendingPayment, { paymentAttempt: 2 });
+
+    order.note(OrderEventType.StockReleased, { ...change(), attempt: 1 });
+
+    expect(order.pullHistory()).toEqual([
+      expect.objectContaining({
+        fromStatus: OrderStatus.PendingPayment,
+        toStatus: OrderStatus.PendingPayment,
+        payload: { paymentAttempt: 1 },
+      }),
+    ]);
+  });
+});
+
 describe('payment outcome of another attempt', () => {
   const outcomes = {
     markPaid: (order: Order, attempt: number) => {
@@ -339,6 +446,9 @@ describe('payment outcome of another attempt', () => {
     },
     markPaymentFailed: (order: Order, attempt: number) => {
       order.markPaymentFailed({ ...change(), attempt, reason: 'card_declined' });
+    },
+    returnToDraft: (order: Order, attempt: number) => {
+      order.returnToDraft({ ...change(), attempt, reason: 'out_of_stock' });
     },
   };
 

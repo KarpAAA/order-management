@@ -1,5 +1,10 @@
 import { Logger } from '@nestjs/common';
-import { ChargePaymentV1, PaymentFailedV1, PaymentSucceededV1 } from '@oms/contracts';
+import {
+  ChargePaymentV1,
+  PaymentCancelledV1,
+  PaymentFailedV1,
+  PaymentSucceededV1,
+} from '@oms/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { CorrelationContext } from '@common/messaging/correlation-context';
@@ -31,6 +36,8 @@ const failed = PaymentFailedV1.create(META, {
   declineCode: 'insufficient_funds',
   chargeId: null,
 });
+
+const cancelled = PaymentCancelledV1.create(META, ATTEMPT);
 
 class NotPayable extends InvalidStateError {
   readonly code = 'NOT_PAYABLE';
@@ -102,6 +109,18 @@ describe('PaymentEventsConsumer', () => {
 
     expect(fail).toHaveBeenCalledWith(
       { orderId: ORDER, paymentAttempt: 2, reason: 'insufficient_funds' },
+      expect.objectContaining({ kind: 'system', source: 'consumer:orders' }),
+    );
+    expect(complete).not.toHaveBeenCalled();
+  });
+
+  it('SAGA-008 fails the payment of a cancelled attempt as payment_timeout', async () => {
+    const { consumer, complete, fail } = consumerWith();
+
+    await expect(consumer.onPaymentEvent(cancelled)).resolves.toBeUndefined();
+
+    expect(fail).toHaveBeenCalledWith(
+      { orderId: ORDER, paymentAttempt: 2, reason: 'payment_timeout' },
       expect.objectContaining({ kind: 'system', source: 'consumer:orders' }),
     );
     expect(complete).not.toHaveBeenCalled();

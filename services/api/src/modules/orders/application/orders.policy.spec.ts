@@ -88,6 +88,23 @@ describe('OrdersPolicy', () => {
     });
   });
 
+  describe('SAGA-014 moving the saga of an order', () => {
+    it('is allowed to system:consumer:orders', () => {
+      expect(() => {
+        policy.assertCanAdvanceSaga(systemActor('consumer:orders'));
+      }).not.toThrow();
+    });
+
+    it.each<[string, Actor]>([
+      ['another system source', systemActor('cron:orders')],
+      ['a user', user],
+    ])('is forbidden to %s', (_case, actor) => {
+      expect(() => {
+        policy.assertCanAdvanceSaga(actor);
+      }).toThrow(forbidden('orders.advance-saga'));
+    });
+  });
+
   describe('OPS-003 maintaining the history partitions', () => {
     it('is allowed to system:job:maintain-order-event-partitions', () => {
       expect(() => {
