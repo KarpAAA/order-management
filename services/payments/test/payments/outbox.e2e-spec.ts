@@ -10,6 +10,7 @@ import { CONNECTION_NAME } from '@infra/messaging/rabbit-connection';
 
 import { TestPsp } from '../doubles/test-psp';
 import { connectTestBroker, type TestBroker } from '../helpers/broker';
+import { failInsertsInto } from '../helpers/failing-inserts';
 import { waitFor } from '../helpers/waiting';
 import { createWorkerApp, type WorkerApp } from '../helpers/worker-app';
 import { testDb } from '../setup/db';
@@ -66,21 +67,6 @@ const published = (orderId: string) =>
     (rows) => rows.length > 0 && rows.every((row) => row.publishedAt !== null),
     { what: `every outbox row of order ${orderId} to be published` },
   );
-
-/** Fault injection: every INSERT into `table` fails inside Postgres until restore(). */
-async function failInsertsInto(table: string): Promise<() => Promise<void>> {
-  await testDb().$executeRawUnsafe(`
-    CREATE FUNCTION inject_failure() RETURNS trigger AS $$
-    BEGIN RAISE EXCEPTION 'injected failure: %', TG_TABLE_NAME; END
-    $$ LANGUAGE plpgsql`);
-  await testDb().$executeRawUnsafe(
-    `CREATE TRIGGER inject_failure BEFORE INSERT ON ${table} FOR EACH ROW EXECUTE FUNCTION inject_failure()`,
-  );
-  return async () => {
-    await testDb().$executeRawUnsafe(`DROP TRIGGER inject_failure ON ${table}`);
-    await testDb().$executeRawUnsafe('DROP FUNCTION inject_failure()');
-  };
-}
 
 describe('the answer is a row of the outbox (OBX-001, OBX-002)', () => {
   it('is the message the api receives: same id, events exchange, marked published', async () => {

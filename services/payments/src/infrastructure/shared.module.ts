@@ -7,12 +7,13 @@ import { Clock, SystemClock } from '@shared/domain/clock';
 
 import { DatabaseModule } from './database/database.module';
 import { createTransactionalAdapter } from './database/transactional.adapter';
+import { InboxModule } from './inbox/inbox.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { OutboxModule } from './outbox/outbox.module';
 
 /**
  * The frame every entrypoint imports: config, database, CLS + transactions, broker
- * connection, the write side of the outbox, clock.
+ * connection, the write side of the outbox, the inbox, clock.
  */
 @Global()
 @Module({
@@ -30,6 +31,7 @@ import { OutboxModule } from './outbox/outbox.module';
     }),
     MessagingModule,
     OutboxModule,
+    InboxModule,
   ],
   providers: [{ provide: Clock, useClass: SystemClock }],
   exports: [Clock],

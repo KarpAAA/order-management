@@ -5,6 +5,7 @@ import { PaymentStatus } from '@infra/database/generated/prisma/client';
 import type { Payment } from '@infra/database/generated/prisma/client';
 import { isUniqueViolation } from '@infra/database/prisma-errors';
 import type { DbTransactionAdapter } from '@infra/database/transactional.adapter';
+import { Inbox } from '@infra/inbox/inbox';
 import type { Actor } from '@shared/auth/actor';
 import { Clock } from '@shared/domain/clock';
 import { newId } from '@shared/domain/id';
@@ -24,6 +25,9 @@ export const PSP_UNAVAILABLE = 'psp_unavailable';
 export const PSP_REJECTED = 'psp_rejected';
 
 export interface ChargePaymentCommand {
+  /** The message that carries the command and the queue it was read from: the inbox's key. */
+  messageId: string;
+  queue: string;
   workspaceId: string;
   orderId: string;
   paymentAttempt: number;
@@ -69,12 +73,16 @@ const outcomeOf = (row: PaymentRow, result: PaymentResult): PaymentOutcome => ({
  * Three steps, and the provider is never called inside a transaction:
  *  1. the row of the attempt, PENDING;
  *  2. the call to the provider;
- *  3. one transaction: the row is settled and the answer is written to the outbox. The
- *     answer exists exactly when the row says how the attempt ended (docs/adr/0014).
+ *  3. one transaction: the message is recorded in the inbox, the row is settled and the
+ *     answer is written to the outbox. The answer exists exactly when the row says how the
+ *     attempt ended (docs/adr/0014), and the message is handled exactly when both are there
+ *     (docs/adr/0015).
  * A command is delivered at least once, so every step may run twice:
  *  - the row is unique per (order, attempt): the second delivery finds the first one's row;
  *  - the provider gets the same idempotency key and answers the same;
- *  - the row is settled only while PENDING; whoever comes second answers with what is stored.
+ *  - the same message again finds itself in the inbox: nothing is settled, nothing answered;
+ *  - another message for the same attempt finds the row settled and is answered with what
+ *    is stored: the row is settled only while PENDING.
  * A provider that does not answer leaves the row PENDING and the error to the consumer: the
  * command comes again after a delay, and its last delivery ends the attempt (docs/adr/0013).
  */
@@ -84,6 +92,7 @@ export class ChargePaymentService {
 
   constructor(
     private readonly txHost: TransactionHost<DbTransactionAdapter>,
+    private readonly inbox: Inbox,
     private readonly policy: PaymentsPolicy,
     private readonly clock: Clock,
     @Inject(PAYMENT_GATEWAY) private readonly gateway: PaymentGateway,
@@ -95,13 +104,16 @@ export class ChargePaymentService {
 
     const payment = await this.open(cmd);
     if (payment.status !== PaymentStatus.PENDING) {
-      // a repeated command is answered again: whoever sent it twice is still waiting
-      await this.txHost.withTransaction(() => this.answer(payment));
+      // The same message again: answered when it was handled. Another message for a settled
+      // attempt is answered again: whoever sent it is still waiting.
+      await this.txHost.withTransaction(async () => {
+        if (await this.inbox.record(cmd.queue, cmd.messageId)) await this.answer(payment);
+      });
       return;
     }
 
     const result = await this.charge(payment, cmd.lastDelivery);
-    await this.settle(payment, result);
+    await this.settle(cmd, payment, result);
   }
 
   /** The row of this attempt: created PENDING, or the one an earlier delivery created. */
@@ -159,12 +171,19 @@ export class ChargePaymentService {
   }
 
   /**
-   * PENDING → SUCCEEDED / FAILED, once, and the answer with it, in one transaction. A
-   * concurrent delivery that settled the row first wins: this one waits for its commit,
-   * changes nothing, and answers with what that delivery stored.
+   * PENDING → SUCCEEDED / FAILED, once, with the record of the message and the answer, in
+   * one transaction. The record comes first: a concurrent delivery of the same message makes
+   * this one wait there, and once that one has committed there is nothing left to do. A
+   * concurrent delivery of another message that settled the row first wins as well: this one
+   * changes nothing and answers with what that delivery stored.
    */
-  private settle(payment: PaymentRow, result: PaymentResult): Promise<void> {
+  private settle(
+    cmd: ChargePaymentCommand,
+    payment: PaymentRow,
+    result: PaymentResult,
+  ): Promise<void> {
     return this.txHost.withTransaction(async () => {
+      if (!(await this.inbox.record(cmd.queue, cmd.messageId))) return;
       const { tx } = this.txHost;
       await tx.payment.updateMany({
         where: { id: payment.id, status: PaymentStatus.PENDING },

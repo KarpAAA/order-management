@@ -14,7 +14,8 @@ const ACTOR = systemActor('consumer:payments');
 const PAYMENTS_COMMANDS_QUEUE = 'payments.commands';
 
 /**
- * Thin: validate the message against its contract, build the actor, call one use case.
+ * Thin: validate the message against its contract, build the actor, call one use case. The
+ * use case records the message in its inbox, in the transaction that settles the payment.
  * Returning acknowledges the message. Whatever is thrown is settled by the connection
  * (infrastructure/messaging/retry-or-park.ts): delivered again after a delay, or parked in
  * `payments.commands.dlq` when it is an `UnprocessableMessageError` or the last delivery.
@@ -43,6 +44,8 @@ export class PaymentsConsumer {
     const { orderId, paymentAttempt, amount, idempotencyKey } = message.payload;
     await this.chargePayment.execute(
       {
+        messageId: message.messageId,
+        queue: PAYMENTS_COMMANDS_QUEUE,
         workspaceId: message.workspaceId,
         orderId,
         paymentAttempt,

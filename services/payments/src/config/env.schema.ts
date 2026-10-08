@@ -47,6 +47,11 @@ export const envSchema = z.object({
   /** How often this process deletes the published messages past the retention. */
   OUTBOX_CLEANUP_INTERVAL_MS: z.coerce.number().int().min(1000).default(3_600_000),
 
+  /** Days the record of a handled message is kept: longer than the message may come again. */
+  INBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
+  /** How often this process deletes the records past the retention. */
+  INBOX_CLEANUP_INTERVAL_MS: z.coerce.number().int().min(1000).default(3_600_000),
+
   PAYMENT_GATEWAY: z.enum(['http', 'fake']).default('fake'),
   PSP_BASE_URL: z.url().default('http://localhost:4010'),
   PSP_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),

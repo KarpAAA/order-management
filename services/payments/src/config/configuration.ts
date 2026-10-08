@@ -48,6 +48,12 @@ export const outboxConfig = registerAs('outbox', () => ({
 }));
 export type OutboxConfig = ConfigType<typeof outboxConfig>;
 
+export const inboxConfig = registerAs('inbox', () => ({
+  retentionDays: env().INBOX_RETENTION_DAYS,
+  cleanupIntervalMs: env().INBOX_CLEANUP_INTERVAL_MS,
+}));
+export type InboxConfig = ConfigType<typeof inboxConfig>;
+
 export const gatewayConfig = registerAs('gateway', () => ({
   gateway: env().PAYMENT_GATEWAY,
   pspBaseUrl: env().PSP_BASE_URL,
@@ -55,4 +61,4 @@ export const gatewayConfig = registerAs('gateway', () => ({
 }));
 export type GatewayConfig = ConfigType<typeof gatewayConfig>;
 
-export const allConfigs = [databaseConfig, rabbitConfig, outboxConfig, gatewayConfig];
+export const allConfigs = [databaseConfig, rabbitConfig, outboxConfig, inboxConfig, gatewayConfig];

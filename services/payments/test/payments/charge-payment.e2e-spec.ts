@@ -68,6 +68,17 @@ function chargeCommand({
 const rows = (orderId: string) =>
   testDb().payment.findMany({ where: { orderId }, orderBy: { attempt: 'asc' } });
 
+/**
+ * Proof that every command sent before this call has been handled: the service takes one
+ * message at a time (RABBITMQ_PREFETCH=1), so a command sent after them is behind them in
+ * the queue, and its answer comes after theirs.
+ */
+async function handled(): Promise<void> {
+  const marker = uuidv7();
+  await broker.send(chargeCommand({ orderId: marker }));
+  await broker.waitForEvents(marker, 1);
+}
+
 describe('a command is charged and answered (PAY-003, PAY-004)', () => {
   it('charges the amount once with the key of the command and publishes payment-succeeded', async () => {
     const orderId = uuidv7();
@@ -265,18 +276,37 @@ describe('a command that fails on every delivery is parked (PAY-016, PAY-017)', 
   });
 });
 
-describe('a command delivered twice charges once (PAY-009, PAY-010)', () => {
-  it('answers the second delivery with the stored outcome and does not call the PSP again', async () => {
+describe('the same message again is handled once (IBX-001, PAY-010)', () => {
+  it('five deliveries of one command: one charge, one row, one answer, one record', async () => {
     const orderId = uuidv7();
     const command = chargeCommand({ orderId });
 
-    await broker.send(command);
+    for (let delivery = 0; delivery < 5; delivery += 1) await broker.send(command);
     await broker.waitForEvents(orderId, 1);
-    await broker.send(command);
+    await handled();
+
+    // the answer is in the outbox since the first delivery committed: no need to repeat it
+    expect(broker.events(orderId)).toHaveLength(1);
+    expect(psp.calls(orderId)).toHaveLength(1);
+    expect(await rows(orderId)).toHaveLength(1);
+    expect(
+      await testDb().inboxMessage.findMany({ where: { messageId: command.messageId } }),
+    ).toEqual([expect.objectContaining({ consumer: COMMANDS_QUEUE })]);
+  });
+});
+
+describe('another message for a settled attempt is answered again (PAY-009, IBX-006)', () => {
+  it('answers with the stored outcome and does not call the PSP again', async () => {
+    const orderId = uuidv7();
+
+    await broker.send(chargeCommand({ orderId }));
+    await broker.waitForEvents(orderId, 1);
+    // a new message id: the inbox does not know it, the row of the attempt does
+    await broker.send(chargeCommand({ orderId }));
     const events = await broker.waitForEvents(orderId, 2);
 
-    // the answer is given again: the first one may never have reached its reader
     expect(events.map((e) => e.payload)).toEqual([events[0]?.payload, events[0]?.payload]);
+    expect(new Set(events.map((e) => e.messageId)).size).toBe(2);
     expect(psp.calls(orderId)).toHaveLength(1);
     expect(await rows(orderId)).toHaveLength(1);
   });
@@ -301,7 +331,7 @@ describe('two consumers in the same charge at once (PAY-010)', () => {
   });
   afterAll(() => second.close());
 
-  it('both reach the PSP with the same key → one row, one charge, the same answer twice', async () => {
+  it('both reach the PSP with the same key → one row, one charge, one answer', async () => {
     const orderId = uuidv7();
     psp.holdUntilConcurrent(orderId, 2);
     const command = chargeCommand({ orderId });
@@ -309,15 +339,18 @@ describe('two consumers in the same charge at once (PAY-010)', () => {
     // prefetch is 1: the broker hands one delivery to each consumer
     await broker.send(command);
     await broker.send(command);
-    const events = await broker.waitForEvents(orderId, 2);
+    await broker.waitForEvents(orderId, 1);
+    await handled();
+    await handled(); // one marker per consumer
 
     expect(psp.calls(orderId)).toHaveLength(2); // both found the row PENDING
     expect(psp.charges(orderId)).toHaveLength(1); // …and the key made it one charge
     expect(await rows(orderId)).toEqual([expect.objectContaining({ status: 'SUCCEEDED' })]);
-    expect(events.map((e) => e.name)).toEqual([
-      'payments.payment-succeeded',
-      'payments.payment-succeeded',
-    ]);
+    // whoever came second waited at the inbox for the first, and found the message recorded
+    expect(broker.events(orderId).map((e) => e.name)).toEqual(['payments.payment-succeeded']);
+    expect(
+      await testDb().inboxMessage.findMany({ where: { messageId: command.messageId } }),
+    ).toHaveLength(1);
   });
 });
 
@@ -382,11 +415,13 @@ describe('the consumer dies in the middle of a command (PAY-018)', () => {
     // acknowledged. The service reconnects, as a restarted process would.
     await broker.killConnection(CONNECTION_NAME);
 
-    // both deliveries answer: the interrupted one when its call returns, the second as well
-    const events = await broker.waitForEvents(orderId, 2);
+    // Both deliveries run to their end in this process: the interrupted one when its call
+    // returns, the second after it or beside it. It is one message, so whichever settles
+    // first records it and answers, and the other finds the record.
+    await broker.waitForEvents(orderId, 1);
+    await handled();
 
-    expect(events.map((event) => event.name)).toEqual([
-      'payments.payment-succeeded',
+    expect(broker.events(orderId).map((event) => event.name)).toEqual([
       'payments.payment-succeeded',
     ]);
     expect(psp.charges(orderId)).toHaveLength(1);
