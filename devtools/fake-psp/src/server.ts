@@ -43,6 +43,9 @@ const chargesByKey = new Map<string, Charge>();
 // Calls to the provider itself (charges and voids, not /admin), by the status they got:
 // what a caller that says "I stopped calling" is checked against.
 const answered = new Map<number, number>();
+// Calls to the provider that were taken and not answered yet: how a caller that wants to act
+// while a charge is under way knows that one is (the system tests, docs/adr/0022).
+let inFlight = 0;
 
 function numberFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -180,6 +183,16 @@ async function updateConfig(req: IncomingMessage, res: ServerResponse): Promise<
   send(res, 200, behaviour);
 }
 
+/** Runs one call to the provider, counted as under way until it is answered. */
+async function underWay(call: () => Promise<void>): Promise<void> {
+  inFlight += 1;
+  try {
+    await call();
+  } finally {
+    inFlight -= 1;
+  }
+}
+
 function log(message: string): void {
   process.stdout.write(`[fake-psp] ${new Date().toISOString()} ${message}\n`);
 }
@@ -190,10 +203,10 @@ const server = createServer((req, res) => {
   const route = `${req.method ?? ''} ${(req.url ?? '').split('?')[0] ?? ''}`;
   const handle = async () => {
     const voided = VOID_ROUTE.exec(route)?.[1];
-    if (voided !== undefined) return voidCharge(decodeURIComponent(voided), res);
+    if (voided !== undefined) return underWay(() => voidCharge(decodeURIComponent(voided), res));
     switch (route) {
       case 'POST /charges':
-        return createCharge(req, res);
+        return underWay(() => createCharge(req, res));
       case 'GET /charges':
         return send(res, 200, [...chargesByKey.values()]);
       case 'GET /admin/config':
@@ -204,6 +217,7 @@ const server = createServer((req, res) => {
         return send(res, 200, {
           calls: [...answered.values()].reduce((sum, count) => sum + count, 0),
           byStatus: Object.fromEntries(answered),
+          inFlight,
         });
       case 'POST /admin/reset':
         chargesByKey.clear();
