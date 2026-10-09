@@ -1,7 +1,7 @@
 # Local environment. Infra (postgres, postgres-replica, pgbouncer, postgres-payments,
-# postgres-inventory, redis, rabbitmq, fake-psp) starts by default;
-# `docker compose --profile app up --build` adds the services: api + worker from ONE image,
-# payments and inventory each from its own.
+# postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, fake-psp) starts by
+# default; `docker compose --profile app up --build` adds the services: api + worker from ONE
+# image, payments, inventory and notifications each from its own.
 name: oms
 
 services:
@@ -87,6 +87,25 @@ services:
       timeout: 3s
       retries: 10
 
+  # The database of notifications-service: its own server as well (ADR 0019).
+  postgres-notifications:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: notifications
+      POSTGRES_PASSWORD: notifications
+      POSTGRES_DB: notifications
+    ports:
+      - '5436:5432'
+    volumes:
+      - postgres-notifications-data:/var/lib/postgresql
+      # the application role's login, on an empty volume only
+      - ./devtools/postgres-notifications/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U notifications -d notifications']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # Transaction-mode pooler in front of postgres, for the application role only (ADR 0008).
   # api and worker go through it, in the `app` profile and under `pnpm dev` on the host alike;
   # the owner (migrations, seed, datagen) connects to postgres directly.
@@ -138,6 +157,21 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  # The mail server of the dev stack: takes every mail notifications-service sends over SMTP
+  # and delivers none. What it took: http://localhost:8025. Nothing is kept across restarts.
+  mailpit:
+    image: axllent/mailpit:v1.27
+    environment:
+      MP_DISABLE_VERSION_CHECK: 'true'
+    ports:
+      - '1025:1025'
+      - '8025:8025'
+    healthcheck:
+      test: ['CMD', '/mailpit', 'readyz']
+      interval: 5s
+      timeout: 3s
+      retries: 10
 
   fake-psp:
     build:
@@ -289,7 +323,45 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  # ── notifications-service: its own image, database and migration step ──────────
+  migrate-notifications:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: services/notifications/Dockerfile
+      target: build
+    image: oms-notifications-build:local
+    working_dir: /repo/services/notifications
+    command: ['pnpm', 'exec', 'prisma', 'migrate', 'deploy']
+    environment:
+      DATABASE_ADMIN_URL: postgresql://notifications:notifications@postgres-notifications:5432/notifications?schema=public
+    depends_on:
+      postgres-notifications:
+        condition: service_healthy
+
+  notifications:
+    profiles: [app]
+    build:
+      context: .
+      dockerfile: services/notifications/Dockerfile
+    image: oms-notifications:local
+    env_file: services/notifications/.env.example
+    environment:
+      DATABASE_URL: postgresql://notifications_app:notifications_app@postgres-notifications:5432/notifications?schema=public
+      # env_file is the dev environment; the process itself gets no owner URL
+      DATABASE_ADMIN_URL: ''
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      SMTP_HOST: mailpit
+    depends_on:
+      migrate-notifications:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      mailpit:
+        condition: service_healthy
+
 volumes:
+  postgres-notifications-data:
   postgres-inventory-data:
   postgres-payments-data:
   postgres-data:

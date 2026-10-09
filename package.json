@@ -9,7 +9,7 @@
   "scripts": {
     "prepare": "husky",
     "build:contracts": "pnpm --filter @oms/contracts build",
-    "dev": "pnpm build:contracts && pnpm --parallel --filter @oms/contracts --filter @oms/api --filter @oms/payments --filter @oms/inventory dev",
+    "dev": "pnpm build:contracts && pnpm --parallel --filter @oms/contracts --filter @oms/api --filter @oms/payments --filter @oms/inventory --filter @oms/notifications dev",
     "build": "pnpm -r run build",
     "lint": "pnpm build:contracts && pnpm -r run lint",
     "format": "prettier --write .",
@@ -24,6 +24,7 @@
     "db:migrate": "pnpm --filter @oms/api db:migrate",
     "db:migrate:payments": "pnpm --filter @oms/payments db:migrate",
     "db:migrate:inventory": "pnpm --filter @oms/inventory db:migrate",
+    "db:migrate:notifications": "pnpm --filter @oms/notifications db:migrate",
     "db:seed": "pnpm --filter @oms/api db:seed",
     "db:seed:inventory": "pnpm --filter @oms/inventory db:seed",
     "db:datagen": "pnpm --filter @oms/api db:datagen",
