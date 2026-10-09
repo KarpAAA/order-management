@@ -9,6 +9,8 @@
   "scripts": {
     "prepare": "husky",
     "build:contracts": "pnpm --filter @oms/contracts build",
+    "contracts:freeze": "pnpm build:contracts && node packages/contracts/scripts/freeze.mjs",
+    "contracts:check": "pnpm build:contracts && node packages/contracts/scripts/check-released.mjs",
     "dev": "pnpm build:contracts && pnpm --parallel --filter @oms/contracts --filter @oms/api --filter @oms/payments --filter @oms/inventory --filter @oms/notifications dev",
     "build": "pnpm -r run build",
     "lint": "pnpm build:contracts && pnpm -r run lint",

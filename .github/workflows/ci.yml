@@ -65,6 +65,23 @@ jobs:
           # a CI checkout has no local `main`; a PR compares with its own target branch
           MIGRATIONS_BASE_REF: origin/${{ github.base_ref || 'main' }}
 
+  contracts:
+    name: contracts
+    needs: [static, unit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # check-released.mjs reads the released contracts of the merge base
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+      # a released version of a message contract is still what the base branch released
+      - run: pnpm contracts:check
+        env:
+          # a CI checkout has no local `main`; a PR compares with its own target branch
+          CONTRACTS_BASE_REF: origin/${{ github.base_ref || 'main' }}
+
   audit:
     name: audit
     runs-on: ubuntu-latest

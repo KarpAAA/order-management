@@ -13,6 +13,7 @@ export { OrderPaidV1 } from './orders/order-paid.v1';
 export { OrderPaymentFailedV1 } from './orders/order-payment-failed.v1';
 export { OrderPlacedV1 } from './orders/order-placed.v1';
 export { OrderReturnedToDraftV1 } from './orders/order-returned-to-draft.v1';
+export { consumedBy, parties, producedBy, services, type Party, type Service } from './parties';
 export { CancelPaymentV1 } from './payments/cancel-payment.v1';
 export { ChargePaymentV1 } from './payments/charge-payment.v1';
 export { PaymentCancelledV1 } from './payments/payment-cancelled.v1';

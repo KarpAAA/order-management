@@ -3,6 +3,8 @@
 // `src/` may import `zod` (the only entry in `dependencies`) and its own files, nothing else: no
 // Node built-ins, no service code, no helpers. Every service depends on this package, so whatever
 // lands here is coupled to all of them (docs/adr/0011-message-contracts.md).
+// One exception: `src/testing/` (the entry `@oms/contracts/testing`) reads the released
+// schemas from disk for the contract tests; `src/index.ts` never imports it.
 // `.mjs`: the package is CommonJS, and this config uses ESM imports and import.meta.
 
 import tseslint from 'typescript-eslint';
@@ -10,8 +12,9 @@ import importPlugin from 'eslint-plugin-import';
 import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
-  // eslint.config.mjs: outside the tsconfig program, so type-aware parsing cannot load it
-  { ignores: ['dist/**', 'node_modules/**', 'eslint.config.mjs'] },
+  // eslint.config.mjs and scripts/: outside the tsconfig program, so type-aware parsing cannot
+  // load them
+  { ignores: ['dist/**', 'node_modules/**', 'eslint.config.mjs', 'scripts/**'] },
 
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
@@ -55,6 +58,12 @@ export default tseslint.config(
         { devDependencies: false, optionalDependencies: false, peerDependencies: false },
       ],
     },
+  },
+
+  // the test entry reads `released/`
+  {
+    files: ['src/testing/**'],
+    rules: { 'import/no-nodejs-modules': 'off' },
   },
 
   // tests and the tool config use vitest, a devDependency

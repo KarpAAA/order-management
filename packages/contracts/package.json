@@ -12,10 +12,15 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing/index.d.ts",
+      "default": "./dist/testing/index.js"
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "released"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -28,6 +33,7 @@
     "zod": "4.6.5"
   },
   "devDependencies": {
+    "@types/node": "24.19.0",
     "eslint": "9.39.5",
     "eslint-config-prettier": "10.1.8",
     "eslint-import-resolver-typescript": "4.4.5",
