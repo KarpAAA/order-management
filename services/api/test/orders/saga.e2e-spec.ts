@@ -322,6 +322,24 @@ describe('out of stock: the order is a DRAFT again (SAGA-003)', () => {
     expect(broker.sent('inventory.release-stock', orderId)).toEqual([]);
   });
 
+  it('NTF-032 publishes orders.order-returned-to-draft with the reason, for who created the order', async () => {
+    const events = await broker.waitForOrderEvents(orderId, 2);
+
+    expect(events.map((event) => event.name)).toEqual([
+      'orders.order-placed',
+      'orders.order-returned-to-draft',
+    ]);
+    expect(events[1]).toMatchObject({
+      workspaceId: WS_ACME,
+      payload: {
+        orderId,
+        paymentAttempt: 1,
+        reason: 'out_of_stock',
+        recipient: { userId: USER_ACME_MEMBER, email: 'member@acme.test' },
+      },
+    });
+  });
+
   it('ORD-021 the history names the products that fell short', async () => {
     expect((await history(orderId)).at(-1)).toMatchObject({
       type: 'STOCK_RESERVATION_FAILED',

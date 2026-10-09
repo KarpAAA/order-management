@@ -23,6 +23,12 @@ export const PRODUCT_1 = '01950000-0000-7000-8000-00000000d001';
 export const PRODUCT_2 = '01950000-0000-7000-8000-00000000d002';
 export const SYSTEM_ACTOR = 'system:consumer:orders';
 
+/** What every event of ORDER starts with: the order, and USER who created it. */
+export const ORDER_REF = { workspaceId: WORKSPACE, orderId: ORDER, createdBy: USER };
+
+/** The same for an order a test built itself. */
+export const refOf = (order: Order): typeof ORDER_REF => ({ ...ORDER_REF, orderId: order.id });
+
 /** Who and when for a state change; defaults to the user acting LATER than the order was built. */
 export function change(overrides: Partial<{ now: Date; changedBy: string }> = {}): {
   now: Date;

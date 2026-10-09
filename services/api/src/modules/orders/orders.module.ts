@@ -15,6 +15,7 @@ import { FailOrderPaymentService } from './application/fail-order-payment.servic
 import { FulfillOrderService } from './application/fulfill-order.service';
 import { MaintainOrderEventPartitionsService } from './application/maintain-order-event-partitions.service';
 import { OrderInputsReader } from './application/order-inputs.reader';
+import { OrderRecipientsReader } from './application/order-recipients.reader';
 import { OrderSagaSteps } from './application/order-saga-steps';
 import { OrdersPolicy } from './application/orders.policy';
 import { PlaceOrderService } from './application/place-order.service';
@@ -29,6 +30,7 @@ import { OutboxSagaTimeoutAdapter } from './infrastructure/outbox-saga-timeout.a
 import { OutboxStockReservationAdapter } from './infrastructure/outbox-stock-reservation.adapter';
 import { PostgresOrderEventPartitions } from './infrastructure/postgres-order-event-partitions.adapter';
 import { ORDER_EVENT_PARTITIONS } from './ports/order-event-partitions.port';
+import { ORDER_RECIPIENTS } from './ports/order-recipients.port';
 import { ORDER_SAGAS_REPOSITORY } from './ports/order-sagas-repository.port';
 import { ORDERS_REPOSITORY } from './ports/orders-repository.port';
 import { PAYMENT_CHARGE_SCHEDULER } from './ports/payment-charge-scheduler.port';
@@ -77,8 +79,9 @@ const USE_CASES = [
     { provide: STOCK_RESERVATION_SCHEDULER, useClass: OutboxStockReservationAdapter },
     { provide: PAYMENT_CHARGE_SCHEDULER, useClass: OutboxPaymentChargeAdapter },
     { provide: SAGA_TIMEOUT_SCHEDULER, useClass: OutboxSagaTimeoutAdapter },
-    // what the reliable events of orders become on the broker
+    // what the reliable events of orders become on the broker, and whom they are for
     OrderEventsTranslator,
+    { provide: ORDER_RECIPIENTS, useClass: OrderRecipientsReader },
     { provide: ORDER_EVENT_PARTITIONS, useClass: PostgresOrderEventPartitions },
     // read
     OrdersQueryService,

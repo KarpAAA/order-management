@@ -25,7 +25,7 @@ export class DomainEventPublisher implements EventPublisher {
   async publishAll(events: readonly DomainEvent[]): Promise<void> {
     for (const event of events) {
       if (event.delivery === 'reliable') {
-        for (const entry of this.reliable.translate(event)) await this.outbox.append(entry);
+        for (const entry of await this.reliable.translate(event)) await this.outbox.append(entry);
         continue;
       }
       await afterCommit(() => {

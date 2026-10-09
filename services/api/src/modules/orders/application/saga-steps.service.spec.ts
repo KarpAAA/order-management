@@ -10,6 +10,7 @@ import { ForbiddenError } from '@shared/errors/forbidden-error';
 import {
   LATER,
   ORDER,
+  ORDER_REF,
   orderIn,
   PRODUCT_1,
   sagaIn,
@@ -23,6 +24,8 @@ import {
 } from '../domain/errors';
 import { OrderCancelled } from '../domain/events/order-cancelled.event';
 import { OrderPaid } from '../domain/events/order-paid.event';
+import { OrderPaymentFailed } from '../domain/events/order-payment-failed.event';
+import { OrderReturnedToDraft } from '../domain/events/order-returned-to-draft.event';
 import { OrderSagaStep } from '../domain/order-saga-step';
 import { OrderEventType, OrderStatus } from '../domain/order-status';
 
@@ -265,7 +268,16 @@ describe('the steps of the order saga', () => {
       expect(charges.scheduled).toEqual([]);
       expect(stock.released).toEqual([]);
       expect(timeouts.scheduled).toEqual([]);
-      expect(events.published).toEqual([]);
+    });
+
+    it('NTF-032 publishes OrderReturnedToDraft for the attempt, with the reason', async () => {
+      waitingIn(OrderSagaStep.Reserving);
+
+      await rejectReservation().execute(cmd, paymentConsumer);
+
+      expect(events.published).toEqual([
+        new OrderReturnedToDraft(ORDER_REF, 1, 'out_of_stock', LATER),
+      ]);
     });
 
     it('SAGA-011 does not take back an order whose stock was reserved meanwhile', async () => {
@@ -322,7 +334,7 @@ describe('the steps of the order saga', () => {
 
       await completePayment().execute(cmd, paymentConsumer);
 
-      expect(events.published).toEqual([new OrderPaid(WORKSPACE, ORDER, 1, 'ch_1', LATER)]);
+      expect(events.published).toEqual([new OrderPaid(ORDER_REF, 1, 'ch_1', AMOUNT_DUE, LATER)]);
     });
 
     it('SAGA-004 sends nothing: after the charge there is nothing to compensate', async () => {
@@ -412,7 +424,7 @@ describe('the steps of the order saga', () => {
           // not a failure of the payment: the user got what they asked for
           failureReason: null,
         });
-        expect(events.published).toEqual([new OrderCancelled(WORKSPACE, ORDER, LATER)]);
+        expect(events.published).toEqual([new OrderCancelled(ORDER_REF, LATER)]);
         expect(orders.history).toMatchObject([
           {
             type: OrderEventType.OrderCancelled,
@@ -436,7 +448,19 @@ describe('the steps of the order saga', () => {
         status: OrderStatus.PaymentFailed,
         failureReason: 'payment_timeout',
       });
-      expect(events.published).toEqual([]);
+      expect(events.published).toEqual([
+        new OrderPaymentFailed(ORDER_REF, 1, 'payment_timeout', AMOUNT_DUE, LATER),
+      ]);
+    });
+
+    it('NTF-032 publishes OrderPaymentFailed for the attempt, with the reason and the amount', async () => {
+      waitingIn(OrderSagaStep.Charging);
+
+      await failPayment().execute(cmd, paymentConsumer);
+
+      expect(events.published).toEqual([
+        new OrderPaymentFailed(ORDER_REF, 1, 'card_declined', AMOUNT_DUE, LATER),
+      ]);
     });
 
     it('SAGA-011 releases nothing twice: a second failure finds the saga RELEASING', async () => {
@@ -552,6 +576,9 @@ describe('the steps of the order saga', () => {
           type: OrderEventType.StockReservationFailed,
           payload: { paymentAttempt: 1, reason: 'inventory_unavailable' },
         },
+      ]);
+      expect(events.published).toEqual([
+        new OrderReturnedToDraft(ORDER_REF, 1, 'inventory_unavailable', LATER),
       ]);
     });
 

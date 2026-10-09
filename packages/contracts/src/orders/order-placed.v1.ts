@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import { defineMessage } from '../envelope';
 import { money } from '../money';
+import { recipient } from '../recipient';
 
 /**
  * Event, owned by orders (the publisher): an order was placed and waits for payment attempt
@@ -16,6 +17,8 @@ export const OrderPlacedV1 = defineMessage(
     paymentAttempt: z.int().positive(),
     /** What the order costs: the amount the attempt is charged. */
     amount: money,
+    /** The user who created the order. */
+    recipient,
   }),
 );
 

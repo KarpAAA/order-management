@@ -19,6 +19,7 @@ import { OrdersRepository } from '@modules/orders/infrastructure/orders.reposito
 import { OutboxPaymentChargeAdapter } from '@modules/orders/infrastructure/outbox-payment-charge.adapter';
 import { OutboxSagaTimeoutAdapter } from '@modules/orders/infrastructure/outbox-saga-timeout.adapter';
 import { OutboxStockReservationAdapter } from '@modules/orders/infrastructure/outbox-stock-reservation.adapter';
+import { ORDER_RECIPIENTS } from '@modules/orders/ports/order-recipients.port';
 import { ORDER_SAGAS_REPOSITORY } from '@modules/orders/ports/order-sagas-repository.port';
 import { ORDERS_REPOSITORY } from '@modules/orders/ports/orders-repository.port';
 import { PAYMENT_CHARGE_SCHEDULER } from '@modules/orders/ports/payment-charge-scheduler.port';
@@ -47,6 +48,13 @@ beforeAll(async () => {
       { provide: PAYMENT_CHARGE_SCHEDULER, useClass: OutboxPaymentChargeAdapter },
       { provide: SAGA_TIMEOUT_SCHEDULER, useClass: OutboxSagaTimeoutAdapter },
       OrderEventsTranslator,
+      // identity is not in this module: the address is not what the transaction is about
+      {
+        provide: ORDER_RECIPIENTS,
+        useValue: {
+          of: (userId: string) => Promise.resolve({ userId, email: 'member@acme.test' }),
+        },
+      },
       { provide: Clock, useClass: SystemClock },
     ],
   });

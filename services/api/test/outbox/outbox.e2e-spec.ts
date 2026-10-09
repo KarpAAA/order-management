@@ -9,7 +9,12 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { orderFactory } from '../factories';
 import { createApiApp, type ApiApp } from '../helpers/api-app';
 import { asUser } from '../helpers/auth';
-import { connectTestBroker, paymentSucceeded, type TestBroker } from '../helpers/broker';
+import {
+  connectTestBroker,
+  paymentFailed,
+  paymentSucceeded,
+  type TestBroker,
+} from '../helpers/broker';
 import { orderPath } from '../helpers/paths';
 import { waitFor, waitForStatus } from '../helpers/waiting';
 import { createWorkerApp, type WorkerApp } from '../helpers/worker-app';
@@ -36,6 +41,8 @@ afterAll(async () => {
 
 const member = asUser(USER_ACME_MEMBER);
 const admin = asUser(USER_ACME_ADMIN);
+// who the factory creates an order of WS_ACME as (seed-data.ts): whom its events are for
+const RECIPIENT = { userId: USER_ACME_MEMBER, email: 'member@acme.test' };
 
 const act = (orderId: string, action: string, as = member, expected = 204) =>
   api
@@ -126,7 +133,12 @@ describe('place commits the order and its messages; the relay publishes them (OB
     expect(event).toMatchObject({
       name: 'orders.order-placed',
       workspaceId: WS_ACME,
-      payload: { orderId, paymentAttempt: 1, amount: command?.payload.amount },
+      payload: {
+        orderId,
+        paymentAttempt: 1,
+        amount: command?.payload.amount,
+        recipient: RECIPIENT,
+      },
     });
     expect(broker.sent('inventory.reserve-stock', orderId)).toHaveLength(1);
     expect(broker.commands(orderId)).toHaveLength(1);
@@ -175,17 +187,52 @@ describe('the life of an order as its subscribers see it (OBX-007, OBX-008)', ()
     expect(events[1]).toMatchObject({
       workspaceId: WS_ACME,
       correlationId: command?.correlationId,
-      payload: { orderId: id, paymentAttempt: 1, chargeId: 'ch_obx' },
+      payload: {
+        orderId: id,
+        paymentAttempt: 1,
+        chargeId: 'ch_obx',
+        amount: command?.payload.amount,
+        recipient: RECIPIENT,
+      },
     });
   });
 
-  it('cancelled: orders.order-cancelled', async () => {
+  it('NTF-032 payment failed: orders.order-payment-failed, with the reason and the amount', async () => {
+    const { id } = await orderFactory.create();
+    await act(id, 'place', member, 202);
+    const [command] = await broker.waitForCommands(id);
+
+    await broker.publish(
+      paymentFailed({ workspaceId: WS_ACME, orderId: id, paymentAttempt: 1 }, 'card_declined'),
+    );
+    await waitForStatus(api, orderPath(WS_ACME, id), member, ['PAYMENT_FAILED']);
+    const events = await broker.waitForOrderEvents(id, 2);
+
+    expect(events.map((e) => e.name)).toEqual([
+      'orders.order-placed',
+      'orders.order-payment-failed',
+    ]);
+    expect(events[1]).toMatchObject({
+      workspaceId: WS_ACME,
+      payload: {
+        orderId: id,
+        paymentAttempt: 1,
+        reason: 'card_declined',
+        amount: command?.payload.amount,
+        recipient: RECIPIENT,
+      },
+    });
+  });
+
+  it('NTF-030 cancelled: orders.order-cancelled, for who created the order, whoever cancels it', async () => {
     const { id } = await orderFactory.create();
 
-    await act(id, 'cancel');
+    await act(id, 'cancel', admin);
     const events = await broker.waitForOrderEvents(id);
 
-    expect(events).toMatchObject([{ name: 'orders.order-cancelled', payload: { orderId: id } }]);
+    expect(events).toMatchObject([
+      { name: 'orders.order-cancelled', payload: { orderId: id, recipient: RECIPIENT } },
+    ]);
   });
 
   it('fulfilled: orders.order-fulfilled', async () => {
@@ -194,7 +241,9 @@ describe('the life of an order as its subscribers see it (OBX-007, OBX-008)', ()
     await act(id, 'fulfill', admin);
     const events = await broker.waitForOrderEvents(id);
 
-    expect(events).toMatchObject([{ name: 'orders.order-fulfilled', payload: { orderId: id } }]);
+    expect(events).toMatchObject([
+      { name: 'orders.order-fulfilled', payload: { orderId: id, recipient: RECIPIENT } },
+    ]);
   });
 
   it('a request that is refused leaves no message', async () => {

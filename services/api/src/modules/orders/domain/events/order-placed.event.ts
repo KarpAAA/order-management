@@ -1,6 +1,8 @@
 import type { Money } from '@shared/domain/money';
 import type { DomainEvent } from '@shared/events/domain-event';
 
+import type { OrderRef } from './order-ref';
+
 /**
  * An order entered PENDING_PAYMENT for `paymentAttempt`. Reliable: written to the outbox in
  * the transaction of the placement and published as `orders.order-placed`
@@ -13,8 +15,7 @@ export class OrderPlaced implements DomainEvent {
   readonly delivery = 'reliable' as const;
 
   constructor(
-    readonly workspaceId: string,
-    readonly orderId: string,
+    readonly order: OrderRef,
     readonly paymentAttempt: number,
     readonly amountDue: Money,
     readonly occurredAt: Date,

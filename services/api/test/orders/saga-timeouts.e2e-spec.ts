@@ -172,6 +172,15 @@ describe('inventory does not answer the reservation (SAGA-007)', () => {
     expect(release?.correlationId).toBe(reservation?.correlationId);
   });
 
+  it('NTF-032 publishes orders.order-returned-to-draft: inventory never said', async () => {
+    const events = await broker.waitForOrderEvents(orderId, 2);
+
+    expect(events[1]).toMatchObject({
+      name: 'orders.order-returned-to-draft',
+      payload: { orderId, paymentAttempt: 1, reason: 'inventory_unavailable' },
+    });
+  });
+
   it('a "reserved" that arrives after it asks for no charge: the release takes that stock back', async () => {
     await broker.publish(stockReserved(attempt(orderId)));
     await broker.publish(stockReleased(attempt(orderId)));

@@ -12,6 +12,7 @@ import {
   orderIn,
   PRODUCT_1,
   PRODUCT_2,
+  refOf,
   SYSTEM_ACTOR,
   TAX_RATE_BPS,
   USER,
@@ -28,7 +29,9 @@ import {
 import { OrderCancelled } from './events/order-cancelled.event';
 import { OrderFulfilled } from './events/order-fulfilled.event';
 import { OrderPaid } from './events/order-paid.event';
+import { OrderPaymentFailed } from './events/order-payment-failed.event';
 import { OrderPlaced } from './events/order-placed.event';
+import { OrderReturnedToDraft } from './events/order-returned-to-draft.event';
 import { Order } from './order';
 import { OrderEventType, OrderStatus } from './order-status';
 
@@ -205,8 +208,7 @@ describe('Order.place', () => {
     expect(events[0]).toMatchObject({
       name: 'order.placed',
       delivery: 'reliable',
-      workspaceId: WORKSPACE,
-      orderId: order.id,
+      order: { workspaceId: WORKSPACE, orderId: order.id, createdBy: USER },
       paymentAttempt: 1,
       amountDue: order.totals.total,
       occurredAt: LATER,
@@ -254,8 +256,8 @@ describe('Order.cancel', () => {
   it('OBX-007 records OrderCancelled, reliable', () => {
     const order = orderIn(OrderStatus.Draft);
     order.cancel(change());
-    expect(order.pullEvents()).toEqual([new OrderCancelled(WORKSPACE, order.id, LATER)]);
-    expect(new OrderCancelled(WORKSPACE, order.id, LATER).delivery).toBe('reliable');
+    expect(order.pullEvents()).toEqual([new OrderCancelled(refOf(order), LATER)]);
+    expect(new OrderCancelled(refOf(order), LATER).delivery).toBe('reliable');
   });
 });
 
@@ -278,8 +280,8 @@ describe('Order.fulfill', () => {
   it('OBX-007 records OrderFulfilled, reliable', () => {
     const order = orderIn(OrderStatus.Paid);
     order.fulfill(change());
-    expect(order.pullEvents()).toEqual([new OrderFulfilled(WORKSPACE, order.id, LATER)]);
-    expect(new OrderFulfilled(WORKSPACE, order.id, LATER).delivery).toBe('reliable');
+    expect(order.pullEvents()).toEqual([new OrderFulfilled(refOf(order), LATER)]);
+    expect(new OrderFulfilled(refOf(order), LATER).delivery).toBe('reliable');
   });
 });
 
@@ -305,8 +307,9 @@ describe('Order.markPaid', () => {
   it('OBX-007 records OrderPaid with the attempt and the charge, reliable', () => {
     const order = orderIn(OrderStatus.PendingPayment);
     order.markPaid({ ...change({ changedBy: SYSTEM_ACTOR }), attempt: 1, pspChargeId: 'ch_42' });
-    expect(order.pullEvents()).toEqual([new OrderPaid(WORKSPACE, order.id, 1, 'ch_42', LATER)]);
-    expect(new OrderPaid(WORKSPACE, order.id, 1, 'ch_42', LATER).delivery).toBe('reliable');
+    const paid = new OrderPaid(refOf(order), 1, 'ch_42', order.amountDue, LATER);
+    expect(order.pullEvents()).toEqual([paid]);
+    expect(paid.delivery).toBe('reliable');
   });
 });
 
@@ -330,6 +333,14 @@ describe('Order.markPaymentFailed', () => {
       }),
     ]);
   });
+
+  it('NTF-032 records OrderPaymentFailed with the attempt, the reason and the amount, reliable', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.markPaymentFailed({ ...change(), attempt: 1, reason: 'card_declined' });
+    const failed = new OrderPaymentFailed(refOf(order), 1, 'card_declined', order.amountDue, LATER);
+    expect(order.pullEvents()).toEqual([failed]);
+    expect(failed.delivery).toBe('reliable');
+  });
 });
 
 describe('Order.returnToDraft', () => {
@@ -351,8 +362,18 @@ describe('Order.returnToDraft', () => {
       // the attempt was made: the next placing is another one
       paymentAttempt: 1,
     });
-    expect(order.pullEvents()).toEqual([]);
   });
+
+  it.each(['out_of_stock', 'inventory_unavailable'])(
+    'NTF-032 records OrderReturnedToDraft with the attempt and the reason %s, reliable',
+    (reason) => {
+      const order = orderIn(OrderStatus.PendingPayment);
+      order.returnToDraft({ ...change({ changedBy: SYSTEM_ACTOR }), attempt: 1, reason });
+      const returned = new OrderReturnedToDraft(refOf(order), 1, reason, LATER);
+      expect(order.pullEvents()).toEqual([returned]);
+      expect(returned.delivery).toBe('reliable');
+    },
+  );
 
   it('ORD-021 records STOCK_RESERVATION_FAILED with the attempt, the reason and the shortages', () => {
     const order = orderIn(OrderStatus.PendingPayment);

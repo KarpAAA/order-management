@@ -4,7 +4,14 @@ import { WorkspaceRole } from '@shared/auth/workspace-role';
 import { ConcurrencyError, StaleVersionError } from '@shared/errors/domain-error';
 import { ForbiddenError } from '@shared/errors/forbidden-error';
 
-import { LATER, ORDER, orderIn, PRODUCT_1, WORKSPACE } from '../domain/__test__/builders';
+import {
+  LATER,
+  ORDER,
+  ORDER_REF,
+  orderIn,
+  PRODUCT_1,
+  WORKSPACE,
+} from '../domain/__test__/builders';
 import {
   OrderHasNoItemsError,
   OrderInvalidTransitionError,
@@ -77,7 +84,7 @@ describe('PlaceOrderService', () => {
 
     await placeOrder().execute({ orderId: ORDER, version: VERSION }, member);
 
-    expect(events.published).toEqual([new OrderPlaced(WORKSPACE, ORDER, 1, AMOUNT_DUE, LATER)]);
+    expect(events.published).toEqual([new OrderPlaced(ORDER_REF, 1, AMOUNT_DUE, LATER)]);
   });
 
   it('SAGA-001 starts the saga of the attempt in RESERVING, with the deadline of its timeout', async () => {
@@ -121,7 +128,7 @@ describe('PlaceOrderService', () => {
     expect(saved.paymentAttempt).toBe(2);
     expect((await sagas.getByAttempt(ORDER, 2)).step).toBe(OrderSagaStep.Reserving);
     expect(stock.reserved).toMatchObject([{ orderId: ORDER, attempt: 2 }]);
-    expect(events.published).toEqual([new OrderPlaced(WORKSPACE, ORDER, 2, AMOUNT_DUE, LATER)]);
+    expect(events.published).toEqual([new OrderPlaced(ORDER_REF, 2, AMOUNT_DUE, LATER)]);
   });
 
   it('forbids a VIEWER and leaves the order untouched', async () => {

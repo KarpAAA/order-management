@@ -4,7 +4,7 @@ import { WorkspaceRole } from '@shared/auth/workspace-role';
 import { StaleVersionError } from '@shared/errors/domain-error';
 import { ForbiddenError } from '@shared/errors/forbidden-error';
 
-import { LATER, ORDER, orderIn, WORKSPACE } from '../domain/__test__/builders';
+import { LATER, ORDER, ORDER_REF, orderIn } from '../domain/__test__/builders';
 import { OrderFulfilled } from '../domain/events/order-fulfilled.event';
 import { OrderStatus } from '../domain/order-status';
 
@@ -47,7 +47,7 @@ describe('FulfillOrderService', () => {
 
     await fulfillOrder().execute({ orderId: ORDER, version: VERSION }, member);
 
-    expect(events.published).toEqual([new OrderFulfilled(WORKSPACE, ORDER, LATER)]);
+    expect(events.published).toEqual([new OrderFulfilled(ORDER_REF, LATER)]);
   });
 
   it('PERM-001 forbids a MEMBER and leaves the order PAID', async () => {

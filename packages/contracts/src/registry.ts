@@ -10,7 +10,9 @@ import { StockReservedV1 } from './inventory/stock-reserved.v1';
 import { OrderCancelledV1 } from './orders/order-cancelled.v1';
 import { OrderFulfilledV1 } from './orders/order-fulfilled.v1';
 import { OrderPaidV1 } from './orders/order-paid.v1';
+import { OrderPaymentFailedV1 } from './orders/order-payment-failed.v1';
 import { OrderPlacedV1 } from './orders/order-placed.v1';
+import { OrderReturnedToDraftV1 } from './orders/order-returned-to-draft.v1';
 import { CancelPaymentV1 } from './payments/cancel-payment.v1';
 import { ChargePaymentV1 } from './payments/charge-payment.v1';
 import { PaymentCancelledV1 } from './payments/payment-cancelled.v1';
@@ -28,6 +30,8 @@ export const contracts = [
   OrderPaidV1,
   OrderCancelledV1,
   OrderFulfilledV1,
+  OrderPaymentFailedV1,
+  OrderReturnedToDraftV1,
   ReserveStockV1,
   ReleaseStockV1,
   AdjustStockV1,

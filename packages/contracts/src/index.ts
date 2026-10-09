@@ -10,12 +10,15 @@ export { money, type Money } from './money';
 export { OrderCancelledV1 } from './orders/order-cancelled.v1';
 export { OrderFulfilledV1 } from './orders/order-fulfilled.v1';
 export { OrderPaidV1 } from './orders/order-paid.v1';
+export { OrderPaymentFailedV1 } from './orders/order-payment-failed.v1';
 export { OrderPlacedV1 } from './orders/order-placed.v1';
+export { OrderReturnedToDraftV1 } from './orders/order-returned-to-draft.v1';
 export { CancelPaymentV1 } from './payments/cancel-payment.v1';
 export { ChargePaymentV1 } from './payments/charge-payment.v1';
 export { PaymentCancelledV1 } from './payments/payment-cancelled.v1';
 export { PaymentFailedV1 } from './payments/payment-failed.v1';
 export { PaymentSucceededV1 } from './payments/payment-succeeded.v1';
+export { recipient, type Recipient } from './recipient';
 export {
   contractKey,
   contracts,

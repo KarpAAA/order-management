@@ -14,12 +14,15 @@ import {
 import { OrderCancelled } from './events/order-cancelled.event';
 import { OrderFulfilled } from './events/order-fulfilled.event';
 import { OrderPaid } from './events/order-paid.event';
+import { OrderPaymentFailed } from './events/order-payment-failed.event';
 import { OrderPlaced } from './events/order-placed.event';
+import { OrderReturnedToDraft } from './events/order-returned-to-draft.event';
 import { OrderLine } from './order-line';
 import { OrderEventType, OrderStatus, TRANSITIONS } from './order-status';
 import { calculateTotals } from './order-totals';
 
 import type { Discount } from './discount';
+import type { OrderRef } from './events/order-ref';
 import type { SagaNote } from './order-status';
 import type { OrderTotals } from './order-totals';
 
@@ -154,29 +157,21 @@ export class Order extends AggregateRoot {
     this.addHistory(OrderEventType.OrderPlaced, from, change, {
       paymentAttempt: this.props.paymentAttempt,
     });
-    this.record(
-      new OrderPlaced(
-        this.workspaceId,
-        this.id,
-        this.props.paymentAttempt,
-        this.amountDue,
-        change.now,
-      ),
-    );
+    this.record(new OrderPlaced(this.ref, this.props.paymentAttempt, this.amountDue, change.now));
   }
 
   cancel(change: Change): void {
     const from = this.transitionTo(OrderStatus.Cancelled, 'cancel');
     this.props.cancelledAt = change.now;
     this.addHistory(OrderEventType.OrderCancelled, from, change);
-    this.record(new OrderCancelled(this.workspaceId, this.id, change.now));
+    this.record(new OrderCancelled(this.ref, change.now));
   }
 
   fulfill(change: Change): void {
     const from = this.transitionTo(OrderStatus.Fulfilled, 'fulfill');
     this.props.fulfilledAt = change.now;
     this.addHistory(OrderEventType.OrderFulfilled, from, change);
-    this.record(new OrderFulfilled(this.workspaceId, this.id, change.now));
+    this.record(new OrderFulfilled(this.ref, change.now));
   }
 
   /**
@@ -197,6 +192,7 @@ export class Order extends AggregateRoot {
       reason: input.reason,
       ...(input.shortages && { shortages: input.shortages }),
     });
+    this.record(new OrderReturnedToDraft(this.ref, input.attempt, input.reason, input.now));
   }
 
   /**
@@ -230,9 +226,8 @@ export class Order extends AggregateRoot {
       paymentAttempt: input.attempt,
       pspChargeId: input.pspChargeId,
     });
-    this.record(
-      new OrderPaid(this.workspaceId, this.id, input.attempt, input.pspChargeId, input.now),
-    );
+    const { attempt, pspChargeId, now } = input;
+    this.record(new OrderPaid(this.ref, attempt, pspChargeId, this.amountDue, now));
   }
 
   markPaymentFailed(input: Change & { attempt: number; reason: string }): void {
@@ -244,6 +239,8 @@ export class Order extends AggregateRoot {
       paymentAttempt: input.attempt,
       reason: input.reason,
     });
+    const { attempt, reason, now } = input;
+    this.record(new OrderPaymentFailed(this.ref, attempt, reason, this.amountDue, now));
   }
 
   get id(): string {
@@ -287,6 +284,11 @@ export class Order extends AggregateRoot {
     const entries = this.newHistory;
     this.newHistory = [];
     return entries;
+  }
+
+  /** What every event of the order starts with. */
+  private get ref(): OrderRef {
+    return { workspaceId: this.workspaceId, orderId: this.id, createdBy: this.props.createdBy };
   }
 
   private buildLines(inputs: readonly OrderLineInput[]): OrderLine[] {

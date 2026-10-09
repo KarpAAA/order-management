@@ -4,7 +4,15 @@ import { WorkspaceRole } from '@shared/auth/workspace-role';
 import { ConcurrencyError, StaleVersionError } from '@shared/errors/domain-error';
 import { ForbiddenError } from '@shared/errors/forbidden-error';
 
-import { LATER, ORDER, orderIn, sagaIn, USER, WORKSPACE } from '../domain/__test__/builders';
+import {
+  LATER,
+  ORDER,
+  ORDER_REF,
+  orderIn,
+  sagaIn,
+  USER,
+  WORKSPACE,
+} from '../domain/__test__/builders';
 import {
   OrderInvalidTransitionError,
   OrderSagaNotFoundError,
@@ -112,7 +120,7 @@ describe('CancelOrderService', () => {
 
       await cancelOrder().execute(cmd, member);
 
-      expect(events.published).toEqual([new OrderCancelled(WORKSPACE, ORDER, LATER)]);
+      expect(events.published).toEqual([new OrderCancelled(ORDER_REF, LATER)]);
     });
 
     it('asks nothing of the other services: nothing is under way', async () => {
@@ -152,7 +160,7 @@ describe('CancelOrderService', () => {
         cancelledAt: LATER,
         version: VERSION + 1,
       });
-      expect(events.published).toEqual([new OrderCancelled(WORKSPACE, ORDER, LATER)]);
+      expect(events.published).toEqual([new OrderCancelled(ORDER_REF, LATER)]);
       expect(orders.history).toMatchObject([
         {
           type: OrderEventType.OrderCancelled,

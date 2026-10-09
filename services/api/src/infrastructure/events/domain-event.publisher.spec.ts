@@ -44,7 +44,7 @@ function publisherWith(reliable = new ReliableEvents()) {
 describe('DomainEventPublisher', () => {
   it('OBX-001 writes a reliable event to the outbox at once, as its module translated it', async () => {
     const { publisher, reliable, appended, dispatched } = publisherWith();
-    reliable.register(Shipped, () => [ENTRY]);
+    reliable.register(Shipped, () => Promise.resolve([ENTRY]));
 
     await runInUnitOfWork(async () => {
       await publisher.publishAll([new Shipped()]);
