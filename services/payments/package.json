@@ -28,6 +28,7 @@
     "@oms/contracts": "workspace:*",
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
+    "cockatiel": "4.0.0",
     "nestjs-cls": "7.0.1",
     "pg": "8.23.0",
     "reflect-metadata": "0.2.2",

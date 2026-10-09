@@ -3,6 +3,12 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { gatewayConfig, type GatewayConfig } from '@config/configuration';
 
 import { PaymentGatewayError } from './payment-gateway.error';
+import {
+  createResilientCall,
+  parseRetryAfter,
+  type CallAttempt,
+  type ResilientCall,
+} from './resilient-call';
 
 import type { ChargeRequest, ChargeResult, PaymentGateway } from '../ports/payment-gateway.port';
 
@@ -21,62 +27,84 @@ const isPspChargeResponse = (body: unknown): body is PspChargeResponse =>
   (body.status === 'succeeded' || body.status === 'declined');
 
 /**
- * Talks to the PSP (devtools/fake-psp locally) over plain HTTP. One call, no retry here: a
- * call that fails and may pass is made again when the command is redelivered
- * (charge-payment.service.ts, docs/adr/0013). Backoff and a circuit breaker around the call
- * itself are ROADMAP 3.11.
+ * Talks to the PSP (devtools/fake-psp locally) over plain HTTP. An operation is one or a few
+ * calls: a call that fails and may pass is made again after a pause, and a provider that
+ * keeps failing is not called for a while (resilient-call.ts, docs/adr/0020). What is given
+ * up here is thrown as retryable and comes again with the command (charge-payment.service.ts,
+ * docs/adr/0013). The idempotency key is what makes a second call of a charge safe.
  */
 @Injectable()
 export class HttpPaymentGateway implements PaymentGateway {
   private readonly logger = new Logger(HttpPaymentGateway.name);
 
-  constructor(@Inject(gatewayConfig.KEY) private readonly config: GatewayConfig) {}
+  /** One for the provider: a charge and a void fail for the same reasons. */
+  private readonly calls: ResilientCall;
 
-  async charge(request: ChargeRequest): Promise<ChargeResult> {
-    const response = await this.post('charge', '/charges', {
-      headers: { 'idempotency-key': request.idempotencyKey },
-      body: {
-        amountMinor: Number(request.amount.amountMinor),
-        currency: request.amount.currency,
-        reference: request.reference,
-      },
+  constructor(@Inject(gatewayConfig.KEY) private readonly config: GatewayConfig) {
+    this.calls = createResilientCall(config, this.logger);
+  }
+
+  charge(request: ChargeRequest): Promise<ChargeResult> {
+    // the body is read inside the call: one that is cut off is a failure of that call
+    return this.calls.execute(async (attempt) => {
+      const response = await this.post('charge', '/charges', attempt, {
+        headers: { 'idempotency-key': request.idempotencyKey },
+        body: {
+          amountMinor: Number(request.amount.amountMinor),
+          currency: request.amount.currency,
+          reference: request.reference,
+        },
+      });
+
+      const body = await this.readBody(response);
+      if (!isPspChargeResponse(body)) {
+        throw new PaymentGatewayError('PSP returned an unexpected body', false);
+      }
+      return body.status === 'succeeded'
+        ? { status: 'succeeded', chargeId: body.id }
+        : { status: 'declined', chargeId: body.id, declineCode: body.declineCode ?? 'declined' };
     });
-
-    const body = await this.readBody(response);
-    if (!isPspChargeResponse(body)) {
-      throw new PaymentGatewayError('PSP returned an unexpected body', false);
-    }
-    return body.status === 'succeeded'
-      ? { status: 'succeeded', chargeId: body.id }
-      : { status: 'declined', chargeId: body.id, declineCode: body.declineCode ?? 'declined' };
   }
 
   async void(chargeId: string): Promise<void> {
-    const response = await this.post('void', `/charges/${encodeURIComponent(chargeId)}/void`);
-    // the status is the answer; the body is released, not read
-    void response.body?.cancel().catch(() => undefined);
+    await this.calls.execute(async (attempt) => {
+      const path = `/charges/${encodeURIComponent(chargeId)}/void`;
+      const response = await this.post('void', path, attempt);
+      // the status is the answer; the body is released, not read
+      void response.body?.cancel().catch(() => undefined);
+    });
   }
 
   /** One POST to the PSP; resolves with a 2xx response, throws a `PaymentGatewayError` else. */
   private async post(
     operation: string,
     path: string,
+    attempt: CallAttempt,
     { headers = {}, body = {} }: { headers?: Record<string, string>; body?: unknown } = {},
   ): Promise<Response> {
     const startedAt = performance.now();
-    const response = await this.send(path, headers, body);
-    const durationMs = Math.round(performance.now() - startedAt);
-    this.logger.log(`psp ${operation} status=${response.status} durationMs=${durationMs}`);
+    const elapsed = () => String(Math.round(performance.now() - startedAt));
+    const call = `psp ${operation} call=${String(attempt.number)}`;
+    let response: Response;
+    try {
+      response = await this.send(path, headers, body, attempt.signal);
+    } catch (err: unknown) {
+      this.logger.warn(`${call} status=none durationMs=${elapsed()}`);
+      throw err;
+    }
+    this.logger.log(`${call} status=${String(response.status)} durationMs=${elapsed()}`);
 
     // 5xx and 429 are transient; any other non-2xx means our request is wrong. The body is
     // not read there: release it, or the connection stays taken until garbage collection.
     // Not awaited: the error must not wait on the stream.
     if (!response.ok) void response.body?.cancel().catch(() => undefined);
     if (response.status >= 500 || response.status === 429) {
-      throw new PaymentGatewayError(`PSP responded ${response.status}`, true);
+      throw new PaymentGatewayError(`PSP responded ${String(response.status)}`, true, {
+        retryAfterMs: parseRetryAfter(response.headers.get('retry-after'), new Date()),
+      });
     }
     if (!response.ok) {
-      throw new PaymentGatewayError(`PSP rejected the request (${response.status})`, false);
+      throw new PaymentGatewayError(`PSP rejected the request (${String(response.status)})`, false);
     }
     return response;
   }
@@ -85,13 +113,14 @@ export class HttpPaymentGateway implements PaymentGateway {
     path: string,
     headers: Record<string, string>,
     body: unknown,
+    signal: AbortSignal,
   ): Promise<Response> {
     try {
       return await fetch(new URL(path, this.config.pspBaseUrl), {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...headers },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.config.pspTimeoutMs),
+        signal,
       });
     } catch (err: unknown) {
       // timeout (AbortSignal) or network failure: both transient

@@ -54,7 +54,39 @@ export const envSchema = z.object({
 
   PAYMENT_GATEWAY: z.enum(['http', 'fake']).default('fake'),
   PSP_BASE_URL: z.url().default('http://localhost:4010'),
-  PSP_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
+  /** How long one call to the provider may take, its body included. */
+  PSP_TIMEOUT_MS: z.coerce.number().int().positive().default(2000),
+  /**
+   * How long a charge or a void may take in all, with its retries and the pauses between
+   * them (a pause that has begun is finished: at most PSP_RETRY_MAX_DELAY_MS more). The
+   * command holds its place in the consumer for that long, and the api waits:
+   * PAYMENTS_COMMANDS_MAX_ATTEMPTS × this + the delays between the deliveries must stay
+   * below ORDER_SAGA_CHARGE_TIMEOUT_MS of the api (docs/adr/0020).
+   */
+  PSP_CALL_BUDGET_MS: z.coerce.number().int().positive().default(7000),
+  /**
+   * Calls made again within one delivery after a failure that may pass (5xx, 429, network,
+   * timeout); 0: one call per delivery. For a provider that hiccups: one that is down is
+   * the business of the breaker and of the next delivery.
+   */
+  PSP_MAX_RETRIES: z.coerce.number().int().min(0).max(5).default(2),
+  /** The pause before the first retry; it grows from there, with jitter. */
+  PSP_RETRY_INITIAL_DELAY_MS: z.coerce.number().int().min(1).default(200),
+  /**
+   * The longest pause between two calls. A provider that asks for more (`Retry-After`) is
+   * not waited for in the process: the command comes again.
+   */
+  PSP_RETRY_MAX_DELAY_MS: z.coerce.number().int().min(1).default(2000),
+  /**
+   * The circuit breaker: with more than this share of the calls of the last
+   * PSP_BREAKER_WINDOW_MS failed, the provider is not called for PSP_BREAKER_HALF_OPEN_MS;
+   * then one call is let through, and it decides.
+   */
+  PSP_BREAKER_THRESHOLD: z.coerce.number().gt(0).lt(1).default(0.5),
+  PSP_BREAKER_WINDOW_MS: z.coerce.number().int().min(1000).default(10_000),
+  /** Fewer calls than this in the window say nothing: two failures of two are not an outage. */
+  PSP_BREAKER_MIN_CALLS: z.coerce.number().int().min(1).default(5),
+  PSP_BREAKER_HALF_OPEN_MS: z.coerce.number().int().min(1).default(10_000),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -72,6 +104,15 @@ export function validateEnv(raw: Record<string, unknown>): Env {
   // money moved, and the api would mark the order PAID.
   if (env.NODE_ENV === 'production' && env.PAYMENT_GATEWAY === 'fake') {
     throw new Error('Invalid environment: PAYMENT_GATEWAY=fake is not allowed in production');
+  }
+  // a budget below one call would cut every call short and name it a timeout of the provider
+  if (env.PSP_CALL_BUDGET_MS < env.PSP_TIMEOUT_MS) {
+    throw new Error('Invalid environment: PSP_CALL_BUDGET_MS must not be below PSP_TIMEOUT_MS');
+  }
+  if (env.PSP_RETRY_MAX_DELAY_MS < env.PSP_RETRY_INITIAL_DELAY_MS) {
+    throw new Error(
+      'Invalid environment: PSP_RETRY_MAX_DELAY_MS must not be below PSP_RETRY_INITIAL_DELAY_MS',
+    );
   }
   return env;
 }

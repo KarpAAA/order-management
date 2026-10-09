@@ -58,6 +58,14 @@ export const gatewayConfig = registerAs('gateway', () => ({
   gateway: env().PAYMENT_GATEWAY,
   pspBaseUrl: env().PSP_BASE_URL,
   pspTimeoutMs: env().PSP_TIMEOUT_MS,
+  pspCallBudgetMs: env().PSP_CALL_BUDGET_MS,
+  pspMaxRetries: env().PSP_MAX_RETRIES,
+  pspRetryInitialDelayMs: env().PSP_RETRY_INITIAL_DELAY_MS,
+  pspRetryMaxDelayMs: env().PSP_RETRY_MAX_DELAY_MS,
+  pspBreakerThreshold: env().PSP_BREAKER_THRESHOLD,
+  pspBreakerWindowMs: env().PSP_BREAKER_WINDOW_MS,
+  pspBreakerMinCalls: env().PSP_BREAKER_MIN_CALLS,
+  pspBreakerHalfOpenMs: env().PSP_BREAKER_HALF_OPEN_MS,
 }));
 export type GatewayConfig = ConfigType<typeof gatewayConfig>;
 

@@ -144,9 +144,11 @@ export class ChargePaymentService {
   }
 
   /**
-   * One call to the provider (ROADMAP 3.11 retries the call itself). A failure that may pass
-   * is thrown while a delivery is left; on the last one it is the outcome, `psp_unavailable`:
-   * `payment-failed` is final for the attempt, and the api waits for an answer.
+   * One charge at the provider: the gateway makes the call again within its time budget, and
+   * does not make it at all while the provider is known to be down (docs/adr/0020). What it
+   * gives up as a failure that may pass is thrown while a delivery is left; on the last one
+   * it is the outcome, `psp_unavailable`: `payment-failed` is final for the attempt, and the
+   * api waits for an answer.
    */
   private async charge(payment: PaymentRow, cmd: ChargePaymentCommand): Promise<ChargeOutcome> {
     if (cmd.expiresAt !== null && this.clock.now() >= cmd.expiresAt) {

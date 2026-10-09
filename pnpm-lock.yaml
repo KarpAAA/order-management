@@ -509,6 +509,9 @@ importers:
       '@prisma/client':
         specifier: 7.10.0
         version: 7.10.0(prisma@7.10.0(@types/node@24.19.0)(@types/react@19.3.0)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3))(typescript@6.0.3)
+      cockatiel:
+        specifier: 4.0.0
+        version: 4.0.0
       nestjs-cls:
         specifier: 7.0.1
         version: 7.0.1(@nestjs/common@12.1.0(class-transformer@0.5.1)(class-validator@0.15.1)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@12.1.0)(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -2804,6 +2807,10 @@ packages:
   cluster-key-slot@1.1.1:
     resolution: {integrity: sha512-rwHwUfXL40Chm1r08yrhU3qpUvdVlgkKNeyeGPOxnW8/SyVDvgRaed/Uz54AqWNaTCAThlj6QAs3TZcKI0xDEw==}
     engines: {node: '>=0.10.0'}
+
+  cockatiel@4.0.0:
+    resolution: {integrity: sha512-XpUZJnogsd03BGB19T9sv7Xb8SwvD8JddZV2Tlp0LNspopZ6Idv24ZwCl8vAGJ6JwODZ0zLRYVj3NWvmRcUDqA==}
+    engines: {node: '>=22'}
 
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
@@ -7734,6 +7741,8 @@ snapshots:
       wrap-ansi: 9.0.2
 
   cluster-key-slot@1.1.1: {}
+
+  cockatiel@4.0.0: {}
 
   color-convert@2.0.1:
     dependencies:

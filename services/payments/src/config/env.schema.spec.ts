@@ -18,8 +18,43 @@ describe('validateEnv: safe defaults (ops/config-env.md §1)', () => {
     expect(validateEnv(minimal).PAYMENT_GATEWAY).toBe('fake');
   });
 
-  it('gives the provider 3 s to answer by default', () => {
-    expect(validateEnv(minimal).PSP_TIMEOUT_MS).toBe(3000);
+  it('gives the provider 2 s for a call and 7 s for an operation with its retries', () => {
+    const env = validateEnv(minimal);
+    expect(env.PSP_TIMEOUT_MS).toBe(2000);
+    expect(env.PSP_CALL_BUDGET_MS).toBe(7000);
+    expect(env.PSP_MAX_RETRIES).toBe(2);
+    // every delivery with its budget and the waits in between, below the 150 s the api waits
+    const worstCase =
+      env.PAYMENTS_COMMANDS_MAX_ATTEMPTS * (env.PSP_CALL_BUDGET_MS + env.PSP_RETRY_MAX_DELAY_MS) +
+      (env.PAYMENTS_COMMANDS_MAX_ATTEMPTS - 1) * env.RABBITMQ_RETRY_DELAY_MS;
+    expect(worstCase).toBeLessThan(150_000);
+  });
+
+  it('refuses a budget below one call, and a longest pause below the first', () => {
+    expect(() =>
+      validateEnv({ ...minimal, PSP_TIMEOUT_MS: '3000', PSP_CALL_BUDGET_MS: '2000' }),
+    ).toThrow(/PSP_CALL_BUDGET_MS/);
+    expect(() =>
+      validateEnv({ ...minimal, PSP_RETRY_INITIAL_DELAY_MS: '500', PSP_RETRY_MAX_DELAY_MS: '100' }),
+    ).toThrow(/PSP_RETRY_MAX_DELAY_MS/);
+  });
+
+  it('opens the breaker above half of at least 5 calls in 10 s, for 10 s', () => {
+    const env = validateEnv(minimal);
+    expect(env.PSP_BREAKER_THRESHOLD).toBe(0.5);
+    expect(env.PSP_BREAKER_MIN_CALLS).toBe(5);
+    expect(env.PSP_BREAKER_WINDOW_MS).toBe(10_000);
+    expect(env.PSP_BREAKER_HALF_OPEN_MS).toBe(10_000);
+    // a share: neither "never" nor "at the first failure"
+    for (const threshold of ['0', '1']) {
+      expect(() => validateEnv({ ...minimal, PSP_BREAKER_THRESHOLD: threshold })).toThrow(
+        /PSP_BREAKER_THRESHOLD/,
+      );
+    }
+  });
+
+  it('allows one call per delivery: no retry in the process', () => {
+    expect(validateEnv({ ...minimal, PSP_MAX_RETRIES: '0' }).PSP_MAX_RETRIES).toBe(0);
   });
 
   it('works on 10 commands at a time by default and refuses none', () => {

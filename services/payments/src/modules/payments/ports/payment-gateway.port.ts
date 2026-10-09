@@ -17,6 +17,8 @@ export type ChargeResult =
 /**
  * The payment provider, in domain terms. A decline is a result, not an error; transport
  * failures throw `PaymentGatewayError` (an `InfrastructureError` with `retryable`).
+ * How often the provider is really called for one operation is the adapter's business:
+ * a retryable failure means "not now", and the caller comes back with the same request.
  */
 export interface PaymentGateway {
   charge(request: ChargeRequest): Promise<ChargeResult>;
