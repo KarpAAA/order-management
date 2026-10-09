@@ -35,6 +35,7 @@
     "db:explain:replica": "pnpm --filter @oms/api exec tsx prisma/explain/replica.ts",
     "db:explain:cache": "pnpm --filter @oms/api exec tsx prisma/explain/cache.ts",
     "db:explain:stock": "pnpm --filter @oms/inventory db:explain:stock",
+    "db:explain:resilience": "pnpm --filter @oms/payments db:explain:resilience",
     "db:reset": "pnpm --filter @oms/api db:reset",
     "infra:up": "docker compose up -d --wait",
     "infra:down": "docker compose down"

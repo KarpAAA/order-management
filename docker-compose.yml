@@ -181,6 +181,7 @@ services:
       PORT: 4010
       FAKE_PSP_LATENCY_MS: 200
       FAKE_PSP_FAILURE_RATE: 0
+      FAKE_PSP_THROTTLE_RATE: 0
       FAKE_PSP_DECLINE_RATE: 0
     ports:
       - '4010:4010'

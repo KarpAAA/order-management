@@ -2,8 +2,8 @@
 // Project additions:
 //  1. The Prisma-generated client, prisma/ and root tool files are outside the layer map.
 //  2. Test infrastructure (test/doubles, test/helpers) may import module internals: a double
-//     implements a port, the worker app overrides PAYMENT_GATEWAY. test/setup/global.ts
-//     default-exports.
+//     implements a port, the worker app overrides PAYMENT_GATEWAY. So may prisma/explain:
+//     a script there measures an adapter as it is. test/setup/global.ts default-exports.
 //  3. @oms/contracts (packages/contracts) is an element of its own: only what talks to the
 //     broker may import it: infrastructure/, a module's adapters and its consumers.
 //  4. @RabbitSubscribe is an entry decorator like @Processor: only in a *.consumer.ts.
@@ -337,7 +337,7 @@ export default tseslint.config(
 
   // project: addition 2
   {
-    files: ['test/doubles/**', 'test/helpers/**'],
+    files: ['test/doubles/**', 'test/helpers/**', 'prisma/explain/**'],
     rules: { 'no-restricted-imports': 'off' },
   },
   {

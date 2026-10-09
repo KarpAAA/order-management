@@ -17,7 +17,8 @@
     "test:e2e": "vitest run --project e2e --passWithNoTests",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:deploy": "prisma migrate deploy"
+    "db:deploy": "prisma migrate deploy",
+    "db:explain:resilience": "tsx prisma/explain/resilience.ts"
   },
   "dependencies": {
     "@golevelup/nestjs-rabbitmq": "9.1.0",
@@ -54,6 +55,7 @@
     "msw": "2.15.0",
     "prisma": "7.10.0",
     "testcontainers": "12.1.0",
+    "tsx": "4.23.15",
     "typescript": "6.0.3",
     "typescript-eslint": "8.70.1",
     "unplugin-swc": "2.0.0",
