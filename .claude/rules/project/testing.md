@@ -37,4 +37,8 @@ paths:
   recording stand-in for `AmqpConnection`: what it sends must pass `parseMessage()`. The broker
   itself is exercised by the e2e suite of each service, which stops at the service boundary:
   the test is the other side of the broker (`test/helpers/broker.ts`), with a RabbitMQ vhost
-  per test file. The path through both services is ROADMAP 3.13.
+  per test file.
+- The path through all four services is a suite of its own, outside `services/`:
+  `devtools/system` (`pnpm test:system`, ADR 0022). Four scenarios on the stack of
+  `docker-compose.system.yml`, through the HTTP API, `fake-psp` and Mailpit. A rule of this
+  service is never tested there: it gets a test here, where the test is the other side.

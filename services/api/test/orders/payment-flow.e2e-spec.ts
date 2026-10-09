@@ -4,7 +4,7 @@
 // RabbitMQ; `payments.payment-succeeded` / `-failed` comes back → PaymentEventsConsumer in the
 // WORKER app → PAID / PAYMENT_FAILED. The outbox itself: test/outbox/.
 // payments-service is not here: the test is the other side of the broker (helpers/broker.ts),
-// and that service has the same kind of suite of its own. The full path is ROADMAP 3.13.
+// and that service has the same kind of suite of its own. The full path is devtools/system (ADR 0022).
 // The API answers 202 before any of that, so the test does what a client does: polls
 // GET /orders/{id}. Every assertion is on an outcome (message, row, history), never on "a
 // method was called".

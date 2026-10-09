@@ -2,7 +2,7 @@
 // the api. It reads the commands the api sends to the `commands` exchange through a queue of
 // its own, and publishes the events those services would answer with to the `events`
 // exchange. It also subscribes to the events the api publishes about its orders (`orders.*`).
-// Neither service is in this suite: the full path is ROADMAP 3.13.
+// Neither service is in this suite: the full path is devtools/system (docs/adr/0022).
 import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 import {
   CancelPaymentV1,

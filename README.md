@@ -343,7 +343,8 @@ curl http://localhost:4010/admin/stats
   that second and calls again.
 - `latencyMs` above 2000: the 2 s timeout of a call fires → handled like a failure, and an
   operation ends after 7 s whatever its calls are doing.
-- `GET /admin/stats`: the calls the provider got since the last `POST /admin/reset`, by status.
+- `GET /admin/stats`: the calls the provider got since the last `POST /admin/reset`, by status,
+  and `inFlight`: the calls it has taken and not answered yet.
 - The same `Idempotency-Key` always returns the same response.
 
 Set `PAYMENT_GATEWAY=fake` in `services/payments/.env` to skip fake-psp entirely (in-process,
@@ -382,6 +383,27 @@ after a run for `docker compose -p oms-contract logs api`.
 Config: `devtools/contract/schemathesis.toml`. It logs in as `owner@acme.test` by itself,
 pins `workspaceId` to acme (a random one is a non-member → 404 at the guard) and draws
 `orderId` / `productId` mostly from the seeded ids. Every failure prints a `curl` to reproduce it.
+
+## System tests
+
+```cmd
+pnpm test:system       & rem fresh stack in project oms-system, both seeds, four scenarios
+pnpm system:down       & rem remove the project and its volumes (after SYSTEM_KEEP_STACK=1)
+```
+
+All four services from their images (`docker-compose.system.yml`: the `app` profile, plus the
+two seeds), and an order sent through them four times: paid; declined and placed again; out
+of stock; cancelled while its charge is under way. The test (`devtools/system`) runs on the
+host and knows what a client and an operator know: the HTTP API (port 3100), what the
+provider was asked to charge (4110) and the mailbox of the user (8125). It stands next to the
+dev stack and never touches dev data.
+
+A run removes the volumes, builds the images, waits until every queue has its consumer and
+removes the stack again: about two minutes with the images built, of which twenty seconds
+are the scenarios (`docs/perf/3.13-system-tests.md`). The logs of every container are in
+`devtools/system/reports/stack.log` afterwards. `set SYSTEM_KEEP_STACK=1` leaves the stack up
+to look at; the next run starts from nothing all the same, the scenarios spend the seeded
+stock. Why four scenarios and not the suite of every service again: ADR 0022.
 
 ## Mutation testing (Stryker)
 
@@ -430,11 +452,12 @@ gate (a hook can be skipped, CI cannot).
 | `git commit`                     | Conventional Commits (`commitlint.config.mjs`), no `Co-Authored-By` / `Claude-Session` | `.husky/commit-msg`              |
 | `git push`                       | `pnpm typecheck && pnpm test`                                                          | `.husky/pre-push`                |
 | every PR, every push to `main`   | static (format, lint, typecheck) → unit → e2e + migrations; audit; commits (PR)        | `.github/workflows/ci.yml`       |
-| push to `main`, nightly, by hand | Stryker (incremental, report artifact), Schemathesis                                   | `.github/workflows/nightly.yml`  |
+| push to `main`, nightly, by hand | Stryker (incremental, report artifact), Schemathesis, system tests (logs artifact)     | `.github/workflows/nightly.yml`  |
 | weekly                           | dependency PRs, each through the full CI                                               | `.github/dependabot.yml`         |
 
 Hooks install with `pnpm install` (`prepare`). By hand only: e2e and migration checks before
 pushing a change to repositories or `schema.prisma`, `pnpm test:contract` while fixing DTOs,
+`pnpm test:system` after a change to a compose file, a Dockerfile or the topology of the broker,
 Stryker on one file (`pnpm --filter @oms/api exec stryker run --mutate <file>`).
 
 **Stock** (`pnpm db:seed:inventory`, the database of inventory): 100 units on hand of every
@@ -465,5 +488,6 @@ services/notifications/ NestJS service: src/entrypoints/main.worker.ts, its own 
 packages/contracts/  message contracts between services: versioned zod schemas, exchange
                      names (ADR 0011, ADR 0012); released/ and the map of parties (ADR 0021)
 devtools/fake-psp/   external PSP simulator (not part of the system)
+devtools/system/     system tests: the stack of docker-compose.system.yml through its HTTP API (ADR 0022)
 docs/                architecture, requirements, ADRs, conventions backlog, requests.http
 ```

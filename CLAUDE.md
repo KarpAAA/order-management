@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.12 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 3: microservices and brokers**, 3.13 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Four services: `services/api` (this file), `services/payments`, `services/inventory` and
 `services/notifications` (their own decisions: `services/payments/CLAUDE.md`,
 `services/inventory/CLAUDE.md`, `services/notifications/CLAUDE.md`). They share
@@ -54,7 +54,7 @@ metrics-endpoint: none          # Step 4
 tracker: none
 merge: merge-commit
 testing: vitest                 # projects unit + e2e; test levels per requirement in docs/requirements.md
-ci: github-actions              # PR + main: static, unit, e2e, migrations, contracts, audit; PR: commits; main + nightly: mutation, contract
+ci: github-actions              # PR + main: static, unit, e2e, migrations, contracts, audit; PR: commits; main + nightly: mutation, contract, system
 hooks: husky                    # pre-commit: lint-staged; commit-msg: commitlint + no AI trailers; pre-push: typecheck + unit
 ```
 
@@ -92,6 +92,7 @@ pnpm contracts:freeze  # release the contracts: schema + sample of a new version
 pnpm contracts:check   # released/ against the merge base with CONTRACTS_BASE_REF (main): nothing deleted, no sample changed, schemas compatible
 pnpm test:e2e          # Vitest project e2e of api, then of inventory, notifications and payments: *.int-spec.ts + *.e2e-spec.ts (Testcontainers), each service to its boundary
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
+pnpm test:system       # the four services from their images in compose project oms-system, four scenarios through the HTTP API (devtools/system; SYSTEM_KEEP_STACK=1 leaves it up, pnpm system:down removes it)
 pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
 pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
 docker compose --profile app up --build   # migrate + api + worker from one image; payments, inventory and notifications each from its own, with its migrate step
@@ -373,6 +374,26 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
     uses the unscoped `PrismaService`;
   - `api.http()` in the e2e suite sends a fresh key with every request; a test about the
     key sets or unsets the header.
+- **The system as a whole is tested by four scenarios, not by a fifth suite of rules**
+  (ADR 0022; `devtools/system`, `docker-compose.system.yml`, `pnpm test:system`). All four
+  services from their images, and a test that knows what a client and an operator know: the
+  HTTP API, `fake-psp` and Mailpit. Consequences:
+  - a new way for an order to end, or a new service on its path, is a scenario there; a rule
+    of one service is a test of that service, where the test plays the other side;
+  - `devtools/system` imports nothing from `services/*` or `@oms/contracts`, and reads no
+    database and no queue. What it cannot see through its three windows is a finding;
+  - it waits with `eventually()` only, and for the history of the order (`STOCK_RELEASED`)
+    where the order of two commands matters. Never a sleep;
+  - a new queue with a consumer is a line in `CONSUMED_QUEUES` (`test/setup/global.ts`): the
+    run starts when every queue has its consumer, and an event published before that is lost;
+  - one file, serial, on a stack built from nothing: the scenarios spend the seeded stock
+    and share the provider. A scenario gives the settings of `fake-psp` back, and none uses
+    `failureRate` (it would open the circuit of payments for the next ones);
+  - the stack differs from the `app` profile in one setting: `PSP_TIMEOUT_MS` /
+    `PSP_CALL_BUDGET_MS` of payments, so that a charge can be under way long enough to be
+    cancelled;
+  - a change to a compose file, a Dockerfile, a migration step or the topology of the broker
+    is what this suite is for: run it by hand, CI runs it on `main` and nightly only.
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
   Tenant models (Membership, Product, Order, OrderItem, OrderEvent, OrderSaga) are filtered by the
   workspace in CLS; a query without a tenant throws. Never inject `PrismaService` for tenant
@@ -469,6 +490,8 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
   vitest runner is patched for Vitest 5. Details: `.claude/rules/project/testing.md`.
 - `pnpm audit` exceptions live in `package.json` → `pnpm.auditConfig`, the reason next to the
   `overrides` in `pnpm-workspace.yaml` (JSON has no comments).
+- `devtools/system` is a level of tests the conventions do not have (`quality/testing.md`
+  ends at e2e with fake vendors, one service): `docs/conventions-backlog.md` §22.
 - A message between services has no integration event class in `<module>/events/`
   (`events.md` §1): its contract is the schema in `@oms/contracts`. Domain events stay classes.
   Why, and what to change in the conventions: `docs/conventions-backlog.md` §1–3.

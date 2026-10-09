@@ -27,10 +27,14 @@ with one or two representative cases, not the whole matrix again.
 
 Since 3.2 a level prefixed with `payments` is a test of `services/payments` (the same two
 Vitest projects there); every other level is a test of `services/api`. Each service is tested
-to its boundary: the test is the other side of the broker. The path through both is roadmap
-3.13. Since 3.6 the same holds for `inventory` and `services/inventory`. Since 3.10 for
+to its boundary: the test is the other side of the broker. Since 3.6 the same holds for `inventory` and `services/inventory`. Since 3.10 for
 `notifications` and `services/notifications` too: there the test publishes the events of the
 api and reads what the mail server took.
+
+Since 3.13 the path through all four services is run as well, by `devtools/system`
+(`pnpm test:system`, ADR 0022): four scenarios on the stack built from the images. It is not
+a level of this table: no requirement is tested there in full. It shows that the services,
+each proven by its own rows, are put together: SYS-001…004 at the end of this file.
 
 Distribution as counted in Step 1, before the PAY rows were split between the two services
 (106 requirements; one with two levels counts in both):
@@ -459,3 +463,19 @@ second service: the level `contracts unit` is the Vitest run of `packages/contra
 | CTR-020 | The queues of a service are bound to exactly the contracts the map says it reads, on the exchange the map names. An exchange that belongs to the service alone is not counted.                                                           | `<service> unit`            |
 | CTR-021 | A consumer handles the released message of every contract it reads: it does not refuse it, and calls one use case.                                                                                                                       | `<service> unit`            |
 | CTR-030 | A service writes, through its real adapters, exactly the contracts the map says it writes; each is accepted by `parseMessage()` after JSON and addressed to the exchange the map names.                                                  | `<service> unit`            |
+
+## SYS: the system as a whole (Step 3.13)
+
+The four services from their images, in the compose project `oms-system`, with their
+default configuration (`docker-compose.system.yml`, `docs/adr/0022-system-tests.md`). A
+scenario acts through the HTTP API and sees what a client and an operator see: the order,
+the charges at the payment provider, the mails of the user. Each rule named here is tested
+in full by the service it belongs to; these rows say that the services reach each other.
+Level `system`: `devtools/system/test/order-lifecycle.system-spec.ts`, `pnpm test:system`.
+
+| ID      | Requirement                                                                                                                                                                                                                                              | Level    |
+| ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| SYS-001 | A placed order whose products are in stock becomes `PAID`: the provider holds one charge of the total of the order under the key `<orderId>:1`, the order carries its id, and the user gets the mails "received" and "paid".                             | `system` |
+| SYS-002 | An order whose charge is declined becomes `PAYMENT_FAILED` with the code of the provider, and its stock is given back: placed again, the same order gets the last unit of its product and becomes `PAID` under the key `<orderId>:2`. Four mails in all. | `system` |
+| SYS-003 | An order with a product that is not in stock goes back to `DRAFT` with `out_of_stock`: the provider is never asked, and the user gets the mails "received" and "could not be placed".                                                                    | `system` |
+| SYS-004 | An order cancelled while the provider is making its charge is answered 202 and becomes `CANCELLED`: the charge is taken back at the provider, the stock is released, and the user gets the mails "received" and "cancelled".                             | `system` |

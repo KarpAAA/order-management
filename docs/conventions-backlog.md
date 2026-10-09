@@ -1032,3 +1032,57 @@ consumer and builds every message it writes through its adapter; SHOULD keep who
 who reads in one map and check the bindings of the queues against it. `application/events.md`:
 say that a version is frozen by its release, and that a new version is deployed readers
 first. `quality/git-pr.md` §5: the check against the base branch beside the migrations guard.
+
+## 22. The test levels end at one service: nothing runs the services together
+
+Step 3.13 · 2026-10-09 · Status: open
+
+**Conventions say:** `quality/testing.md` has four levels, and the highest is e2e: "does the
+system do it end to end?", Supertest + Testcontainers, real Postgres/Redis, **fake vendors**,
+files in `test/`, parallel by file, a database per file. "The system" there is one
+application.
+
+**What we did:** with four services that level became the test of one of them, with the
+test as the other side of the broker. Above it we added a suite outside every service
+(`devtools/system`, its own package, no dependency on a service or on the contracts): the
+compose project of the `app` profile built from the images, and four scenarios, one per way
+an order ends, through the HTTP API. It reads the outside only: the API, the fake provider,
+the mail server. Serial, one file, a stack from nothing per run, `eventually()` as the only
+wait; on `main` and nightly, not on a pull request.
+
+**Why:** every suite of a service was green with the system unable to start: the compose
+file, the Dockerfiles, the migration steps, the queue one service declares and the key
+another publishes with are run by no test of one service. And the answers a test gives for
+the neighbour are what the author believes the neighbour says.
+
+**Assessment:** good as a small suite, bad as a big one, and the conventions should say both.
+Four scenarios take 20 s on a stack that takes one to two minutes to start (nine with cold
+images); a scenario cannot put the system into a chosen state (no duplicate, no late answer,
+no held step), a failure names no service, and the state is shared, so nothing runs in
+parallel. What made it workable: waiting on the history of the order instead of on time,
+and one honest hook in the fake vendor (`inFlight`) instead of a sleep. The readiness of the
+stack had to be asked of the broker: the services have no health endpoint.
+
+**Example:**
+
+```ts
+// devtools/system: a compensation proven by behaviour, through the API alone
+await psp.configure({ declineRate: 1 });
+await member.place(orderId); // the last unit of its product
+expect((await member.untilSettled(orderId, 1)).status).toBe('PAYMENT_FAILED');
+await member.untilRecorded(orderId, 'STOCK_RELEASED');
+
+await psp.configure({ declineRate: 0 });
+await member.place(orderId);
+expect((await member.untilSettled(orderId, 2)).status).toBe('PAID'); // the unit came back
+```
+
+**Proposed change:** `quality/testing.md` §1: for a project with more than one service, name
+the levels by their boundary: e2e = one service to its boundary (the test is the other side
+of every broker and vendor), system = the deployed stack through its public entries. Add a
+section "System tests": MUST live outside every service and import none of them; MUST read
+the outside only (API, fake vendors, mail), never a database or a queue; MUST be few (one
+per end-to-end outcome, never a rule of one service); MUST wait by polling with a deadline,
+never by sleeping; MUST save the logs of the stack on every run; SHOULD run on the main
+branch and nightly. `ops/observability.md`: a health endpoint per process is what "the stack
+is ready" should be asked of.
