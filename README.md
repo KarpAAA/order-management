@@ -5,11 +5,11 @@ users with roles, a product catalog, orders with an asynchronous payment flow) t
 area at a time: testing, database scaling, microservices and brokers, observability,
 Kubernetes, load and chaos testing, AI.
 
-**Current state: Step 3, microservices and brokers (3.6).** Three NestJS services that talk
+**Current state: Step 3, microservices and brokers (3.10).** Four NestJS services that talk
 through **RabbitMQ**: `services/api` (an HTTP **api** and a **worker**, two processes from one
-image), `services/payments` and `services/inventory` (one broker consumer each, with its own
-image and database; the api does not use inventory yet, that is 3.7). A tiny
-**fake-psp** (`devtools/fake-psp`) plays an external payment provider.
+image), `services/payments`, `services/inventory` and `services/notifications` (one broker
+consumer each, with its own image and database). A tiny **fake-psp** (`devtools/fake-psp`)
+plays an external payment provider, and **Mailpit** a mail server.
 
 ## Architecture in one minute
 
@@ -53,18 +53,19 @@ pnpm install
 copy services\api\.env.example services\api\.env
 copy services\payments\.env.example services\payments\.env
 copy services\inventory\.env.example services\inventory\.env
+copy services\notifications\.env.example services\notifications\.env
 pnpm infra:up
 pnpm db:migrate
 pnpm db:migrate:payments
 pnpm db:migrate:inventory
+pnpm db:migrate:notifications
 pnpm db:seed
 pnpm db:seed:inventory
 pnpm dev
 ```
 
-- `pnpm infra:up`: Postgres, its read replica, PgBouncer, the Postgres of payments and of
-  inventory, Redis,
-  RabbitMQ and fake-psp, waits until healthy. The replica's first start copies the whole primary.
+- `pnpm infra:up`: Postgres, its read replica, PgBouncer, the Postgres of payments, of
+  inventory and of notifications, Redis, RabbitMQ, Mailpit and fake-psp, waits until healthy. The replica's first start copies the whole primary.
 - Two database roles (ADR 0006): `pnpm db:*` connect as the owner `oms`
   (`DATABASE_ADMIN_URL`); api and worker connect as `oms_app` (`DATABASE_URL`), which sees only
   the rows of the current workspace (Row-Level Security). A fresh Postgres volume gets the
@@ -142,6 +143,24 @@ pnpm dev
   Stock itself still arrives by a command nobody sends: publish `inventory.adjust-stock` from
   the management UI (exchange `commands`, routing key = the `name` of the message, payload as
   in `packages/contracts/src/inventory/`) and watch `stock_items`.
+- notifications-service has its own Postgres on port 5436 (ADR 0019), with the roles
+  `notifications` (owner) and `notifications_app`. It writes to the user who created an order
+  when something happens to it, and the mails end in **Mailpit**: http://localhost:8025.
+  Things to try:
+  - place an order as `member@acme.test`: "We received your order", then "Your order is paid".
+    Cancel one as the admin: the mail still goes to the member, who created it;
+  - `curl -X POST http://localhost:4010/admin/config -H "content-type: application/json" -d "{\"declineRate\":1}"`
+    and place again: "The payment for your order did not go through". An order for more than
+    the stock holds: "Your order could not be placed";
+  - `docker compose stop mailpit`, place an order, and watch its row in `notifications`
+    (database `notifications`): `PENDING`, `send_attempts` grows, `last_error` says why.
+    `docker compose start mailpit` before the fifth try and the mail arrives; after it the
+    row is `FAILED` and stays so;
+  - stop notifications, place a few orders, start it: the events waited in
+    `notifications.order-events`, and every mail arrives once;
+  - what the inbox is for (3.5): in the RabbitMQ management UI take a message of
+    `notifications.order-events` with "Get messages" and requeue, or publish the same JSON
+    twice to the exchange `events`. One mail. `SELECT * FROM inbox` has one row for its id.
 - Placing an order is a saga (ADR 0017): the api reserves the stock, then asks for the
   charge, and undoes what was done when a step fails. `GET …/orders/{id}/events` tells the
   steps; `SELECT step, deadline_at FROM order_sagas` (database `oms`) says where a saga
@@ -168,17 +187,16 @@ pnpm dev
     `ORDER_SAGA_*_TIMEOUT_MS` to a few seconds to watch them go off.
 - `pnpm db:explain:stock`: the last unit and 50 buyers under four locking strategies
   (`docs/perf/3.6-stock-locking.md`).
-- `pnpm dev`: the contracts in watch mode, then api, worker, payments and inventory, side by
-  side.
+- `pnpm dev`: the contracts in watch mode, then api, worker, payments, inventory and
+  notifications, side by side.
 - `POST …/orders` and `POST …/orders/{id}/place` need an `Idempotency-Key` header, a uuid of
   the client's choosing (ADR 0018). Send the same request twice with the same key: one order,
   the same answer. Another body with that key: 422. `SELECT scope, status_code, response FROM
 idempotency_keys` (database `oms`) shows what is remembered, for `IDEMPOTENCY_RETENTION_HOURS`.
 - Then open `docs/requests.http` in WebStorm and run it top to bottom.
 
-Everything in containers instead (api and worker from **one** image, payments and inventory
-each from its own,
-migrations as a one-shot step before each):
+Everything in containers instead (api and worker from **one** image, payments, inventory and
+notifications each from its own, migrations as a one-shot step before each):
 
 ```cmd
 docker compose --profile app up --build
@@ -196,6 +214,7 @@ Other scripts: `pnpm build`, `pnpm lint`, `pnpm format`, `pnpm typecheck`, `pnpm
 | OpenAPI JSON                  | http://localhost:3000/docs-json                                                                              |
 | bull-board (queues, dev only) | http://localhost:3000/admin/queues                                                                           |
 | RabbitMQ management           | http://localhost:15672 (guest / guest)                                                                       |
+| Mailpit (the mails sent)      | http://localhost:8025                                                                                        |
 | fake-psp                      | http://localhost:4010 (`GET /charges`, `POST /charges/{id}/void`, `POST /admin/config`, `POST /admin/reset`) |
 | PgBouncer console             | `psql postgresql://stats:stats@localhost:6432/pgbouncer -c "SHOW POOLS"`                                     |
 | Replication state             | `psql postgresql://oms:oms@localhost:5432/oms -c "TABLE pg_stat_replication"`                                |
@@ -403,6 +422,9 @@ services/payments/   NestJS service: src/entrypoints/main.worker.ts, its own ima
 services/inventory/  NestJS service: src/entrypoints/main.worker.ts, its own image and database
   prisma/            schema, migration and seed of the inventory database; explain/locking.ts
   src/modules/       inventory (L4): stock and reservations, three use cases
+services/notifications/ NestJS service: src/entrypoints/main.worker.ts, its own image and database
+  prisma/            schema and migration of the notifications database
+  src/modules/       notifications (L4): a mail per order event, written as a row, then sent
 packages/contracts/  message contracts between services: versioned zod schemas, exchange
                      names (ADR 0011, ADR 0012)
 devtools/fake-psp/   external PSP simulator (not part of the system)

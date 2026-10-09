@@ -1,11 +1,13 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.7 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
-Three services: `services/api` (this file), `services/payments` and `services/inventory`
-(their own decisions: `services/payments/CLAUDE.md`, `services/inventory/CLAUDE.md`). They
-share `packages/contracts` and nothing else. The api orchestrates the other two: placing an
-order is a saga (ADR 0017).
+Current step: **Step 3: microservices and brokers**, 3.10 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Four services: `services/api` (this file), `services/payments`, `services/inventory` and
+`services/notifications` (their own decisions: `services/payments/CLAUDE.md`,
+`services/inventory/CLAUDE.md`, `services/notifications/CLAUDE.md`). They share
+`packages/contracts` and nothing else. The api orchestrates payments and inventory: placing
+an order is a saga (ADR 0017). notifications only listens: it reads the events of an order
+and writes to its user (ADR 0019).
 The roadmap runs in two passes: Step 2 closed at 2.9, and 2.10–2.12, Kafka (3.8, 3.9, 3.14) and
 the other deferred items wait in `docs/ROADMAP.md` → «Другий прохід». Do not build a deferred
 item unless asked.
@@ -65,10 +67,11 @@ Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces: `services/*`, `packages/*`, `d
 ## Commands (CMD-friendly, from the repo root)
 
 ```
-pnpm infra:up          # postgres, postgres-replica, pgbouncer, postgres-payments, postgres-inventory, redis, rabbitmq, fake-psp (healthy)
+pnpm infra:up          # postgres, postgres-replica, pgbouncer, postgres-payments, postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, fake-psp (healthy)
 pnpm db:migrate        # prisma migrate dev (api)
 pnpm db:migrate:payments     # prisma migrate dev (payments, its own Postgres on 5434)
 pnpm db:migrate:inventory    # prisma migrate dev (inventory, its own Postgres on 5435)
+pnpm db:migrate:notifications   # prisma migrate dev (notifications, its own Postgres on 5436)
 pnpm db:seed           # fixed-id dev data (README → Seeded data)
 pnpm db:seed:inventory       # stock for the seeded products (inventory)
 pnpm db:reset          # drop, migrate, seed
@@ -80,21 +83,21 @@ pnpm db:explain:pgbouncer    # 500 clients on 20 server connections, limits, the
 pnpm db:explain:replica      # replication lag, read-your-writes with a 5 s delay (docs/perf/2.8-read-replica.md)
 pnpm db:explain:cache        # catalog cache: hit vs database, hit ratio, 200 callers on an empty key (docs/perf/2.9-cache.md)
 pnpm db:explain:stock        # four ways to reserve the last unit, lock order (docs/perf/3.6-stock-locking.md)
-pnpm dev               # contracts (tsc --watch) + api + worker + payments + inventory in watch mode
+pnpm dev               # contracts (tsc --watch) + api + worker + payments + inventory + notifications in watch mode
 pnpm lint && pnpm typecheck
-pnpm test              # every package: Vitest project unit of api (domain, VOs, policies, use cases, adapters, architecture) of payments (adapters (MSW), policy, architecture) and of inventory (domain, use cases, adapter, policy, architecture) + contracts (no Docker)
+pnpm test              # every package: Vitest project unit of api (domain, VOs, policies, use cases, adapters, architecture) of payments (adapters (MSW), policy, architecture), of inventory (domain, use cases, adapter, policy, architecture) and of notifications (domain, templates, use cases, adapter, policy, architecture) + contracts (no Docker)
 pnpm --filter @oms/contracts build   # packages/contracts → dist (CommonJS + .d.ts)
-pnpm test:e2e          # Vitest project e2e of api, then of inventory and payments: *.int-spec.ts + *.e2e-spec.ts (Testcontainers), each service to its boundary
+pnpm test:e2e          # Vitest project e2e of api, then of inventory, notifications and payments: *.int-spec.ts + *.e2e-spec.ts (Testcontainers), each service to its boundary
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
 pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
 pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
-docker compose --profile app up --build   # migrate + api + worker from one image; payments and inventory each from its own, with its migrate step
+docker compose --profile app up --build   # migrate + api + worker from one image; payments, inventory and notifications each from its own, with its migrate step
 ```
 
 Root `lint`, `typecheck`, `test`, `test:e2e` and `dev` build `@oms/contracts` first; run through
 a filter (`pnpm --filter @oms/api …`) they need `pnpm build:contracts` once.
 New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<object>`
-(`@oms/payments`, `@oms/inventory` for their databases).
+(`@oms/payments`, `@oms/inventory`, `@oms/notifications` for their databases).
 
 ## Modules and their combinations
 
@@ -131,6 +134,30 @@ the outbox (a timer, `infrastructure/outbox/`).
   - a schema is never `.strict()`: a consumer must keep reading a message that gained a field;
   - the package is consumed from `dist`: build it before whatever imports it.
 
+- **Every event of an order carries its recipient** (ADR 0019): `recipient { userId, email }`,
+  the user who created the order, read by `OrderEventsTranslator` when it writes the
+  contract. notifications-service reads these events and nothing else. Consequences:
+  - a domain event of orders starts with `OrderRef` (`workspaceId`, `orderId`, `createdBy`):
+    `this.ref` in `Order`. A new reliable event of an order takes it first, and its
+    translation spreads `await this.addressed(event)` into the payload;
+  - a translation is asynchronous (`ReliableEvents`) and runs inside the transaction of the
+    use case: it may read, never call the outside. A creator identity does not know
+    (`UserNotFoundError`) fails the whole write;
+  - the translator asks for the address through the port `OrderRecipients`
+    (`application/order-recipients.reader.ts` over `IdentityFacade`): `infrastructure/` of a
+    module may not import another module (lint). The address never enters `domain/`;
+  - a hand-built test module that provides `OrderEventsTranslator` provides
+    `ORDER_RECIPIENTS` too (`place-order.transaction.int-spec.ts`);
+  - a subscriber makes a mail of one event: what a mail has to say goes into the contract of
+    that event (the amount is in `order-paid` for this reason), never "the subscriber reads
+    it from the event before";
+  - the life of an order on `events` is six contracts: `orders.order-placed`, `-paid`,
+    `-cancelled`, `-fulfilled`, `-payment-failed`, `-returned-to-draft`. An order cancelled
+    on a failed charge publishes `-cancelled` only;
+  - `recipient` and the amount of `order-paid` were added to `v1` as required fields, against
+    the rule above, because no message of these contracts had a reader yet. The next
+    required field is a `v2`.
+
 - **Placing an order is a saga the api orchestrates** (ADR 0017): `place → reserve stock →
 charge → PAID`, a command for every step and an answer back. Its state is `OrderSaga`, a
   row of `order_sagas` per `(order, paymentAttempt)`, beside `Order`: the saga says where the
@@ -147,7 +174,8 @@ charge → PAID`, a command for every step and an answer back. Its state is `Ord
     saga its deadline. A step that waits without `deadline_at` is refused by a CHECK;
   - the order gets its status when the question of money is settled, not when the saga ends:
     `PAYMENT_FAILED` or `CANCELLED` come with the saga still `RELEASING`. Do not wait for
-    `stock-released` to tell the client;
+    `stock-released` to tell the client. Its event is published at that moment too
+    (`order-payment-failed`, `order-returned-to-draft`, `order-cancelled`);
   - a timeout is not a failure: of the reservation it gives the order back (`DRAFT`) and
     releases in the dark; of the charge it only sends `payments.cancel-payment` and the answer
     decides (`payment-succeeded` still pays the order); of a compensation it asks again and
@@ -466,6 +494,10 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
 - `UnprocessableMessageError` extends `InfrastructureError` and lives in `shared/errors/`,
   with `Delivery` in `shared/messaging/`: a consumer is an entry class and may not import
   `infrastructure/` (lint), and both are plain types.
+- `OrderRecipientsReader` is a class of `application/` that implements a port asked by
+  `infrastructure/` (`domain/ports-adapters.md` puts an implementation in `infrastructure/`):
+  it reads another module through its facade, which only `application/` may do
+  (`docs/conventions-backlog.md` §19).
 - Orders has a repository port although Postgres is the only implementation
   (`architecture.md` §4): it lets the use-case unit tests run on the in-memory repository in
   `application/__test__/`. Details: `.claude/rules/project/testing.md`.

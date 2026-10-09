@@ -1,7 +1,7 @@
 # Architecture
 
 A multi-tenant order management backend that grows one step at a time. This document
-describes the **target** architecture and marks what exists today (Step 3.6).
+describes the **target** architecture and marks what exists today (Step 3.10).
 
 ## 1. Target architecture
 
@@ -34,8 +34,8 @@ flowchart LR
     inventory["inventory<br/>(main.worker.ts)<br/>broker consumer"]
   end
 
-  subgraph later["Step 3 (not built yet)"]
-    notifications["notifications-service"]
+  subgraph notSvc["notifications-service: its own image"]
+    notifications["notifications<br/>(main.worker.ts)<br/>broker consumer · dispatcher"]
   end
 
   subgraph second["Second pass (deferred)"]
@@ -46,29 +46,30 @@ flowchart LR
   rabbit -- "inventory.commands" --> inventory
   inventory -- "stock-reserved / -failed / -released / -adjusted" --> rabbit
   inventory --> invdb[("PostgreSQL<br/>inventory db")]
-  api -. "OrderPlaced, OrderPaid…" .-> rabbit
-  rabbit -.-> notifications
+  api -- "orders.order-placed, -paid, … (with the recipient)" --> rabbit
+  rabbit -- "notifications.order-events" --> notifications
+  notifications --> notdb[("PostgreSQL<br/>notifications db")]
+  notifications -- "SMTP" --> mail["mail server<br/>(dev: Mailpit)"]
   api -. "same events, second publisher" .-> kafka
   kafka -.-> analytics
 
   classDef built fill:#d8f5d0,stroke:#3a7d2c;
   classDef future fill:#eee,stroke:#999,stroke-dasharray: 4 3;
   classDef deferred fill:#fff,stroke:#ccc,stroke-dasharray: 2 4,color:#999;
-  class api,worker,pg,psp,payments,paydb,rabbit,inventory,invdb built;
-  class notifications future;
+  class api,worker,pg,psp,payments,paydb,rabbit,inventory,invdb,notifications,notdb,mail built;
   class analytics,kafka deferred;
 ```
 
-| Component               | Responsibility                                                                       | Status       |
-| ----------------------- | ------------------------------------------------------------------------------------ | ------------ |
-| `api` (HTTP)            | identity & tenancy, catalog, orders; starts the saga of an order (ADR 0017)          | **Step 0**   |
-| `api` worker            | moves the saga on the answers of inventory and payments and on its timeouts; jobs    | **Step 0**   |
-| `fake-psp`              | simulated external payment provider (`devtools/`, not part of the system)            | **Step 0**   |
-| RabbitMQ                | commands and events between the services (`@oms/contracts`, ADR 0011)                | **Step 3.2** |
-| `payments-service`      | one payment attempt per command, charged once at the PSP, cancelled on a command     | **Step 3.2** |
-| `inventory-service`     | stock on hand and held per product; reserve, release, adjust on a command (ADR 0016) | **Step 3.6** |
-| `notifications-service` | emails on order events                                                               | Step 3       |
-| `analytics-service`     | read-model aggregates from Kafka events                                              | deferred     |
+| Component               | Responsibility                                                                       | Status        |
+| ----------------------- | ------------------------------------------------------------------------------------ | ------------- |
+| `api` (HTTP)            | identity & tenancy, catalog, orders; starts the saga of an order (ADR 0017)          | **Step 0**    |
+| `api` worker            | moves the saga on the answers of inventory and payments and on its timeouts; jobs    | **Step 0**    |
+| `fake-psp`              | simulated external payment provider (`devtools/`, not part of the system)            | **Step 0**    |
+| RabbitMQ                | commands and events between the services (`@oms/contracts`, ADR 0011)                | **Step 3.2**  |
+| `payments-service`      | one payment attempt per command, charged once at the PSP, cancelled on a command     | **Step 3.2**  |
+| `inventory-service`     | stock on hand and held per product; reserve, release, adjust on a command (ADR 0016) | **Step 3.6**  |
+| `notifications-service` | a mail to the user of an order for every event about it, sent once (ADR 0019)        | **Step 3.10** |
+| `analytics-service`     | read-model aggregates from Kafka events                                              | deferred      |
 
 Communication: **RabbitMQ** for commands and replies between services and, in the
 first pass of the roadmap, for domain events too. A command goes to the direct exchange
@@ -80,11 +81,14 @@ message (ADR 0012); **BullMQ** for jobs inside one service; **PostgreSQL** datab
 
 ## 2. Process model
 
-- One repository, three services. `services/api`: one image, two entrypoints,
+- One repository, four services. `services/api`: one image, two entrypoints,
   `src/entrypoints/main.api.ts` (HTTP) and `main.worker.ts` (queue and broker consumers, the
   relay of the outbox, no HTTP). `services/payments`: its own image, one entrypoint,
   `main.worker.ts` (a broker consumer and the relay of its outbox, no HTTP).
   `services/inventory`: the same shape as payments, with a database of its own.
+  `services/notifications`: one entrypoint as well, `main.worker.ts`: a broker consumer, the
+  dispatcher that sends what the consumer wrote, and two cleanups; no outbox, because it
+  publishes nothing.
 - Every business module is a **core module** (domain, application, persistence, read side)
   plus one **transport module** per transport (`*.http.module.ts`, `*.worker.module.ts`).
   Only transport modules reach an entrypoint; anything that starts on its own (the
@@ -95,7 +99,7 @@ message (ADR 0012); **BullMQ** for jobs inside one service; **PostgreSQL** datab
 - The services share one package, `@oms/contracts`: the schemas of the messages and the names
   of the exchanges. Everything else a second service needs is copied into it (ADR 0012).
 - Migrations are a separate one-shot step per service (`migrate`, `migrate-payments`,
-  `migrate-inventory` compose services), never part of `CMD`.
+  `migrate-inventory`, `migrate-notifications` compose services), never part of `CMD`.
 
 ## 3. Modules and allowed dependencies
 
@@ -106,7 +110,7 @@ flowchart TB
     catalog["catalog<br/>L1 · CQS"]
     orders["orders<br/>L4 · CQS + EventBus"]
   end
-  orders -- "IdentityFacade.getWorkspaceTerms" --> identity
+  orders -- "IdentityFacade.getWorkspaceTerms, getUserContact" --> identity
   orders -- "CatalogFacade.findProductSnapshots" --> catalog
   catalog -- "IdentityFacade.getWorkspaceTerms (currency)" --> identity
   guard["common/WorkspaceAccessGuard"] -- "MEMBERSHIP_READER port" --> identity
@@ -120,22 +124,28 @@ flowchart TB
   `OrderEventPartitions`, and what the saga asks for: `StockReservationScheduler` (reserve,
   release), `PaymentChargeScheduler` (charge, cancel) and `SagaTimeoutScheduler`. Each of the
   three writes a row of the outbox in the transaction of the use case that calls it; the
-  use cases reach them through `OrderSagaSteps`. The payment provider is no longer a port of the
+  use cases reach them through `OrderSagaSteps`. `OrderRecipients` is the port the translator
+  of the order events asks for the address of who created an order (ADR 0019): implemented in
+  `application/` over `IdentityFacade`, because `infrastructure/` may not reach another module. The payment provider is no longer a port of the
   api: `PaymentGateway` (HTTP adapter → fake-psp, fake in-process adapter, chosen by
   `PAYMENT_GATEWAY=http|fake`) moved to payments-service with the code that calls it.
 - payments-service has one module, `payments` (`layered · L1 · together`): two use cases,
   `ChargePaymentService` and `CancelPaymentService`, the table `payments`, and two ports, `PaymentGateway` and
   `PaymentEventsPublisher` (the answer, written to the outbox with the settled row).
-- The outbox is infrastructure in both services (`src/infrastructure/outbox/`): `Outbox`
+- notifications-service has one module, `notifications` (`layered · L4 · together`):
+  `RequestNotificationService` (an event → a `Notification` row, `PENDING`) and
+  `DispatchNotificationService` (one due row → the mail server → `SENT`), the table
+  `notifications`, and two ports, `NotificationsRepositoryPort` and `Mailer` (SMTP adapter).
+- The outbox is infrastructure in the three services that publish (`src/infrastructure/outbox/`): `Outbox`
   (append in the current transaction), `OutboxRelay` and its runner, and the port
   `OutboxPublisher` with the RabbitMQ adapter. In the api it also holds `ReliableEvents`,
   where a module registers what its reliable domain events become on the broker.
 
-| Module   | Owns tables                                            | Exposes                                               |
-| -------- | ------------------------------------------------------ | ----------------------------------------------------- |
-| identity | `users`, `workspaces`, `memberships`                   | `IdentityFacade` (membership lookup, workspace terms) |
-| catalog  | `products`                                             | `CatalogFacade` (product snapshots for orders)        |
-| orders   | `orders`, `order_items`, `order_events`, `order_sagas` | nothing yet (no consumer)                             |
+| Module   | Owns tables                                            | Exposes                                                                      |
+| -------- | ------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| identity | `users`, `workspaces`, `memberships`                   | `IdentityFacade` (membership lookup, workspace terms, the address of a user) |
+| catalog  | `products`                                             | `CatalogFacade` (product snapshots for orders)                               |
+| orders   | `orders`, `order_items`, `order_events`, `order_sagas` | nothing yet (no consumer)                                                    |
 
 ## 4. Data model
 
@@ -319,25 +329,47 @@ relay:     BEGIN; advisory lock (one relay at a time);
            UPDATE … SET published_at; COMMIT                         every second, or at once after a full batch
 ```
 
-| Message                                                        | Written by                                   | Exchange      |
-| -------------------------------------------------------------- | -------------------------------------------- | ------------- |
-| `inventory.reserve-stock`                                      | api, `place` (a port called by the use case) | `commands`    |
-| `payments.charge-payment`                                      | api, the stock of the attempt reserved       | `commands`    |
-| `inventory.release-stock`                                      | api, the compensation of the saga            | `commands`    |
-| `payments.cancel-payment`                                      | api, a charge timed out or a cancel asked    | `commands`    |
-| `orders.saga-step-timeout`                                     | api, every step of the saga that waits       | `api.delayed` |
-| `orders.order-placed`                                          | api, `place`                                 | `events`      |
-| `orders.order-paid`                                            | api, the answer of payments recorded         | `events`      |
-| `orders.order-cancelled`, `-fulfilled`                         | api, `cancel`, `fulfill`                     | `events`      |
-| `payments.payment-succeeded`, `-failed`, `-cancelled`          | payments, the attempt settled                | `events`      |
-| `inventory.stock-reserved`, `-reservation-failed`, `-released` | inventory, the command answered              | `events`      |
+| Message                                                        | Written by                                            | Exchange      |
+| -------------------------------------------------------------- | ----------------------------------------------------- | ------------- |
+| `inventory.reserve-stock`                                      | api, `place` (a port called by the use case)          | `commands`    |
+| `payments.charge-payment`                                      | api, the stock of the attempt reserved                | `commands`    |
+| `inventory.release-stock`                                      | api, the compensation of the saga                     | `commands`    |
+| `payments.cancel-payment`                                      | api, a charge timed out or a cancel asked             | `commands`    |
+| `orders.saga-step-timeout`                                     | api, every step of the saga that waits                | `api.delayed` |
+| `orders.order-placed`                                          | api, `place`                                          | `events`      |
+| `orders.order-paid`                                            | api, the answer of payments recorded                  | `events`      |
+| `orders.order-cancelled`, `-fulfilled`                         | api, `cancel`, `fulfill`                              | `events`      |
+| `orders.order-payment-failed`                                  | api, the charge of the attempt failed                 | `events`      |
+| `orders.order-returned-to-draft`                               | api, the stock was not there, or inventory never said | `events`      |
+| `payments.payment-succeeded`, `-failed`, `-cancelled`          | payments, the attempt settled                         | `events`      |
+| `inventory.stock-reserved`, `-reservation-failed`, `-released` | inventory, the command answered                       | `events`      |
 
 Delivery is at least once: a relay that dies between the broker's confirm and its own commit
 publishes those messages again, with the same message id (the id of the row). With the broker
 down `place` still answers 202, and the command leaves when the broker is back. A command is
 published `mandatory`: while its receiver has not declared its queue, the row stays
-unpublished; so is a delayed message. A published row is kept 7 days. Nobody subscribes to
-`orders.*` yet (3.10).
+unpublished; so is a delayed message. A published row is kept 7 days.
+
+The events of an order are read by notifications-service (ADR 0019), from its queue
+`notifications.order-events`. Each carries `recipient { userId, email }`, the user who
+created the order: the translator of the api reads the address from identity when it writes
+the event, so a subscriber that writes to that user needs the event and nothing else.
+
+```
+orders.order-paid ──► notifications.order-events ──► OrderEventsConsumer
+                                                       inbox.once():  INSERT inbox
+                                                                      INSERT notifications (PENDING)
+                                                     DispatchNotificationsJob, one row per transaction:
+                                                       SELECT … FOR UPDATE SKIP LOCKED
+                                                       SMTP ──► mail server
+                                                       UPDATE notifications SET status = 'SENT'
+```
+
+The consumer sends nothing: a mail cannot be rolled back with the record of its message. It
+writes the mail the service owes, and the dispatcher sends it afterwards. One notification
+per fact, `UNIQUE (order_id, kind, attempt)`; a mail is made of its own event only, because
+the events of one order arrive in any order. A try that fails is recorded on the row and
+repeated after a delay that doubles, then given up (`FAILED`, an error in the log).
 
 A message takes effect once per consumer (ADR 0015). Each service has a table `inbox`,
 `(consumer, message_id)`, and a consumer records the message in the transaction of what it
@@ -440,24 +472,28 @@ message is an error in the log; it is put back through the management UI ("Move 
 
 ## 8. Known gaps
 
-| Gap                                                                      | Consequence today                                                                                                                                                                                                                                                             | Closed in                                                                 |
-| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| The call to the PSP is made once per delivery                            | A provider that does not answer is asked again only when the command is redelivered, 30 s later, four times in all; nothing retries within a delivery and nothing stops calling a provider that is down                                                                       | 3.11 (retries with backoff, circuit breaker)                              |
-| Nobody is told about a parked message                                    | A message in a dead-letter queue is a `Logger.error`; no metric, no alert. Putting it back is manual, through the management UI                                                                                                                                               | Step 4 (metric and alert on the depth of `*.dlq`)                         |
-| The relay of the outbox is watched by nobody                             | A relay that cannot publish logs one error; the unpublished rows and the age of the oldest are not measured                                                                                                                                                                   | Step 4 (metrics outbox_pending_total, outbox_oldest_age_seconds)          |
-| payments has no migration checker and no mutation run                    | Five migrations, applied on an empty database by its e2e suite; drift and upgrade are not checked                                                                                                                                                                             | open: a checker like the one of the api                                   |
-| `inventory.adjust-stock` has no sender                                   | The saga reserves and releases; stock itself arrives only by the seed, the test suite or a message published by hand                                                                                                                                                          | open: an endpoint of the catalog that writes the command to the outbox    |
-| A command parked in another service is answered only when it is put back | The saga asks again on every timeout of a compensation and logs an error, but an order whose `cancel-payment` or `release-stock` is never answered stays where it is: `PENDING_PAYMENT` with its stock held, or with stock held for an order that is already `PAYMENT_FAILED` | Step 4 (an alert on the error and on the depth of `*.dlq`)                |
-| The stock cannot be read                                                 | No HTTP in inventory and no read model in the api: what is in stock is visible in the database only. `inventory.stock-adjusted` is published for a future reader                                                                                                              | open: a read model in the api, fed by `inventory.*` events                |
-| Units of a paid order stay `reserved`                                    | Nothing lowers `on_hand` when an order is fulfilled, and adjustments keep no ledger (levels, not movements)                                                                                                                                                                   | open: fulfilment is not in the roadmap of Step 3                          |
-| inventory has no migration checker and no mutation run                   | One migration, applied on an empty database by its e2e suite                                                                                                                                                                                                                  | open: a checker like the one of the api                                   |
-| Orders written past `place` have no saga                                 | An order the datagen wrote as `PENDING_PAYMENT` cannot be cancelled, and an answer for it is parked: its saga is not found. The seed and the migration write one                                                                                                              | open: the datagen is for query plans, not for flows                       |
-| A saga that nobody answers asks for ever                                 | Every `ORDER_SAGA_COMPENSATION_TIMEOUT_MS` one more command goes into the queue of a service that is down, with no limit                                                                                                                                                      | Step 4 (the alert is what ends it: an operator)                           |
-| An order back in `DRAFT` or `PAYMENT_FAILED` publishes nothing           | Out of stock and a failed payment are visible to a client that polls, not to a subscriber of `orders.*`                                                                                                                                                                       | 3.10 (a mail for them needs a reliable domain event)                      |
-| No rate limiting                                                         | A noisy tenant is not limited; brute force on `/auth/login` is not throttled                                                                                                                                                                                                  | deferred: roadmap 2.10, second pass                                       |
-| Default Nest logger only                                                 | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                                                                                                                                     | Step 4 (pino, OpenTelemetry)                                              |
-| No health checks, no graceful shutdown                                   | Compose/k8s cannot tell "started" from "ready"; in-flight jobs are cut on stop                                                                                                                                                                                                | Step 5                                                                    |
-| `Location` on two 201s points nowhere                                    | `POST /auth/register` and `POST /workspaces/{id}/members` return a `Location` without a GET route behind it                                                                                                                                                                   | open: a GET route or another URL, decided with the API                    |
-| A repeated creating `POST` is a 409, not the first answer                | `POST /orders` and `place` replay their answer for an `Idempotency-Key` (ADR 0018). A workspace, a member or a product sent twice is refused by its unique key: nothing is duplicated, but the client has to read what it created                                             | open: the key on those routes too, once their transactions can be wrapped |
-| No reconciliation with the PSP                                           | If every attempt times out after the PSP already charged (e.g. latency > 3 s), the order ends `PAYMENT_FAILED psp_unavailable` while the PSP holds a successful charge. The same for a cancelled attempt whose void fails on the last delivery of its charge command          | open (payments-service reconciles by idempotency key)                     |
-| Dropping a partition locks `order_events`                                | `drop_order_events_partition` is a plain `DROP` (a function cannot `DETACH … CONCURRENTLY`); it gives up after 5 s and the job retries. Retention is off by default                                                                                                           | open: an owner-run task outside the application                           |
+| Gap                                                                      | Consequence today                                                                                                                                                                                                                                                             | Closed in                                                                    |
+| ------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| The call to the PSP is made once per delivery                            | A provider that does not answer is asked again only when the command is redelivered, 30 s later, four times in all; nothing retries within a delivery and nothing stops calling a provider that is down                                                                       | 3.11 (retries with backoff, circuit breaker)                                 |
+| Nobody is told about a parked message                                    | A message in a dead-letter queue is a `Logger.error`; no metric, no alert. Putting it back is manual, through the management UI                                                                                                                                               | Step 4 (metric and alert on the depth of `*.dlq`)                            |
+| The relay of the outbox is watched by nobody                             | A relay that cannot publish logs one error; the unpublished rows and the age of the oldest are not measured                                                                                                                                                                   | Step 4 (metrics outbox_pending_total, outbox_oldest_age_seconds)             |
+| payments has no migration checker and no mutation run                    | Five migrations, applied on an empty database by its e2e suite; drift and upgrade are not checked                                                                                                                                                                             | open: a checker like the one of the api                                      |
+| `inventory.adjust-stock` has no sender                                   | The saga reserves and releases; stock itself arrives only by the seed, the test suite or a message published by hand                                                                                                                                                          | open: an endpoint of the catalog that writes the command to the outbox       |
+| A command parked in another service is answered only when it is put back | The saga asks again on every timeout of a compensation and logs an error, but an order whose `cancel-payment` or `release-stock` is never answered stays where it is: `PENDING_PAYMENT` with its stock held, or with stock held for an order that is already `PAYMENT_FAILED` | Step 4 (an alert on the error and on the depth of `*.dlq`)                   |
+| The stock cannot be read                                                 | No HTTP in inventory and no read model in the api: what is in stock is visible in the database only. `inventory.stock-adjusted` is published for a future reader                                                                                                              | open: a read model in the api, fed by `inventory.*` events                   |
+| Units of a paid order stay `reserved`                                    | Nothing lowers `on_hand` when an order is fulfilled, and adjustments keep no ledger (levels, not movements)                                                                                                                                                                   | open: fulfilment is not in the roadmap of Step 3                             |
+| inventory has no migration checker and no mutation run                   | One migration, applied on an empty database by its e2e suite                                                                                                                                                                                                                  | open: a checker like the one of the api                                      |
+| Orders written past `place` have no saga                                 | An order the datagen wrote as `PENDING_PAYMENT` cannot be cancelled, and an answer for it is parked: its saga is not found. The seed and the migration write one                                                                                                              | open: the datagen is for query plans, not for flows                          |
+| A saga that nobody answers asks for ever                                 | Every `ORDER_SAGA_COMPENSATION_TIMEOUT_MS` one more command goes into the queue of a service that is down, with no limit                                                                                                                                                      | Step 4 (the alert is what ends it: an operator)                              |
+| A mail can be sent twice                                                 | A notifications process that dies between the answer of the mail server and its commit sends that mail again, under the same `Message-ID`. SMTP keeps no idempotency key                                                                                                      | open: a provider whose API takes one (the id of the notification is the key) |
+| "Sent" means the mail server took it                                     | A mail that bounces later is not seen; a notification given up (`FAILED`) is a `Logger.error` and is set back to `PENDING` by hand                                                                                                                                            | Step 4 (an alert on the error); bounces: open                                |
+| The address of a user travels with the events                            | `recipient.email` is in the outbox of the api (7 days), in the broker until consumed, and in `notifications` (30 days). A user who changes it gets the mails of events already written at the old one                                                                         | open: `pii-encryption: no` in this project                                   |
+| Every event of an order is a mail                                        | No preferences, no unsubscribe, one language; the recipient is always who created the order                                                                                                                                                                                   | open: not in the roadmap                                                     |
+| notifications has no migration checker and no mutation run               | One migration, applied on an empty database by its e2e suite                                                                                                                                                                                                                  | open: a checker like the one of the api                                      |
+| No rate limiting                                                         | A noisy tenant is not limited; brute force on `/auth/login` is not throttled                                                                                                                                                                                                  | deferred: roadmap 2.10, second pass                                          |
+| Default Nest logger only                                                 | Unstructured logs, no correlation ids, no `correlationId` in error bodies                                                                                                                                                                                                     | Step 4 (pino, OpenTelemetry)                                                 |
+| No health checks, no graceful shutdown                                   | Compose/k8s cannot tell "started" from "ready"; in-flight jobs are cut on stop                                                                                                                                                                                                | Step 5                                                                       |
+| `Location` on two 201s points nowhere                                    | `POST /auth/register` and `POST /workspaces/{id}/members` return a `Location` without a GET route behind it                                                                                                                                                                   | open: a GET route or another URL, decided with the API                       |
+| A repeated creating `POST` is a 409, not the first answer                | `POST /orders` and `place` replay their answer for an `Idempotency-Key` (ADR 0018). A workspace, a member or a product sent twice is refused by its unique key: nothing is duplicated, but the client has to read what it created                                             | open: the key on those routes too, once their transactions can be wrapped    |
+| No reconciliation with the PSP                                           | If every attempt times out after the PSP already charged (e.g. latency > 3 s), the order ends `PAYMENT_FAILED psp_unavailable` while the PSP holds a successful charge. The same for a cancelled attempt whose void fails on the last delivery of its charge command          | open (payments-service reconciles by idempotency key)                        |
+| Dropping a partition locks `order_events`                                | `drop_order_events_partition` is a plain `DROP` (a function cannot `DETACH … CONCURRENTLY`); it gives up after 5 s and the job retries. Retention is off by default                                                                                                           | open: an owner-run task outside the application                              |

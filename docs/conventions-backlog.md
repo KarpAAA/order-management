@@ -815,3 +815,112 @@ writes need no key (a unique natural key, or a `version`). `application/write-se
 and `transport/queues.md` §3: name the two cases where the transaction opens around the use
 case (the inbox of a consumer, the idempotency key of a route), and what a use case must not
 do because of them.
+
+## 18. An effect outside the database caused by a message: a row first, a dispatcher after
+
+Step 3.10 · 2026-10-09 · Status: open
+
+**Conventions say:** `application/write-service.md` §4 and principle 8: "adapters are never
+called inside" a transaction. `application/transactions.md` §5: the outbox is for a message
+that must leave with a commit. `transport/queues.md` §3: a consumer calls one use case.
+Nothing says what a consumer does when the use case _is_ a call to the outside (send a
+mail, call a webhook) and the message may be delivered again.
+
+**What we did:** the consumer does not send. Inside `inbox.once()` its use case writes a
+row of the module (`notifications`, `PENDING`), with a unique key that names the fact
+(`order_id, kind, attempt`). A second use case, driven by a timer of the process, takes one
+due row `FOR UPDATE SKIP LOCKED`, calls the adapter, records the outcome on the row and
+commits. A failed try is a counter and a later `next_attempt_at` on the row; after the last
+one the row is `FAILED` and an error is logged.
+
+**Why:** two rules of the conventions meet and neither covers the case. Sent inside
+`inbox.once()`, the mail goes out, the commit fails, and the next delivery sends it again:
+the inbox covers only what its transaction holds. Sent after the commit by the consumer, a
+process that dies in between loses it. The outbox pattern answers both, but the conventions
+describe it for broker messages only.
+
+The dispatcher then calls the adapter _inside_ its transaction, against §4. It is the lesser
+evil here: marking the row and sending afterwards loses a mail; this order can only repeat
+one, when the process dies between the answer and the commit. The call has a bounded
+timeout, and the transaction a longer one.
+
+**Assessment:** good, with a known limit: at-least-once towards a receiver that keeps no
+key. It costs a table, a timer and a second use case per kind of effect. Not worth it for an
+effect that is itself idempotent (a `PUT` with a key): that one can be called from the
+consumer directly.
+
+**Example:**
+
+```ts
+// the consumer: a row, in the transaction that records the message
+await this.inbox.once(QUEUE, message.messageId, () =>
+  this.requestNotification.execute({ workspaceId, recipient, notice }, ACTOR),
+);
+
+// the dispatcher: one row per transaction
+@Transactional({ timeout: TRANSACTION_TIMEOUT_MS })
+async execute(actor: Actor): Promise<DispatchOutcome> {
+  const notification = await this.notifications.lockNextDue(this.clock.now());
+  if (!notification) return 'idle';
+  const outcome = await this.send(notification); // the adapter; marks SENT or records the failure
+  await this.notifications.save(notification);
+  return outcome;
+}
+```
+
+**Proposed change:** `application/transactions.md` §5: generalize the outbox from "a message
+for the broker" to "anything that must happen outside because of a commit", with the two
+shapes: a relay that keeps order (messages) and a dispatcher that does not (independent
+effects, retried per row). `application/write-service.md` §4: name the exception, "a
+dispatcher of such rows calls its adapter inside the transaction that holds the row, with a
+bounded timeout". `transport/cron.md`: a job that loops on a timer inside the process, not on
+a schedule, and how it stops.
+
+## 19. A module's adapter that needs another module: the lint map has no way through
+
+Step 3.10 · 2026-10-09 · Status: open
+
+**Conventions say:** `_core/architecture.md` §2: cross-module calls go through the facade.
+The lint template (`quality/code-style.md` §5) lets `application/` import another module's
+`index.ts`, and `modules/x/infrastructure/` import only `shared`, `common`, `config`, global
+infrastructure and its own `domain/` and `ports/`.
+
+**What we did:** the translator of the order events (`orders/infrastructure/`) has to put
+the address of a user into a contract. It asks a port of its own module,
+`OrderRecipients.of(userId)`, implemented by a class in `application/`
+(`OrderRecipientsReader`) that calls `IdentityFacade`. The module binds the two.
+
+**Why:** the conventions place "what leaves the service" in infrastructure and "talk to
+another module" in application, and did not foresee an adapter that needs both. The other
+ways were worse: the use cases reading the address (seven of them, one already at six
+constructor dependencies, and an address in the domain events of orders), or a lint rule
+that lets every adapter of every module reach every facade.
+
+**Assessment:** acceptable. The dependency points the right way (infrastructure → port ←
+application), and the address stays out of the domain. The cost is an indirection whose only
+reason is the lint map: an implementation of a port living in `application/` reads oddly.
+
+**Example:**
+
+```ts
+// ports/order-recipients.port.ts
+export interface OrderRecipients {
+  of(userId: string): Promise<{ userId: string; email: string }>;
+}
+
+// application/order-recipients.reader.ts
+@Injectable()
+export class OrderRecipientsReader implements OrderRecipients {
+  constructor(private readonly identity: IdentityFacade) {}
+  of(userId: string) {
+    return this.identity.getUserContact(userId);
+  }
+}
+```
+
+**Proposed change:** `domain/ports-adapters.md`: say where the implementation of a port
+lives when it is another module of the same service (in `application/`, over that module's
+facade, named `*.reader.ts`), or allow `modindex` for `modinfra` in the lint template and
+say when an adapter may use it. `application/events.md`: a translation of a domain event
+into an integration message may be asynchronous and may read; it runs inside the
+transaction of the use case.
