@@ -349,6 +349,23 @@ curl http://localhost:4010/admin/stats
 Set `PAYMENT_GATEWAY=fake` in `services/payments/.env` to skip fake-psp entirely (in-process,
 deterministic: amounts ending in `13` minor units are declined).
 
+## Message contracts
+
+```cmd
+pnpm contracts:freeze  & rem release the contracts: writes the schema and a sample of a new version
+pnpm contracts:check   & rem the released versions against the base branch (the CI job `contracts`)
+```
+
+Every version of a message between the services is kept in `packages/contracts/released/`: its
+JSON Schema and one message as it was written on the day of the release. `pnpm test` compares
+each contract with its released version and holds each service to the map of who writes a
+contract and who reads it (`packages/contracts/src/parties.ts`, ADR 0021).
+
+To see it: rename a field in `packages/contracts/src/orders/order-paid.v1.ts` and fix what the
+typecheck asks for. `pnpm --filter @oms/contracts test` still fails (`payload.chargeId:
+removed`), and `pnpm contracts:freeze` refuses and names the file a new version goes into.
+A released version takes one change: a field that is not required.
+
 ## Contract fuzzing (Schemathesis)
 
 ```cmd
@@ -446,7 +463,7 @@ services/notifications/ NestJS service: src/entrypoints/main.worker.ts, its own 
   prisma/            schema and migration of the notifications database
   src/modules/       notifications (L4): a mail per order event, written as a row, then sent
 packages/contracts/  message contracts between services: versioned zod schemas, exchange
-                     names (ADR 0011, ADR 0012)
+                     names (ADR 0011, ADR 0012); released/ and the map of parties (ADR 0021)
 devtools/fake-psp/   external PSP simulator (not part of the system)
 docs/                architecture, requirements, ADRs, conventions backlog, requests.http
 ```

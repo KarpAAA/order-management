@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.11 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 3: microservices and brokers**, 3.12 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Four services: `services/api` (this file), `services/payments`, `services/inventory` and
 `services/notifications` (their own decisions: `services/payments/CLAUDE.md`,
 `services/inventory/CLAUDE.md`, `services/notifications/CLAUDE.md`). They share
@@ -54,7 +54,7 @@ metrics-endpoint: none          # Step 4
 tracker: none
 merge: merge-commit
 testing: vitest                 # projects unit + e2e; test levels per requirement in docs/requirements.md
-ci: github-actions              # PR + main: static, unit, e2e, migrations, audit; PR: commits; main + nightly: mutation, contract
+ci: github-actions              # PR + main: static, unit, e2e, migrations, contracts, audit; PR: commits; main + nightly: mutation, contract
 hooks: husky                    # pre-commit: lint-staged; commit-msg: commitlint + no AI trailers; pre-push: typecheck + unit
 ```
 
@@ -88,6 +88,8 @@ pnpm dev               # contracts (tsc --watch) + api + worker + payments + inv
 pnpm lint && pnpm typecheck
 pnpm test              # every package: Vitest project unit of api (domain, VOs, policies, use cases, adapters, architecture) of payments (adapters (MSW), policy, architecture), of inventory (domain, use cases, adapter, policy, architecture) and of notifications (domain, templates, use cases, adapter, policy, architecture) + contracts (no Docker)
 pnpm --filter @oms/contracts build   # packages/contracts → dist (CommonJS + .d.ts)
+pnpm contracts:freeze  # release the contracts: schema + sample of a new version into packages/contracts/released; refuses an incompatible change (ADR 0021)
+pnpm contracts:check   # released/ against the merge base with CONTRACTS_BASE_REF (main): nothing deleted, no sample changed, schemas compatible
 pnpm test:e2e          # Vitest project e2e of api, then of inventory, notifications and payments: *.int-spec.ts + *.e2e-spec.ts (Testcontainers), each service to its boundary
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
 pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
@@ -134,6 +136,28 @@ the outbox (a timer, `infrastructure/outbox/`).
     with a cast;
   - a schema is never `.strict()`: a consumer must keep reading a message that gained a field;
   - the package is consumed from `dist`: build it before whatever imports it.
+
+- **A contract is tested against its released version, and a service against the map of
+  parties** (ADR 0021; `packages/contracts/released/`, `src/parties.ts`, the entry
+  `@oms/contracts/testing`). Consequences:
+  - a new contract also needs its row in `parties.ts` and its example in
+    `testing/examples.ts`, then `pnpm contracts:freeze`: `released.spec.ts` and
+    `parties.spec.ts` fail otherwise;
+  - `released/` is written by `contracts:freeze` only. A released version takes one change,
+    a field that is not required; the script refuses anything else and names the `v<N+1>`
+    file to create. Never edit or delete a released file to get a test through:
+    `contracts:check` (CI job `contracts`) compares with the base branch;
+  - a new routing key in a consumer, or a new `create()` in an adapter, is a change of a row
+    in `parties.ts`: `src/modules/<m>/<m>.contract.spec.ts` of the service holds the
+    bindings, the consumers and the adapters to it (CTR-020, 021, 030). A new adapter that
+    writes a contract gets its line in `EMITTERS` there;
+  - a new version gets its readers first: a row may name a consumer before a producer, not
+    the other way round. The consumers branch on `message.name` only: the first `v2` makes
+    its consumers tell the versions apart (CTR-021 fails until then);
+  - `src/testing/` is the only part of the package that may import `node:`; `src/index.ts`
+    never imports it, and no `src/` of a service does outside its tests;
+  - an upgrade of zod that changes the generated JSON Schema fails CTR-002 with no contract
+    changed: the files are deleted and frozen again on purpose, in a commit of its own.
 
 - **Every event of an order carries its recipient** (ADR 0019): `recipient { userId, email }`,
   the user who created the order, read by `OrderEventsTranslator` when it writes the
@@ -492,6 +516,11 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
   (`http/controller.md`: one status per route): `docs/conventions-backlog.md` §16.
 - `OrderSaga` does not extend `AggregateRoot`: it records no events, and its version is
   checked by the repository only (no client holds it).
+- A message contract has tests the conventions do not ask for (`quality/testing.md` §5 knows
+  the HTTP contract only): the released versions, the map of parties and a
+  `<m>.contract.spec.ts` per service (`docs/conventions-backlog.md` §21). The spec sits at
+  the root of the module, not beside one file: it covers the consumers and the adapters of
+  the module together.
 - A broker consumer has no rule file of its own (`transport/queues.md` is BullMQ): ack, reject
   and prefetch replace attempts, backoff and concurrency. What we do: `docs/conventions-backlog.md` §4, §7.
 - `UnprocessableMessageError` extends `InfrastructureError` and lives in `shared/errors/`,

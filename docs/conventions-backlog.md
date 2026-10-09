@@ -979,3 +979,56 @@ the circuit breaker from "may" to "with an inner retry: yes", and say what it co
 only `retryable`), that it is one per vendor and per process, and that its threshold is
 chosen with the retry in mind (a share of failed calls the retry can no longer hide).
 `quality/testing.md`: an adapter with a breaker is built per test.
+
+## 21. A message contract has no test of its own: nothing compares it with what is deployed
+
+Step 3.12 · 2026-10-09 · Status: open
+
+**Conventions say:** `quality/testing.md` §5 "Adapters and contracts" knows two tests: an
+adapter against MSW fixtures, and Schemathesis against `docs-json` "once the API has an
+external consumer". Both are about HTTP. `application/events.md` versions an integration
+event by its file name (`*.v1.event.ts`) and says nothing about what keeps a `v1` a `v1`.
+
+**What we did:** three checks, all in the unit run, none with a broker. (1) Every released
+version of a contract is a file in git, its JSON Schema and one sample message; a test
+compares the contract with it, and one change is allowed: a field that is not required.
+(2) A map in the contracts package says who writes each contract and who reads it, with the
+rule that a new version gets its readers before its producer. (3) Each service has one spec
+that holds it to its rows: what its queues are bound to, the released sample of each
+contract through its real consumer, and every contract it writes through its real adapter.
+
+**Why:** in one repository every service compiles against one copy of the contracts, so a
+contract changed where it stands breaks the typecheck, the developer fixes the callers, and
+everything is green. The break is between two deploys: a message of the old build in a
+queue, read by the new one. No test of one commit sees it, and the conventions have no test
+of two.
+
+**Assessment:** good, and cheap: about 100 tests in under a second, and the failure names the
+field and the file to create. The cost is the map, which is one more place to touch for a
+new contract (a red test says so), and generated JSON in the repository that a major of the
+schema library may rewrite. What it does not catch: a field that keeps its shape and
+changes its meaning.
+
+**Example:**
+
+```ts
+// packages/contracts: a version is what it was released as
+it('has changed in no way that asks for a new version', () => {
+  expect(breakingChanges(releasedSchema(contract), jsonSchemaOf(contract))).toEqual([]);
+});
+// → [ 'payload.chargeId: removed', 'payload.pspChargeId: new required field' ]
+
+// a service: the old message through the real consumer
+it.each(consumedBy('notifications'))('handles $key as it was released', async ({ contract }) => {
+  await expect(consumer.onOrderEvent(releasedSample(contract))).resolves.toBeUndefined();
+});
+```
+
+**Proposed change:** `quality/testing.md` §5: add "message contracts" beside the HTTP ones,
+for a project with more than one service: MUST keep the released schema of every version in
+the repository and test the contract against it (only an optional field may be added); MUST
+have, per service, a test that puts a released sample of every message it reads through its
+consumer and builds every message it writes through its adapter; SHOULD keep who writes and
+who reads in one map and check the bindings of the queues against it. `application/events.md`:
+say that a version is frozen by its release, and that a new version is deployed readers
+first. `quality/git-pr.md` §5: the check against the base branch beside the migrations guard.

@@ -33,7 +33,7 @@ testing: vitest                 # projects unit + e2e; the e2e suite stops at th
 ```
 pnpm db:migrate:notifications                 # prisma migrate dev on postgres-notifications (5436)
 pnpm --filter @oms/notifications dev          # watch mode (needs services/notifications/.env and pnpm build:contracts)
-pnpm --filter @oms/notifications test         # unit: domain, templates, use cases, adapter, policy, env, architecture (no Docker)
+pnpm --filter @oms/notifications test         # unit: domain, templates, use cases, adapter, policy, env, architecture, the contracts (no Docker)
 pnpm --filter @oms/notifications test:e2e     # Testcontainers: Postgres + RabbitMQ + Mailpit, an event in, a row and a mail out
 ```
 
@@ -102,6 +102,10 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/notificati
   takes one event at a time (`RABBITMQ_PREFETCH=1`), which is what makes `handledUpTo()` a
   proof. `delivery.e2e-spec.ts` sends through `helpers/smtp-gate.ts`, a port of its own in
   front of Mailpit that can be closed and opened while the service runs.
+- **The service is held to its rows of the map of parties** (ADR 0021;
+  `notifications.contract.spec.ts`): what the queue is bound to, and a released message of
+  each event through the consumer. A new event to tell about is a row in
+  `packages/contracts/src/parties.ts` first.
 
 ## Deviations from the conventions templates
 

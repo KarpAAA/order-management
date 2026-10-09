@@ -1,7 +1,7 @@
 # Architecture
 
 A multi-tenant order management backend that grows one step at a time. This document
-describes the **target** architecture and marks what exists today (Step 3.10).
+describes the **target** architecture and marks what exists today (Step 3.12).
 
 ## 1. Target architecture
 
@@ -98,6 +98,10 @@ message (ADR 0012); **BullMQ** for jobs inside one service; **PostgreSQL** datab
   consumer routes the tick to a `*.job.ts` class.
 - The services share one package, `@oms/contracts`: the schemas of the messages and the names
   of the exchanges. Everything else a second service needs is copied into it (ADR 0012).
+  The package also keeps every released version of a contract (`released/`) and the map of
+  who writes a contract and who reads it (`parties.ts`): the contracts are tested against
+  the first, each service against the second, with no broker and no second service
+  (ADR 0021).
 - Migrations are a separate one-shot step per service (`migrate`, `migrate-payments`,
   `migrate-inventory`, `migrate-notifications` compose services), never part of `CMD`.
 
@@ -498,3 +502,6 @@ message is an error in the log; it is put back through the management UI ("Move 
 | A repeated creating `POST` is a 409, not the first answer                | `POST /orders` and `place` replay their answer for an `Idempotency-Key` (ADR 0018). A workspace, a member or a product sent twice is refused by its unique key: nothing is duplicated, but the client has to read what it created                                                   | open: the key on those routes too, once their transactions can be wrapped           |
 | No reconciliation with the PSP                                           | If every call of every delivery times out after the PSP already charged (e.g. latency > 2 s), the order ends `PAYMENT_FAILED psp_unavailable` while the PSP holds a successful charge. The same for a cancelled attempt whose void fails on the last delivery of its charge command | open (payments-service reconciles by idempotency key)                               |
 | Dropping a partition locks `order_events`                                | `drop_order_events_partition` is a plain `DROP` (a function cannot `DETACH … CONCURRENTLY`); it gives up after 5 s and the job retries. Retention is off by default                                                                                                                 | open: an owner-run task outside the application                                     |
+| A contract test proves the shape of a message, not its meaning           | `amountMinor` that starts to mean whole units passes every check: the schema did not change. The diff of the contract file in the pull request is all there is                                                                                                                      | open (review)                                                                       |
+| No consumer tells two versions of a contract apart                       | A consumer branches on the name of a message, and the routing key is the name: a `v2` lands in the `case` of `v1`. Nothing breaks while every contract has one version; CTR-021 fails for the first `v2` until its consumers branch on the version                                  | with the first `v2` of a contract                                                   |
+| Services are proven against the contracts, not against each other        | That a message of the api reaches payments through the real broker, relays and queues is shown by hand only                                                                                                                                                                         | Step 3.13 (system tests in docker compose)                                          |

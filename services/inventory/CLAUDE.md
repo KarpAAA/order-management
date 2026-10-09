@@ -33,7 +33,7 @@ pnpm db:migrate:inventory                 # prisma migrate dev on postgres-inven
 pnpm db:seed:inventory                    # stock for the products of the api's seed (README → Seeded data)
 pnpm db:explain:stock                     # four ways to reserve the last unit, and lock order (docs/perf/3.6-stock-locking.md)
 pnpm --filter @oms/inventory dev          # watch mode (needs services/inventory/.env and pnpm build:contracts)
-pnpm --filter @oms/inventory test         # unit: domain (+ property), use cases, adapter, policy, env, architecture (no Docker)
+pnpm --filter @oms/inventory test         # unit: domain (+ property), use cases, adapter, policy, env, architecture, the contracts (no Docker)
 pnpm --filter @oms/inventory test:e2e     # Testcontainers: Postgres + RabbitMQ, a command in, rows and an event out
 ```
 
@@ -95,6 +95,10 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/inventory/
   at a time (`RABBITMQ_PREFETCH=1`), which is what makes `handled()` a proof; the concurrency
   suite starts four processes instead. Stock a test starts from is written as the owner
   (`givenStock()` in `test/helpers/commands.ts`).
+- **The service is held to its rows of the map of parties** (ADR 0021;
+  `inventory.contract.spec.ts`): what the queue is bound to, a released message of each
+  command through the consumer, and every answer the adapter writes. A new command or a new
+  answer is a row in `packages/contracts/src/parties.ts` first.
 
 ## Deviations from the conventions templates
 

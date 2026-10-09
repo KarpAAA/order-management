@@ -31,7 +31,7 @@ testing: vitest                 # projects unit + e2e; the e2e suite stops at th
 ```
 pnpm db:migrate:payments                  # prisma migrate dev on postgres-payments (5434)
 pnpm --filter @oms/payments dev           # watch mode (needs services/payments/.env and pnpm build:contracts)
-pnpm --filter @oms/payments test          # unit: adapters (MSW), policy, env, architecture (no Docker)
+pnpm --filter @oms/payments test          # unit: adapters (MSW), policy, env, architecture, the contracts (no Docker)
 pnpm --filter @oms/payments test:e2e      # Testcontainers: Postgres + RabbitMQ, a command in, a row and an event out (through the outbox)
 pnpm db:explain:resilience                # the real gateway against fake-psp: one call, retry, retry + breaker (docs/perf/3.11-resilience.md)
 ```
@@ -146,6 +146,10 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
   `test/helpers/broker.ts` reads a dead-letter queue (`take`), puts a message back (`put`),
   closes the service's connection from the broker's side (`killConnection`) and plays a
   consumer that dies with its message (`crashOn`).
+- **The service is held to its rows of the map of parties** (ADR 0021;
+  `payments.contract.spec.ts`): what the queue is bound to, a released message of each
+  command through the consumer, and every answer the adapter writes. A new command or a new
+  answer is a row in `packages/contracts/src/parties.ts` first.
 
 ## Deviations from the conventions templates
 
