@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.10 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 3: microservices and brokers**, 3.11 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Four services: `services/api` (this file), `services/payments`, `services/inventory` and
 `services/notifications` (their own decisions: `services/payments/CLAUDE.md`,
 `services/inventory/CLAUDE.md`, `services/notifications/CLAUDE.md`). They share
@@ -83,6 +83,7 @@ pnpm db:explain:pgbouncer    # 500 clients on 20 server connections, limits, the
 pnpm db:explain:replica      # replication lag, read-your-writes with a 5 s delay (docs/perf/2.8-read-replica.md)
 pnpm db:explain:cache        # catalog cache: hit vs database, hit ratio, 200 callers on an empty key (docs/perf/2.9-cache.md)
 pnpm db:explain:stock        # four ways to reserve the last unit, lock order (docs/perf/3.6-stock-locking.md)
+pnpm db:explain:resilience   # the PSP call: one call, retry, retry + breaker against a failing fake-psp (docs/perf/3.11-resilience.md)
 pnpm dev               # contracts (tsc --watch) + api + worker + payments + inventory + notifications in watch mode
 pnpm lint && pnpm typecheck
 pnpm test              # every package: Vitest project unit of api (domain, VOs, policies, use cases, adapters, architecture) of payments (adapters (MSW), policy, architecture), of inventory (domain, use cases, adapter, policy, architecture) and of notifications (domain, templates, use cases, adapter, policy, architecture) + contracts (no Docker)
@@ -234,7 +235,9 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
     already settled, or not what the saga waits for → return (ack). Not a known contract, or a business refusal that will not change (`NotFoundError`)
     → `throw new UnprocessableMessageError(…)`. `ConflictError` and anything that is not a
     `DomainError` → let it out;
-  - no retry of the PSP call itself until 3.11: do not build it earlier;
+  - the PSP call is retried and guarded by a circuit breaker inside payments (ADR 0020):
+    for the api nothing changed, an answer may just come sooner. `ORDER_SAGA_CHARGE_TIMEOUT_MS`
+    must stay above what payments needs with the provider away (126 s by default);
   - `MessagingModule` stands in for the library's `RabbitMQModule`, whose static state allows
     one Nest application per process; the e2e suite runs several. Do not import
     `RabbitMQModule`;

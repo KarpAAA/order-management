@@ -22,8 +22,9 @@ plays an external payment provider, and **Mailpit** a mail server.
 - **Payments**: `place` → `PENDING_PAYMENT` → `202`; in the same transaction the api writes the
   command `payments.charge-payment` to its outbox, and the relay of the worker publishes it
   (ADR 0014: no message is published next to a commit, in either service). payments-service
-  charges the PSP once (idempotency key
-  per attempt, 3 s timeout) and answers with `payments.payment-succeeded` or
+  charges the PSP once (idempotency key per attempt; a call of 2 s is made again up to twice
+  within the delivery, and not at all while a circuit breaker holds the provider for down,
+  ADR 0020) and answers with `payments.payment-succeeded` or
   `payments.payment-failed`; the worker of the api turns that into `PAID` or
   `PAYMENT_FAILED`. The messages are versioned contracts in `packages/contracts`. In
   payments the PSP sits behind a port with an HTTP adapter and an in-process fake.
@@ -101,7 +102,8 @@ pnpm dev
   - `docker compose stop fake-psp`, place an order: the command moves between
     `payments.commands` and its wait queue every 30 s. Start fake-psp before the fourth
     delivery and the order becomes `PAID`; leave it down and it becomes `PAYMENT_FAILED`
-    with `psp_unavailable`.
+    with `psp_unavailable`. Place a few orders at once and the log of payments says
+    `psp circuit opened`: from then on a delivery makes no call at all (ADR 0020).
   - Publish any text to the exchange `commands` with the routing key
     `payments.charge-payment`: it is in `payments.commands.dlq` at once, with the reason in
     the header `x-last-error`.
@@ -185,6 +187,9 @@ pnpm dev
   - the timeouts wait in the broker: the queues `api.saga-timeouts.delay.<ms>` in the
     management UI hold one message per step that is waiting. Set the three
     `ORDER_SAGA_*_TIMEOUT_MS` to a few seconds to watch them go off.
+- `pnpm db:explain:resilience`: one call, a retry, and a retry with a circuit breaker
+  against a provider that is healthy, fails, is down and hangs
+  (`docs/perf/3.11-resilience.md`, which also says what the client sees meanwhile)
 - `pnpm db:explain:stock`: the last unit and 50 buyers under four locking strategies
   (`docs/perf/3.6-stock-locking.md`).
 - `pnpm dev`: the contracts in watch mode, then api, worker, payments, inventory and
@@ -307,7 +312,8 @@ catalog cache: a hit against a database read, hit ratio, 200 callers on an empty
 
 ## Simulating the payment provider
 
-fake-psp reads `FAKE_PSP_LATENCY_MS`, `FAKE_PSP_FAILURE_RATE`, `FAKE_PSP_DECLINE_RATE` at start
+fake-psp reads `FAKE_PSP_LATENCY_MS`, `FAKE_PSP_FAILURE_RATE`, `FAKE_PSP_THROTTLE_RATE`,
+`FAKE_PSP_DECLINE_RATE` at start
 (see `docker-compose.yml`) and can be changed at runtime without a restart:
 
 ```cmd
@@ -315,15 +321,27 @@ curl -X POST http://localhost:4010/admin/config -H "content-type: application/js
 curl -X POST http://localhost:4010/admin/config -H "content-type: application/json" -d "{\"failureRate\":1,\"declineRate\":0}"
 curl -X POST http://localhost:4010/admin/config -H "content-type: application/json" -d "{\"latencyMs\":4000}"
 curl -X POST http://localhost:4010/admin/config -H "content-type: application/json" -d "{\"latencyMs\":200,\"failureRate\":0,\"declineRate\":0}"
+curl -X POST http://localhost:4010/admin/config -H "content-type: application/json" -d "{\"failureRate\":0.5}"
+curl -X POST http://localhost:4010/admin/config -H "content-type: application/json" -d "{\"throttleRate\":0.5}"
 curl http://localhost:4010/charges
+curl http://localhost:4010/admin/stats
 ```
 
 - `declineRate: 1`: every new charge is declined → `PAYMENT_FAILED` with the decline code, no
   retry. Place the order again: a new attempt, a new idempotency key.
-- `failureRate: 1`: every call returns 503 → the command is delivered again every 30 s, and
-  the fourth delivery ends the attempt: `PAYMENT_FAILED` with `psp_unavailable` after about
-  90 s. Set `failureRate` back to 0 in between and the order becomes `PAID`.
-- `latencyMs` above 3000: the 3 s timeout of payments fires → handled like a failure.
+- `failureRate: 1`: every call returns 503 → three calls within the delivery, then the
+  command is delivered again every 30 s, and the fourth delivery ends the attempt:
+  `PAYMENT_FAILED` with `psp_unavailable` after about 90 s. Set `failureRate` back to 0 in
+  between and the order becomes `PAID`. After five failed calls in 10 s the circuit opens
+  and `GET /admin/stats` stops counting: payments has stopped calling.
+- `failureRate: 0.5`: most orders are `PAID` at once, the retry hides the failure. With
+  several orders at a time the circuit opens on this provider too, and then the orders wait
+  for their next deliveries (`docs/perf/3.11-resilience.md`; `PSP_BREAKER_THRESHOLD`).
+- `throttleRate`: that share of the calls gets a 429 with `Retry-After: 1`; payments waits
+  that second and calls again.
+- `latencyMs` above 2000: the 2 s timeout of a call fires → handled like a failure, and an
+  operation ends after 7 s whatever its calls are doing.
+- `GET /admin/stats`: the calls the provider got since the last `POST /admin/reset`, by status.
 - The same `Idempotency-Key` always returns the same response.
 
 Set `PAYMENT_GATEWAY=fake` in `services/payments/.env` to skip fake-psp entirely (in-process,

@@ -122,9 +122,11 @@ export const envSchema = z.object({
   /**
    * How long the saga waits for payments to answer a charge before it asks to cancel it; also
    * the moment after which payments charges nothing for the command. Above what payments
-   * needs when the provider is away: every delivery of the command, with its delays
-   * (PAYMENTS_COMMANDS_MAX_ATTEMPTS × RABBITMQ_RETRY_DELAY_MS there), or a charge that would
-   * have gone through on a later delivery is given up.
+   * needs when the provider is away: every delivery of the command with the time its calls
+   * may take, and the delays in between (there: PAYMENTS_COMMANDS_MAX_ATTEMPTS ×
+   * (PSP_CALL_BUDGET_MS + PSP_RETRY_MAX_DELAY_MS) + (PAYMENTS_COMMANDS_MAX_ATTEMPTS − 1) ×
+   * RABBITMQ_RETRY_DELAY_MS, 126 s by default; docs/adr/0020), or a charge that would have
+   * gone through on a later delivery is given up.
    */
   ORDER_SAGA_CHARGE_TIMEOUT_MS: z.coerce.number().int().min(100).max(3_600_000).default(150_000),
   /**

@@ -33,6 +33,7 @@ pnpm db:migrate:payments                  # prisma migrate dev on postgres-payme
 pnpm --filter @oms/payments dev           # watch mode (needs services/payments/.env and pnpm build:contracts)
 pnpm --filter @oms/payments test          # unit: adapters (MSW), policy, env, architecture (no Docker)
 pnpm --filter @oms/payments test:e2e      # Testcontainers: Postgres + RabbitMQ, a command in, a row and an event out (through the outbox)
+pnpm db:explain:resilience                # the real gateway against fake-psp: one call, retry, retry + breaker (docs/perf/3.11-resilience.md)
 ```
 
 New migration: `pnpm --filter @oms/payments exec prisma migrate dev --name <verb>_<object>`.
@@ -76,13 +77,34 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
 - **A charge command may expire** (`expiresAt`, optional in the contract). Checked before
   every call to the provider: at or after that moment nothing is charged and the attempt ends
   `FAILED` with `expired`. The sender stopped waiting, and tells so with this field.
-- **One call to the provider per delivery** (ADR 0013). A failure that may pass
+- **A failure of the provider that may pass is retried in two layers** (ADR 0013, ADR 0020).
+  In the gateway, within the delivery: up to `PSP_MAX_RETRIES` more calls after a pause with
+  jitter, inside `PSP_CALL_BUDGET_MS`. In the broker: what the gateway gives up
   (`InfrastructureError.retryable`) is thrown out of the use case while a delivery is left:
   the row stays `PENDING`, nothing is published, and the command comes again after
   `RABBITMQ_RETRY_DELAY_MS`. On the last delivery (`lastDelivery`, from the consumer) it is
   the outcome, `psp_unavailable`: the api waits for an answer, so a provider that is down is
-  answered, never parked. Do not add a retry loop or `Nack(true)`: the call retried with
-  backoff and a circuit breaker is 3.11.
+  answered, never parked. Do not add a retry loop to the use case or the consumer, and no
+  `Nack(true)`: the first layer is `resilient-call.ts` and nowhere else.
+- **The gateway does not call a provider it holds for down** (ADR 0020;
+  `infrastructure/resilient-call.ts`, `cockatiel`). Above `PSP_BREAKER_THRESHOLD` failed
+  calls in the window the circuit is open for `PSP_BREAKER_HALF_OPEN_MS`: a charge or a void
+  throws at once, retryable, with no call. Consequences:
+  - to the use case an open circuit is "the provider is away": no new branch, no new failure
+    code. On the last delivery the answer is `psp_unavailable` without one call made;
+  - only a retryable `PaymentGatewayError` is repeated and counted. A new kind of failure
+    of the provider is classified in the adapter (`retryable` or not) and nowhere else;
+  - the idempotency key is what makes a second call safe: a new operation of the gateway
+    that is not repeatable at the provider must not go through `calls.execute()` as it is;
+  - one circuit for the provider, shared by `charge` and `void`, in the memory of the
+    process. A test that makes the provider fail builds a gateway of its own
+    (`httpGateway()` in `test/helpers/worker-app.ts`), or the failures of one test open the
+    circuit of the next;
+  - the time of a delivery is bounded by `PSP_CALL_BUDGET_MS` plus one pause. Raising the
+    budget, the retries or the deliveries moves the worst case towards
+    `ORDER_SAGA_CHARGE_TIMEOUT_MS` of the api: `env.schema.spec.ts` holds the defaults to it;
+  - `cockatiel` is ESM only; the service is CommonJS and loads it with `require` (Node 24).
+    Its `maxAttempts` counts the retries, not the calls.
 - **A command that fails on something else** (the database, a bug) gets
   `PAYMENTS_COMMANDS_MAX_ATTEMPTS` deliveries and is then parked in `payments.commands.dlq`,
   with nothing answered: the order waits until an operator puts the command back (3.7 gives
@@ -118,7 +140,8 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
 - **A new value of a Postgres enum is a migration of its own**: it cannot be used in the
   transaction that adds it, and Prisma runs a migration file as one.
 - The e2e suite replaces `PAYMENT_GATEWAY` with `test/doubles/test-psp.ts`; the HTTP adapter
-  is tested against MSW. Each test file has its own database and its own RabbitMQ vhost.
+  is tested against MSW, and once with the service around it
+  (`test/payments/psp-resilience.e2e-spec.ts`: the real adapter on the port, MSW as the provider). Each test file has its own database and its own RabbitMQ vhost.
   There a redelivery is 200 ms away and the third delivery is the last (`.env.test`).
   `test/helpers/broker.ts` reads a dead-letter queue (`take`), puts a message back (`put`),
   closes the service's connection from the broker's side (`killConnection`) and plays a
@@ -144,3 +167,8 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
 - Five migrations, no migration checker and no mutation run yet (`docs/architecture.md` →
   Known gaps).
 - `Actor` is the system actor only; `role-scope`, guards and HTTP rules do not apply.
+- The call to the provider is retried in the adapter although it is made from a queue
+  (`transport/integrations.md` §3: retry in exactly one layer), and a circuit breaker stands
+  in front of it (a "may" there): `docs/conventions-backlog.md` §20.
+- `prisma/explain/resilience.ts` touches no database and imports the adapter of the module
+  (lint: addition 2): it lives with the `db:explain:*` scripts of the other services.

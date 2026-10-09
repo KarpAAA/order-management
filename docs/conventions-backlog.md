@@ -924,3 +924,57 @@ facade, named `*.reader.ts`), or allow `modindex` for `modinfra` in the lint tem
 say when an adapter may use it. `application/events.md`: a translation of a domain event
 into an integration message may be asynchronous and may read; it runs inside the
 transaction of the use case.
+
+## 20. A call from a queue that is retried in the adapter too, behind a circuit breaker
+
+Step 3.11 · 2026-10-09 · Status: open
+
+**Conventions say:** `transport/integrations.md` §3: "retry in exactly one layer. A call made
+from a queue job does not retry in the adapter: it throws `InfrastructureError { retryable }`
+and the job's `attempts` / `backoff` retry it. Retrying in both multiplies the calls (3 × 5)
+and holds the worker slot through the adapter's backoff." A circuit breaker is a "MAY, not by
+default".
+
+**What we did:** two layers. The adapter makes up to two more calls within the delivery,
+after pauses of 200 ms to 2 s with jitter, inside a time budget for the whole operation
+(7 s). What it gives up it throws as retryable, and the broker delivers the command again
+30 s later, four times in all. A circuit breaker inside the retry counts every call and
+stops them while most fail; an open circuit is the same retryable error.
+
+**Why:** the rule assumes a queue whose backoff can be short (BullMQ: exponential from
+milliseconds). A broker retry is a wait queue with one fixed delay (§7): 30 s is the right
+step for an outage and a bad one for a failure of 50 ms, and it cannot have jitter. The two
+layers do not do the same job twice: one hides a hiccup, the other outlives an outage, a
+restart, and a failure that is not the vendor's.
+
+**Assessment:** good, on three conditions the rule did not have to state. The inner layer
+is small and bounded in time, not only in count: the budget is what keeps a worker slot from
+being held (measured: without it a provider that hangs took 6.4 s per message instead of 2).
+The outer worst case is written down against whoever waits for the answer (here the saga
+timeout of another service). And the breaker is what makes the multiplication harmless when
+it matters: against a provider that is down, 11 calls for 20 orders instead of 80. The cost:
+a breaker's threshold is a business number nobody guesses right. At the usual 50 % it
+turned a provider that failed half of its calls into one that was mostly not called
+(`docs/perf/3.11-resilience.md`).
+
+**Example:**
+
+```ts
+// adapter: every operation goes through one policy of the vendor
+charge(request: ChargeRequest): Promise<ChargeResult> {
+  return this.calls.execute(async ({ signal }) => {          // retry( breaker( call ) ), in a budget
+    const response = await this.post('/charges', signal, request);
+    return this.read(response);                              // the body is part of the call
+  });
+}
+// use case: unchanged. Retryable and a delivery left → throw; the last delivery → the answer.
+```
+
+**Proposed change:** `transport/integrations.md` §3: keep "one layer" as the default and name
+the exception: an inner retry is allowed when the outer one cannot be short (a broker wait
+queue, a cron), if it has (a) a time budget from config for the whole operation, (b) a
+documented worst case of both layers together, (c) an idempotency key at the vendor. Move
+the circuit breaker from "may" to "with an inner retry: yes", and say what it counts (calls,
+only `retryable`), that it is one per vendor and per process, and that its threshold is
+chosen with the retry in mind (a share of failed calls the retry can no longer hide).
+`quality/testing.md`: an adapter with a breaker is built per test.
