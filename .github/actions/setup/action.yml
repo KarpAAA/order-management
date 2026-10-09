@@ -35,4 +35,4 @@ runs:
 
     - name: Generate Prisma client
       shell: bash
-      run: pnpm --filter @oms/api --filter @oms/payments db:generate
+      run: pnpm --filter @oms/api --filter @oms/payments --filter @oms/inventory --filter @oms/notifications db:generate
