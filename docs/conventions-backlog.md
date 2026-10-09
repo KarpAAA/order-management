@@ -952,9 +952,10 @@ is small and bounded in time, not only in count: the budget is what keeps a work
 being held (measured: without it a provider that hangs took 6.4 s per message instead of 2).
 The outer worst case is written down against whoever waits for the answer (here the saga
 timeout of another service). And the breaker is what makes the multiplication harmless when
-it matters: against a provider that is down, 11 calls for 20 orders instead of 80. The cost:
-a breaker's threshold is a business number nobody guesses right. At the usual 50 % it
-turned a provider that failed half of its calls into one that was mostly not called
+it matters: against a provider that is down, 19 calls for 20 orders instead of 80. The cost:
+a breaker's threshold is a number nobody guesses right. At the usual 50 % it turned a
+provider that failed half of its calls into one that was mostly not called, and made the
+client wait longer than with no retry at all; it was raised to 80 % after that was measured
 (`docs/perf/3.11-resilience.md`).
 
 **Example:**

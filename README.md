@@ -332,11 +332,13 @@ curl http://localhost:4010/admin/stats
 - `failureRate: 1`: every call returns 503 → three calls within the delivery, then the
   command is delivered again every 30 s, and the fourth delivery ends the attempt:
   `PAYMENT_FAILED` with `psp_unavailable` after about 90 s. Set `failureRate` back to 0 in
-  between and the order becomes `PAID`. After five failed calls in 10 s the circuit opens
-  and `GET /admin/stats` stops counting: payments has stopped calling.
-- `failureRate: 0.5`: most orders are `PAID` at once, the retry hides the failure. With
-  several orders at a time the circuit opens on this provider too, and then the orders wait
-  for their next deliveries (`docs/perf/3.11-resilience.md`; `PSP_BREAKER_THRESHOLD`).
+  between and the order becomes `PAID`. Once more than 80 % of at least ten calls in 10 s
+  have failed the circuit opens and `GET /admin/stats` stops counting: payments has stopped
+  calling.
+- `failureRate: 0.5`: most orders are `PAID` at once, the retry hides the failure, and the
+  circuit stays closed. Start payments with `PSP_BREAKER_THRESHOLD=0.5` and
+  `PSP_BREAKER_MIN_CALLS=5` to see it open on this provider, and the orders wait for their
+  next deliveries (`docs/perf/3.11-resilience.md`).
 - `throttleRate`: that share of the calls gets a 429 with `Retry-After: 1`; payments waits
   that second and calls again.
 - `latencyMs` above 2000: the 2 s timeout of a call fires → handled like a failure, and an

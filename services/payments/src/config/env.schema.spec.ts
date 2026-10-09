@@ -39,10 +39,10 @@ describe('validateEnv: safe defaults (ops/config-env.md §1)', () => {
     ).toThrow(/PSP_RETRY_MAX_DELAY_MS/);
   });
 
-  it('opens the breaker above half of at least 5 calls in 10 s, for 10 s', () => {
+  it('opens the breaker above 80 % of at least 10 calls in 10 s, for 10 s', () => {
     const env = validateEnv(minimal);
-    expect(env.PSP_BREAKER_THRESHOLD).toBe(0.5);
-    expect(env.PSP_BREAKER_MIN_CALLS).toBe(5);
+    expect(env.PSP_BREAKER_THRESHOLD).toBe(0.8);
+    expect(env.PSP_BREAKER_MIN_CALLS).toBe(10);
     expect(env.PSP_BREAKER_WINDOW_MS).toBe(10_000);
     expect(env.PSP_BREAKER_HALF_OPEN_MS).toBe(10_000);
     // a share: neither "never" nor "at the first failure"

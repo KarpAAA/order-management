@@ -80,12 +80,14 @@ export const envSchema = z.object({
   /**
    * The circuit breaker: with more than this share of the calls of the last
    * PSP_BREAKER_WINDOW_MS failed, the provider is not called for PSP_BREAKER_HALF_OPEN_MS;
-   * then one call is let through, and it decides.
+   * then one call is let through, and it decides. Well above a half on purpose: a provider
+   * that fails every second call is still worth calling, the retry gets most charges
+   * through (docs/perf/3.11-resilience.md).
    */
-  PSP_BREAKER_THRESHOLD: z.coerce.number().gt(0).lt(1).default(0.5),
+  PSP_BREAKER_THRESHOLD: z.coerce.number().gt(0).lt(1).default(0.8),
   PSP_BREAKER_WINDOW_MS: z.coerce.number().int().min(1000).default(10_000),
   /** Fewer calls than this in the window say nothing: two failures of two are not an outage. */
-  PSP_BREAKER_MIN_CALLS: z.coerce.number().int().min(1).default(5),
+  PSP_BREAKER_MIN_CALLS: z.coerce.number().int().min(1).default(10),
   PSP_BREAKER_HALF_OPEN_MS: z.coerce.number().int().min(1).default(10_000),
 });
 

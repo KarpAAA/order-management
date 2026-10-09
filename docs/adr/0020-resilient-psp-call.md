@@ -54,12 +54,19 @@ delays between the deliveries` = 4 × 9 s + 3 × 30 s = 126 s must stay below
   `ORDER_SAGA_CHARGE_TIMEOUT_MS` (150 s). A test of the env schema holds the defaults to it.
 
 - **A circuit breaker counts the calls, not the operations.** The retry is outside it, so
-  each call is one observation. Above `PSP_BREAKER_THRESHOLD` (0.5) failed calls among at
-  least `PSP_BREAKER_MIN_CALLS` (5) in the last `PSP_BREAKER_WINDOW_MS` (10 s), the circuit
+  each call is one observation. Above `PSP_BREAKER_THRESHOLD` (0.8) failed calls among at
+  least `PSP_BREAKER_MIN_CALLS` (10) in the last `PSP_BREAKER_WINDOW_MS` (10 s), the circuit
   opens: for `PSP_BREAKER_HALF_OPEN_MS` (10 s) no call is made and every operation fails at
   once, as retryable. Then one call is let through: if it passes the circuit closes, if not
   it opens again. It counts what the retry repeats and nothing else: a provider that
   declines or refuses is there.
+
+- **The threshold is 80 %, not the usual half, because a retry stands in front of it.** A
+  threshold says how bad a provider must be before a call is not worth making. Three calls
+  at 50 % failures pass 87.5 % of the time: that provider is worth calling. At 0.5 the
+  breaker opened on it every few seconds and 35 of 40 orders took 93 s, worse than before
+  3.11; at 0.8 it stays closed there and still opens within a second on a provider that is
+  down (`docs/perf/3.11-resilience.md`).
 
 - **An open circuit ends the retries of an operation too.** The error of the breaker is not
   one the retry handles: an operation whose second call opened the circuit makes no third.
@@ -81,17 +88,15 @@ delays between the deliveries` = 4 × 9 s + 3 × 30 s = 126 s must stay below
 - **A hiccup is no longer the client's business.** With the provider failing half of its
   calls, 40 of 40 orders are paid and 32 at once, where 36 were paid and 25 waited 30 s or
   more (`docs/perf/3.11-resilience.md`).
-- **A provider that is down gets almost no calls**: 11 for 20 orders instead of 80, and
+- **A provider that is down gets a quarter of the calls**: 19 for 20 orders instead of 80, and
   each command is turned away in under a millisecond instead of holding its place for the
   timeout. The client sees the same as before: `PENDING_PAYMENT`, then `PAYMENT_FAILED
 psp_unavailable` after the last delivery, about 93 s.
-- **The breaker at its default threshold makes a half-working provider worse.** At 50 %
-  failed calls it opens every few seconds, and the commands it turns away spend their
-  deliveries on a closed door: 35 of 40 orders took 93 s, against 8 that waited 30 s with the
-  retry alone. A threshold says how bad a provider must be before a call is not worth
-  making; with three calls per operation that is well above 50 %. The default is the value
-  the roadmap asks to observe; `PSP_BREAKER_THRESHOLD` and `PSP_BREAKER_MIN_CALLS` are
-  settings.
+- **Between "hiccups" and "down" the breaker is a guess.** A provider that fails 80 % of
+  its calls for a while is treated as down, and the charges that would have passed on a
+  third call are not attempted for 10 s. To see the breaker open on a provider that fails
+  half of its calls, as the roadmap asks: `PSP_BREAKER_THRESHOLD=0.5`,
+  `PSP_BREAKER_MIN_CALLS=5`.
 - **Up to twelve calls for one attempt** (3 × 4 deliveries) where there were four. The
   provider must be idempotent by key for all of them, and the budget is what keeps a
   delivery short.
