@@ -145,6 +145,19 @@ export class IdentityQueryService {
     return row;
   }
 
+  /**
+   * Where a user is written to. The primary, like `me`: it is read inside the transaction
+   * of a write (the event of an order), and a user is no tenant row.
+   */
+  async getUserContact(userId: string): Promise<{ userId: string; email: string }> {
+    const user = await this.unscoped.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true },
+    });
+    if (!user) throw new UserNotFoundError();
+    return { userId: user.id, email: user.email };
+  }
+
   private requireMembership(): WorkspaceMembership {
     const membership = this.tenant.membership();
     // Only reachable if a route forgot @WorkspaceScoped(): fail closed.

@@ -5,7 +5,10 @@ import type { Discount } from '@modules/orders/domain/discount';
 import { OrderProductNotFoundError } from '@modules/orders/domain/errors';
 import { Order } from '@modules/orders/domain/order';
 import type { OrderLineInput } from '@modules/orders/domain/order';
+import { OrderSaga } from '@modules/orders/domain/order-saga';
+import { OrderSagaStep } from '@modules/orders/domain/order-saga-step';
 import { OrderStatus } from '@modules/orders/domain/order-status';
+import { OrderSagaMapper } from '@modules/orders/infrastructure/order-saga.mapper';
 import { OrderMapper } from '@modules/orders/infrastructure/order.mapper';
 
 import {
@@ -28,6 +31,12 @@ export interface OrderSpec {
   discount: Discount;
   /** null → the workspace's seeded MEMBER */
   createdBy: string | null;
+  /**
+   * Where the saga of the last placing stands. null → what the status implies: a
+   * PENDING_PAYMENT order waits for its charge (CHARGING), a paid one is COMPLETED, a failed
+   * one ABORTED. An order that was never placed has no saga.
+   */
+  sagaStep: OrderSagaStep | `${OrderSagaStep}` | null;
 }
 
 const SEEDED_DEFAULTS: Record<string, { productId: string; createdBy: string }> = {
@@ -44,6 +53,17 @@ const PATH: Record<OrderStatus, readonly ((order: Order, at: Date, by: string) =
   [OrderStatus.Fulfilled]: [place, pay, fulfill],
   [OrderStatus.Cancelled]: [cancel],
 };
+
+/** The step of the saga a status implies when the test does not ask for another. */
+const SAGA_STEP: Partial<Record<OrderStatus, OrderSagaStep>> = {
+  [OrderStatus.PendingPayment]: OrderSagaStep.Charging,
+  [OrderStatus.Paid]: OrderSagaStep.Completed,
+  [OrderStatus.Fulfilled]: OrderSagaStep.Completed,
+  [OrderStatus.PaymentFailed]: OrderSagaStep.Aborted,
+};
+const ENDED: readonly OrderSagaStep[] = [OrderSagaStep.Completed, OrderSagaStep.Aborted];
+/** Far enough: no test waits for the timeout of a saga the factory wrote. */
+const SAGA_DEADLINE_MS = 3_600_000;
 
 const PSP_ACTOR = 'system:consumer:orders';
 
@@ -69,6 +89,9 @@ function cancel(order: Order, now: Date, by: string): void {
  * An order in any status, reached the way the app reaches it: `Order.draft` with catalog
  * data read from the database, then the real transitions, then the repository's rows
  * (`OrderMapper`). Totals, timestamps and history are therefore always consistent.
+ *
+ * An order that was placed gets the saga of that placing (`sagaStep`), without the commands
+ * and the timeout the app would have written: the test is the other side of the broker.
  *
  * Known shortcut: `version` stays 0 whatever the status (the app increments it per save).
  *
@@ -124,6 +147,24 @@ export const orderFactory = Factory.define<OrderSpec, unknown, Order>(({ onCreat
     await db.order.create({ data: OrderMapper.toCreate(order) });
     await db.orderItem.createMany({ data: OrderMapper.toItemRows(order) });
     await db.orderEvent.createMany({ data: OrderMapper.toEventRows(order, order.pullHistory()) });
+
+    const step = (spec.sagaStep ?? SAGA_STEP[spec.status as OrderStatus]) as
+      OrderSagaStep | undefined;
+    if (step !== undefined && order.paymentAttempt > 0) {
+      const at = new Date(now);
+      const saga = OrderSaga.restore({
+        workspaceId: order.workspaceId,
+        orderId: order.id,
+        attempt: order.paymentAttempt,
+        step,
+        deadlineAt: ENDED.includes(step) ? null : new Date(now + SAGA_DEADLINE_MS),
+        cancelRequestedAt: null,
+        version: 0,
+        createdAt: at,
+        updatedAt: at,
+      });
+      await db.orderSaga.create({ data: OrderSagaMapper.toCreate(saga) });
+    }
     return order;
   });
 
@@ -133,5 +174,6 @@ export const orderFactory = Factory.define<OrderSpec, unknown, Order>(({ onCreat
     lines: null,
     discount: NO_DISCOUNT,
     createdBy: null,
+    sagaStep: null,
   };
 });

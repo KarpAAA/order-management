@@ -1,7 +1,7 @@
 # Shared job setup: pnpm + Node from the repo's own pins, dependencies, Prisma client.
 # The generated client is gitignored; type-aware lint, tsc and Stryker's checker need it.
 name: Setup
-description: Install pnpm, Node, dependencies and generate the Prisma client
+description: Install pnpm, Node, dependencies, build the message contracts and generate the Prisma client
 
 runs:
   using: composite
@@ -28,6 +28,11 @@ runs:
       shell: bash
       run: pnpm install --frozen-lockfile
 
+    # @oms/contracts is consumed from its dist: lint, tsc and the tests of a service need it built
+    - name: Build message contracts
+      shell: bash
+      run: pnpm --filter @oms/contracts build
+
     - name: Generate Prisma client
       shell: bash
-      run: pnpm --filter @oms/api db:generate
+      run: pnpm --filter @oms/api --filter @oms/payments --filter @oms/inventory --filter @oms/notifications db:generate

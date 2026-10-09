@@ -55,18 +55,90 @@ export const envSchema = z.object({
    * invalidation leaves behind. 0 switches the catalog cache off (docs/adr/0010).
    */
   CATALOG_CACHE_TTL_SECONDS: z.coerce.number().int().min(0).max(3600).default(300),
+  /** The broker between the services; the path is the vhost (the e2e suite gives each test file its own). */
+  RABBITMQ_URL: z.url({ protocol: /^amqps?$/ }),
+  /** Messages one process works on at a time: unacknowledged messages the broker hands it. */
+  RABBITMQ_PREFETCH: z.coerce.number().int().min(1).max(100).default(10),
+  /** How long a message whose handling failed waits before it is delivered again. */
+  RABBITMQ_RETRY_DELAY_MS: z.coerce.number().int().min(1).default(30_000),
+  /**
+   * How many times the broker may take a message back from a consumer that died holding it
+   * before the message is parked unhandled. Below 20, the limit at which the broker itself
+   * dead-letters it: that message cannot come back from the wait queue (docs/adr/0013).
+   */
+  RABBITMQ_REDELIVERY_LIMIT: z.coerce.number().int().min(1).max(19).default(10),
+  /**
+   * Deliveries of one payment event before it is parked. The charge is made by then and
+   * nobody waits for an answer, so giving up early only makes work for an operator.
+   */
+  PAYMENT_EVENTS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(10),
+  /** The delay of `api.payment-events` alone; unset: RABBITMQ_RETRY_DELAY_MS. */
+  PAYMENT_EVENTS_RETRY_DELAY_MS: z.coerce.number().int().min(1).optional(),
+
+  /** Deliveries of one answer of inventory before it is parked (as PAYMENT_EVENTS_MAX_ATTEMPTS). */
+  INVENTORY_EVENTS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(10),
+  /** The delay of `api.inventory-events` alone; unset: RABBITMQ_RETRY_DELAY_MS. */
+  INVENTORY_EVENTS_RETRY_DELAY_MS: z.coerce.number().int().min(1).optional(),
+  /** Deliveries of one timeout of a saga step before it is parked. */
+  SAGA_TIMEOUTS_MAX_ATTEMPTS: z.coerce.number().int().min(1).max(50).default(10),
+  /** The delay of `api.saga-timeouts` alone; unset: RABBITMQ_RETRY_DELAY_MS. */
+  SAGA_TIMEOUTS_RETRY_DELAY_MS: z.coerce.number().int().min(1).optional(),
+
+  /** Switches the relay of the outbox off without a deploy: messages wait in the table. */
+  OUTBOX_RELAY_ENABLED: booleanString.default(true),
+  /** How long the relay sleeps after a pass that found less than a full batch. */
+  OUTBOX_POLL_INTERVAL_MS: z.coerce.number().int().min(10).max(60_000).default(1000),
+  /** Messages one pass of the relay publishes, in one transaction. */
+  OUTBOX_BATCH_SIZE: z.coerce.number().int().min(1).max(1000).default(100),
+  /**
+   * How long the relay waits for the broker to confirm one message. A broker that is away
+   * does not refuse a publish, it never answers: without this the pass would hold its
+   * transaction for as long as the broker is down.
+   */
+  OUTBOX_PUBLISH_TIMEOUT_MS: z.coerce.number().int().min(100).max(60_000).default(5000),
+  /** Days a published message is kept before the cleanup job deletes it. */
+  OUTBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
+
+  /** Days the record of a handled message is kept: longer than the message may come again. */
+  INBOX_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
+
+  /**
+   * Hours the answer to an `Idempotency-Key` is kept: longer than a client may still retry
+   * the request. After that the key is unknown, and the request is done again.
+   */
+  IDEMPOTENCY_RETENTION_HOURS: z.coerce.number().int().min(1).max(720).default(24),
 
   JWT_SECRET: z.string().min(32),
   // ≤ 15 min (ops/security.md §3); with refresh: none a leaked token lives this long
   JWT_ACCESS_TTL_SECONDS: z.coerce.number().int().positive().max(900).default(900),
 
-  PAYMENT_GATEWAY: z.enum(['http', 'fake']).default('fake'),
-  PSP_BASE_URL: z.url().default('http://localhost:4010'),
-  PSP_TIMEOUT_MS: z.coerce.number().int().positive().default(3000),
-
   ORDERS_WORKER_CONCURRENCY: z.coerce.number().int().positive().default(10),
-  CHARGE_ATTEMPTS: z.coerce.number().int().min(1).max(10).default(5),
-  CHARGE_BACKOFF_MS: z.coerce.number().int().positive().default(1000),
+
+  /**
+   * How long the saga of an order waits for inventory to answer a reservation before it gives
+   * the order back to DRAFT and releases whatever may be held (docs/adr/0017).
+   */
+  ORDER_SAGA_RESERVE_TIMEOUT_MS: z.coerce.number().int().min(100).max(3_600_000).default(60_000),
+  /**
+   * How long the saga waits for payments to answer a charge before it asks to cancel it; also
+   * the moment after which payments charges nothing for the command. Above what payments
+   * needs when the provider is away: every delivery of the command with the time its calls
+   * may take, and the delays in between (there: PAYMENTS_COMMANDS_MAX_ATTEMPTS ×
+   * (PSP_CALL_BUDGET_MS + PSP_RETRY_MAX_DELAY_MS) + (PAYMENTS_COMMANDS_MAX_ATTEMPTS − 1) ×
+   * RABBITMQ_RETRY_DELAY_MS, 126 s by default; docs/adr/0020), or a charge that would have
+   * gone through on a later delivery is given up.
+   */
+  ORDER_SAGA_CHARGE_TIMEOUT_MS: z.coerce.number().int().min(100).max(3_600_000).default(150_000),
+  /**
+   * How long the saga waits for the answer to a cancellation of the payment or a release of
+   * the stock before it asks again. Nothing is decided without that answer.
+   */
+  ORDER_SAGA_COMPENSATION_TIMEOUT_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .max(3_600_000)
+    .default(60_000),
 
   /** Monthly `order_events` partitions kept ready after the current month. */
   ORDER_EVENTS_PARTITIONS_AHEAD: z.coerce.number().int().min(1).max(12).default(3),
@@ -94,10 +166,6 @@ export function validateEnv(raw: Record<string, unknown>): Env {
   // Boot-time safety checks (ops/config-env.md §3).
   if (env.NODE_ENV === 'production' && (env.SWAGGER_ENABLED || env.BULL_BOARD_ENABLED)) {
     throw new Error('Invalid environment: Swagger and bull-board must be disabled in production');
-  }
-  // the fake gateway marks orders PAID with no money moved
-  if (env.NODE_ENV === 'production' && env.PAYMENT_GATEWAY === 'fake') {
-    throw new Error('Invalid environment: PAYMENT_GATEWAY=fake is not allowed in production');
   }
   return env;
 }

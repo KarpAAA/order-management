@@ -150,7 +150,8 @@ export const OrderMapper = {
       fromStatus: entry.fromStatus,
       toStatus: entry.toStatus,
       actor: entry.changedBy,
-      payload: entry.payload,
+      // plain JSON by construction: strings, numbers and the shortages of a reservation
+      payload: entry.payload as Prisma.InputJsonObject,
       createdAt: entry.at,
     }));
   },

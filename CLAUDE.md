@@ -1,7 +1,13 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers** (see `docs/ROADMAP.md`; Step 0 foundation: `docs/architecture.md`).
+Current step: **Step 3: microservices and brokers**, 3.13 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Four services: `services/api` (this file), `services/payments`, `services/inventory` and
+`services/notifications` (their own decisions: `services/payments/CLAUDE.md`,
+`services/inventory/CLAUDE.md`, `services/notifications/CLAUDE.md`). They share
+`packages/contracts` and nothing else. The api orchestrates payments and inventory: placing
+an order is a saga (ADR 0017). notifications only listens: it reads the events of an order
+and writes to its user (ADR 0019).
 The roadmap runs in two passes: Step 2 closed at 2.9, and 2.10–2.12, Kafka (3.8, 3.9, 3.14) and
 the other deferred items wait in `docs/ROADMAP.md` → «Другий прохід». Do not build a deferred
 item unless asked.
@@ -12,6 +18,11 @@ Rules in `.claude/rules/shared/` are shared across my Nest projects (symlink to
 `C:\Users\ikarp\WebstormProjects\nest-conventions\rules`, created by its `link.ps1`). Do not
 edit them here: tell me and I change them in the conventions repo. Project-specific
 deviations go in `.claude/rules/project/` only.
+When the code goes past the conventions because they did not foresee the case (not a choice
+that is right for this project only), add an entry to `docs/conventions-backlog.md` in the same
+change, in its template: what the conventions say, what we did, why, whether it is good, a
+short example, the proposed change. That file is my queue for the conventions repo; a
+project-only choice still goes to "Deviations" below.
 Full architecture reference: `C:\Users\ikarp\WebstormProjects\nest-conventions\docs\architecture-full.md`
 (read it when creating a module or unsure about a level).
 
@@ -27,11 +38,13 @@ pii-encryption: no
 ids: uuid7
 cross-module-fk: yes            # identity/catalog/orders stay together in api, also in Step 3
 transactions: cls
-outbox: no                      # Step 0; Step 3 adds reliable events + outbox
+outbox: yes                     # table `outbox` + a relay in the worker (ADR 0014); relayed to RabbitMQ, not to BullMQ
+broker: rabbitmq                # between services only (ADR 0012): commands → exchange `commands`, events → `events`
 queue: bullmq
 processes: api+worker
-dlq: alert                      # dead job → Logger.error in OrdersConsumer (Step 4: metric)
-cron: bullmq                    # job schedulers on the module's queue; first: maintain-order-event-partitions
+dlq: alert                      # dead job → Logger.error in OrdersConsumer; a broker message given up → `<queue>.dlq` + Logger.error (Step 4: metric)
+cron: bullmq                    # job schedulers on the owner's queue: maintain-order-event-partitions (orders), cleanup-outbox (outbox), cleanup-inbox (inbox), cleanup-idempotency-keys (idempotency)
+idempotency-key: required       # on POST /orders and POST /orders/{id}/place only (ADR 0018); a row in the transaction of the write
 validation: class-validator
 swagger-prod: off
 async-push: poll
@@ -41,21 +54,26 @@ metrics-endpoint: none          # Step 4
 tracker: none
 merge: merge-commit
 testing: vitest                 # projects unit + e2e; test levels per requirement in docs/requirements.md
-ci: github-actions              # PR + main: static, unit, e2e, migrations, audit; PR: commits; main + nightly: mutation, contract
+ci: github-actions              # PR + main: static, unit, e2e, migrations, contracts, audit; PR: commits; main + nightly: mutation, contract, system
 hooks: husky                    # pre-commit: lint-staged; commit-msg: commitlint + no AI trailers; pre-push: typecheck + unit
 ```
 
 ## Stack
 
 NestJS 12.1, Prisma 7.10 (+ `@prisma/adapter-pg`), PostgreSQL 18, Redis 7, BullMQ 6,
-Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces)
+RabbitMQ 4 (`@golevelup/nestjs-rabbitmq` 9: `AmqpConnection` + `@RabbitSubscribe`, not its module),
+Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces: `services/*`, `packages/*`, `devtools/*`)
 
 ## Commands (CMD-friendly, from the repo root)
 
 ```
-pnpm infra:up          # postgres, postgres-replica, pgbouncer, redis, fake-psp (healthy)
-pnpm db:migrate        # prisma migrate dev
+pnpm infra:up          # postgres, postgres-replica, pgbouncer, postgres-payments, postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, fake-psp (healthy)
+pnpm db:migrate        # prisma migrate dev (api)
+pnpm db:migrate:payments     # prisma migrate dev (payments, its own Postgres on 5434)
+pnpm db:migrate:inventory    # prisma migrate dev (inventory, its own Postgres on 5435)
+pnpm db:migrate:notifications   # prisma migrate dev (notifications, its own Postgres on 5436)
 pnpm db:seed           # fixed-id dev data (README → Seeded data)
+pnpm db:seed:inventory       # stock for the seeded products (inventory)
 pnpm db:reset          # drop, migrate, seed
 pnpm db:datagen        # Step 2 volume data after db:reset: 100 tenants, 2M orders (--scale smoke)
 pnpm db:explain        # plans of the list queries on the datagen data (docs/perf/2.2-indexes-explain.md)
@@ -64,17 +82,26 @@ pnpm db:explain:rls    # what oms_app sees, plans under the RLS policy (docs/per
 pnpm db:explain:pgbouncer    # 500 clients on 20 server connections, limits, the leak (docs/perf/2.7-pgbouncer.md)
 pnpm db:explain:replica      # replication lag, read-your-writes with a 5 s delay (docs/perf/2.8-read-replica.md)
 pnpm db:explain:cache        # catalog cache: hit vs database, hit ratio, 200 callers on an empty key (docs/perf/2.9-cache.md)
-pnpm dev               # api + worker in watch mode
+pnpm db:explain:stock        # four ways to reserve the last unit, lock order (docs/perf/3.6-stock-locking.md)
+pnpm db:explain:resilience   # the PSP call: one call, retry, retry + breaker against a failing fake-psp (docs/perf/3.11-resilience.md)
+pnpm dev               # contracts (tsc --watch) + api + worker + payments + inventory + notifications in watch mode
 pnpm lint && pnpm typecheck
-pnpm test              # Vitest project unit: domain, VOs, policies, use cases, adapters (MSW), architecture (no Docker)
-pnpm test:e2e          # Vitest project e2e: *.int-spec.ts + *.e2e-spec.ts (Testcontainers)
+pnpm test              # every package: Vitest project unit of api (domain, VOs, policies, use cases, adapters, architecture) of payments (adapters (MSW), policy, architecture), of inventory (domain, use cases, adapter, policy, architecture) and of notifications (domain, templates, use cases, adapter, policy, architecture) + contracts (no Docker)
+pnpm --filter @oms/contracts build   # packages/contracts → dist (CommonJS + .d.ts)
+pnpm contracts:freeze  # release the contracts: schema + sample of a new version into packages/contracts/released; refuses an incompatible change (ADR 0021)
+pnpm contracts:check   # released/ against the merge base with CONTRACTS_BASE_REF (main): nothing deleted, no sample changed, schemas compatible
+pnpm test:e2e          # Vitest project e2e of api, then of inventory, notifications and payments: *.int-spec.ts + *.e2e-spec.ts (Testcontainers), each service to its boundary
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
+pnpm test:system       # the four services from their images in compose project oms-system, four scenarios through the HTTP API (devtools/system; SYSTEM_KEEP_STACK=1 leaves it up, pnpm system:down removes it)
 pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
 pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
-docker compose --profile app up --build   # migrate + api + worker from one image
+docker compose --profile app up --build   # migrate + api + worker from one image; payments, inventory and notifications each from its own, with its migrate step
 ```
 
-New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<object>`.
+Root `lint`, `typecheck`, `test`, `test:e2e` and `dev` build `@oms/contracts` first; run through
+a filter (`pnpm --filter @oms/api …`) they need `pnpm build:contracts` once.
+New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<object>`
+(`@oms/payments`, `@oms/inventory`, `@oms/notifications` for their databases).
 
 ## Modules and their combinations
 
@@ -86,15 +113,293 @@ New migration: `pnpm --filter @oms/api exec prisma migrate dev --name <verb>_<ob
 | catalog  | layered (flat) | L1    | CQS            | http         |
 | orders   | layered        | L4    | CQS + EventBus | http, worker |
 
-Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
+Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image. The worker has
+eight entries: the BullMQ queues `orders`, `outbox`, `inbox` and `idempotency` (cron ticks
+only), the broker
+queues `api.inventory-events`, `api.payment-events` and `api.saga-timeouts`, and the relay of
+the outbox (a timer, `infrastructure/outbox/`).
 
 ## Gotchas specific to this project
 
+- **A message between services is a contract in `packages/contracts`** (`@oms/contracts`,
+  ADR 0011): a zod schema from `defineMessage(name, version, payload)`, in an envelope with
+  `messageId`, `workspaceId`, `correlationId`. The exchange names live there too (`topology.ts`).
+  Consequences:
+  - an incompatible change (a removed or renamed field, a new type or meaning, a new required
+    field) is a new file `<name>.v<N+1>.ts`; the old one stays and `name` never changes. Only an
+    optional field may be added to an existing version;
+  - a new contract is added to `contracts` in `registry.ts` and exported from `index.ts`
+    (`registry.spec.ts` fails otherwise);
+  - a command is named after its receiver, an event after its publisher;
+  - `src/` imports `zod` and its own files only (lint): no id generator, no clock, no domain
+    type. The sender passes `messageId` and `occurredAt`; money is `{ amountMinor, currency }`;
+  - a producer builds with `Contract.create()`, a consumer reads with `parseMessage()`, never
+    with a cast;
+  - a schema is never `.strict()`: a consumer must keep reading a message that gained a field;
+  - the package is consumed from `dist`: build it before whatever imports it.
+
+- **A contract is tested against its released version, and a service against the map of
+  parties** (ADR 0021; `packages/contracts/released/`, `src/parties.ts`, the entry
+  `@oms/contracts/testing`). Consequences:
+  - a new contract also needs its row in `parties.ts` and its example in
+    `testing/examples.ts`, then `pnpm contracts:freeze`: `released.spec.ts` and
+    `parties.spec.ts` fail otherwise;
+  - `released/` is written by `contracts:freeze` only. A released version takes one change,
+    a field that is not required; the script refuses anything else and names the `v<N+1>`
+    file to create. Never edit or delete a released file to get a test through:
+    `contracts:check` (CI job `contracts`) compares with the base branch;
+  - a new routing key in a consumer, or a new `create()` in an adapter, is a change of a row
+    in `parties.ts`: `src/modules/<m>/<m>.contract.spec.ts` of the service holds the
+    bindings, the consumers and the adapters to it (CTR-020, 021, 030). A new adapter that
+    writes a contract gets its line in `EMITTERS` there;
+  - a new version gets its readers first: a row may name a consumer before a producer, not
+    the other way round. The consumers branch on `message.name` only: the first `v2` makes
+    its consumers tell the versions apart (CTR-021 fails until then);
+  - `src/testing/` is the only part of the package that may import `node:`; `src/index.ts`
+    never imports it, and no `src/` of a service does outside its tests;
+  - an upgrade of zod that changes the generated JSON Schema fails CTR-002 with no contract
+    changed: the files are deleted and frozen again on purpose, in a commit of its own.
+
+- **Every event of an order carries its recipient** (ADR 0019): `recipient { userId, email }`,
+  the user who created the order, read by `OrderEventsTranslator` when it writes the
+  contract. notifications-service reads these events and nothing else. Consequences:
+  - a domain event of orders starts with `OrderRef` (`workspaceId`, `orderId`, `createdBy`):
+    `this.ref` in `Order`. A new reliable event of an order takes it first, and its
+    translation spreads `await this.addressed(event)` into the payload;
+  - a translation is asynchronous (`ReliableEvents`) and runs inside the transaction of the
+    use case: it may read, never call the outside. A creator identity does not know
+    (`UserNotFoundError`) fails the whole write;
+  - the translator asks for the address through the port `OrderRecipients`
+    (`application/order-recipients.reader.ts` over `IdentityFacade`): `infrastructure/` of a
+    module may not import another module (lint). The address never enters `domain/`;
+  - a hand-built test module that provides `OrderEventsTranslator` provides
+    `ORDER_RECIPIENTS` too (`place-order.transaction.int-spec.ts`);
+  - a subscriber makes a mail of one event: what a mail has to say goes into the contract of
+    that event (the amount is in `order-paid` for this reason), never "the subscriber reads
+    it from the event before";
+  - the life of an order on `events` is six contracts: `orders.order-placed`, `-paid`,
+    `-cancelled`, `-fulfilled`, `-payment-failed`, `-returned-to-draft`. An order cancelled
+    on a failed charge publishes `-cancelled` only;
+  - `recipient` and the amount of `order-paid` were added to `v1` as required fields, against
+    the rule above, because no message of these contracts had a reader yet. The next
+    required field is a `v2`.
+
+- **Placing an order is a saga the api orchestrates** (ADR 0017): `place → reserve stock →
+charge → PAID`, a command for every step and an answer back. Its state is `OrderSaga`, a
+  row of `order_sagas` per `(order, paymentAttempt)`, beside `Order`: the saga says where the
+  process is, the order what the client sees (`PENDING_PAYMENT` the whole time). Consequences:
+  - `place` asks for the stock, not for the charge: `payments.charge-payment` is written when
+    `inventory.stock-reserved` arrives (`confirm-stock-reservation.service.ts`). A test that
+    answers payments first is refused by the saga;
+  - a use case of the saga loads the saga and the order, lets `OrderSaga` accept the fact
+    (anything it is not waiting for is an `InvalidStateError`: acknowledged), changes the
+    order, saves both and sends through `OrderSagaSteps`. Never branch on the step in a use
+    case to decide whether a fact is allowed: that table is `OrderSaga`
+    (`domain/order-saga.spec.ts` pins it);
+  - `OrderSagaSteps.save()` writes the timeout of a step that has just begun and gives the
+    saga its deadline. A step that waits without `deadline_at` is refused by a CHECK;
+  - the order gets its status when the question of money is settled, not when the saga ends:
+    `PAYMENT_FAILED` or `CANCELLED` come with the saga still `RELEASING`. Do not wait for
+    `stock-released` to tell the client. Its event is published at that moment too
+    (`order-payment-failed`, `order-returned-to-draft`, `order-cancelled`);
+  - a timeout is not a failure: of the reservation it gives the order back (`DRAFT`) and
+    releases in the dark; of the charge it only sends `payments.cancel-payment` and the answer
+    decides (`payment-succeeded` still pays the order); of a compensation it asks again and
+    logs an error. Never end a saga or release stock on a charge that was not answered;
+  - `cancel` of a `PENDING_PAYMENT` order goes through `saga.requestCancel()`: 204 while the
+    stock is being reserved, 202 while the charge is under way
+    (`AcceptedWhenPendingInterceptor`). `TRANSITIONS` allows `PENDING_PAYMENT → CANCELLED`,
+    but only `CancelOrderService` and `FailOrderPaymentService` may use it;
+  - a step that changes no status is `order.note(type, …)`: a history row with
+    `fromStatus = toStatus`, saved with the order, so its version goes up. A client that
+    cancels reads the order first;
+  - `release-stock` is safe to send for an attempt that holds nothing or was never reserved
+    (inventory remembers it, ADR 0016); `cancel-payment` likewise (payments, ADR 0017);
+  - out of stock is `DRAFT` with `failureReason = out_of_stock`, not `PAYMENT_FAILED`;
+  - an order written past `place` needs its saga: the seed, the migration and
+    `orderFactory` (`sagaStep`) write one. Without it `cancel` and every answer are
+    `ORDER_SAGA_NOT_FOUND`;
+  - in the e2e suite `connectTestBroker()` answers every `reserve-stock` with
+    `stock-reserved` by itself, so a test about payments sees its charge;
+    `{ inventory: 'silent' }` hands inventory to the test (`saga*.e2e-spec.ts`). A test waits
+    for the charge command before it answers as payments (`place()` in
+    `payment-flow.e2e-spec.ts`);
+  - the saga timeouts are ten minutes in `.env.test`; `saga-timeouts.e2e-spec.ts` sets short
+    ones for itself, and ends every saga it starts: one left in `RELEASING` asks again for
+    as long as the file runs.
+
+- **A message for later is a row of the outbox with a delay** (ADR 0017;
+  `infrastructure/messaging/delay-topology.ts`). `Outbox.appendDelayed({ queue, delayMs,
+message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: a queue
+  nobody reads, whose messages expire and are dead-lettered to `<queue>`. Consequences:
+  - a delay must be listed for its queue in `rabbitConfig.delays`: the queues are declared
+    with the consumer of `<queue>`, and a delay without one is refused by the broker
+    (`mandatory`), which stops the relay behind that row;
+  - one queue per delay, the delay in its name. A changed delay is a new queue; the old one
+    empties by itself and stays until it is deleted;
+  - the wait starts when the relay publishes: at the deadline or later, never before. A
+    delayed message is not cancelled; its consumer decides whether it still counts;
+  - no BullMQ delayed job for something that must not be lost: Redis is not in the
+    transaction;
+  - `orders.saga-step-timeout` is built with `defineMessage()` but is the api's own: not in
+    `@oms/contracts`, validated by its consumer with its schema, unknown to `parseMessage()`.
+
+- **Payment is a command to payments-service and an event back** (ADR 0012). The saga writes
+  `payments.charge-payment` to the outbox (`OutboxPaymentChargeAdapter`); the worker reads
+  `payments.payment-succeeded` / `-failed` / `-cancelled` from `api.payment-events`
+  (`PaymentEventsConsumer`) and calls `CompleteOrderPayment` / `FailOrderPayment`. Consequences:
+  - the api knows nothing about the PSP: no gateway port, no `PSP_*` setting. The command
+    carries the amount and the idempotency key `<orderId>:<attempt>`;
+  - the routing key of a message is its `name`; a queue is declared by the consumer that
+    reads it, never by a publisher;
+  - `@RabbitSubscribe` only in a `*.consumer.ts`, provided only by a `*.worker.module.ts`
+    (lint + `test/architecture/process-graph.spec.ts`): the api process never consumes;
+  - a consumer reads with `parseMessage()` and hands the message to `handleOnce()`
+    (`orders/interface/worker/handle-once.ts`), which binds the tenant from the envelope
+    (`runInWorkspace`) and calls one use case through `inbox.once()`. `InvalidStateError` =
+    already settled, or not what the saga waits for → return (ack). Not a known contract, or a business refusal that will not change (`NotFoundError`)
+    → `throw new UnprocessableMessageError(…)`. `ConflictError` and anything that is not a
+    `DomainError` → let it out;
+  - the PSP call is retried and guarded by a circuit breaker inside payments (ADR 0020):
+    for the api nothing changed, an answer may just come sooner. `ORDER_SAGA_CHARGE_TIMEOUT_MS`
+    must stay above what payments needs with the provider away (126 s by default);
+  - `MessagingModule` stands in for the library's `RabbitMQModule`, whose static state allows
+    one Nest application per process; the e2e suite runs several. Do not import
+    `RabbitMQModule`;
+  - the command carries `expiresAt`, the deadline of the saga step: handled later, payments
+    charges nothing and answers `payment-failed` with `expired`;
+  - the e2e suite has neither payments-service nor inventory-service: a test reads the
+    commands and publishes the answers through `test/helpers/broker.ts` (`sent()`,
+    `waitForSent()`, the builders of the answers), which also subscribes to `orders.*`
+    (`broker.orderEvents()`). Each test file has its own RabbitMQ vhost (`db.ts`);
+  - `RABBITMQ_PREFETCH=1` in `.env.test`: one message at a time, which is what makes "the
+    event before this one was handled" provable (`drained()` in `payment-flow.e2e-spec.ts`).
+
+- **A message whose handler throws is delivered again after a delay, then parked** (ADR 0013).
+  Every queue a consumer reads has `<queue>.wait.<delayMs>` and `<queue>.dlq` beside it, all
+  quorum queues, all declared by `RabbitSubscribers` (`infrastructure/messaging/`).
+  Consequences:
+  - `@RabbitSubscribe` carries `exchange`, `routingKey` and `queue` only. The arguments of the
+    queue, the error handler (`retry-or-park.ts`) and the policy come from `rabbitConfig`;
+  - a queue a consumer reads needs an entry in `rabbitConfig.retry` (`configuration.ts`) with
+    its own `*_MAX_ATTEMPTS` (and optional `*_RETRY_DELAY_MS`): the process does not boot
+    without one;
+  - never `Nack(true)` and never a retry loop in a consumer: throw. `UnprocessableMessageError`
+    = parked at once; anything else = `maxAttempts` deliveries, then parked. A parked message
+    is a `Logger.error` and is put back by hand (management UI → Move messages);
+  - the second argument of a handler is the delivery (`{ attempt, last }`,
+    `@shared/messaging/delivery`), not the raw amqp message;
+  - the arguments of an existing queue cannot be changed (`PRECONDITION_FAILED` at boot): a
+    change is a new queue name. The delay is part of the name of the wait queue for that
+    reason. A dev broker with queues from 3.2: `rabbitmqctl delete_queue <name>` once;
+  - a failed message returns behind the ones published meanwhile: nothing may rely on the
+    order of messages in a queue;
+  - in the e2e suite a redelivery is 200 ms away and the third delivery is the last
+    (`.env.test`); "everything before this was handled" is `drained()` in
+    `payment-flow.e2e-spec.ts`, which also waits for the wait queue to be empty;
+  - `test/helpers/failing-orders.ts` makes the worker fail to load one order: the way to
+    provoke a retry without stopping the database.
+
+- **Nothing is published to the broker from a use case or an adapter: it is written to the
+  outbox** (ADR 0014; `infrastructure/outbox/`). `Outbox.append()` inserts the message in the
+  current transaction and throws outside one; the relay of the worker (`OutboxRelay`, one
+  pass = one transaction) publishes the rows oldest first and marks them. Consequences:
+  - a command is a port called inside `@Transactional()` (`PaymentChargeScheduler` →
+    `OutboxPaymentChargeAdapter`); an event is a domain event with `delivery = 'reliable'`
+    given to `publishAll()`. A reliable event needs a translation into its contract,
+    registered by its module (`orders/infrastructure/order-events.translator.ts`):
+    `publishAll()` throws for one that has none;
+  - `AmqpConnection` is injected in `infrastructure/messaging/` and
+    `infrastructure/outbox/rabbit-outbox.publisher.ts` only;
+  - the id of a row is the `messageId` of its envelope; `correlationId` comes from
+    `CorrelationContext` (CLS): a consumer calls `continue()` inside the scope of its message;
+  - at-least-once: the relay may publish a message twice, with the same id. The inbox of the
+    consumer absorbs it (below);
+  - one relay at a time (`pg_try_advisory_xact_lock`), and the first message that cannot be
+    published stops the ones behind it: order over throughput. Do not remove the lock to go
+    faster;
+  - a command is published `mandatory`, and so is a delayed message: while its receiver has
+    not declared its queue, the row stays unpublished and the relay logs one error. An event
+    needs no subscriber;
+  - a row is addressed by its exchange and the name of its message; `routingKey` is set
+    only by `appendDelayed()`, to name a queue;
+  - the api app alone publishes nothing: an e2e test that waits for a command or an event
+    needs the worker app (`createWorkerApp()`), and `OUTBOX_POLL_INTERVAL_MS=50` in `.env.test`;
+  - `outbox` is not a tenant table (no `workspace_id`, no policy), and the relay and the
+    cleanup use the unscoped `PrismaService`;
+  - the relay and `Outbox` are copied in `services/payments` and `services/inventory`: a
+    fix in one is made in the others. The passes of the relay are tested here (`test/outbox/`).
+- **A broker message takes effect once per consumer: the consumer records it in the inbox**
+  (ADR 0015; `infrastructure/inbox/`, port `INBOX` in `@shared/messaging/inbox`).
+  `inbox.once(queue, messageId, handle)` opens a transaction, inserts `(consumer, message_id)`
+  with `ON CONFLICT DO NOTHING` and calls `handle`; the `@Transactional()` use case inside
+  joins it. Nothing inserted = a duplicate: `handle` is not called, the consumer acknowledges.
+  Consequences:
+  - a new broker consumer wraps its use case in `inbox.once()`, inside `runInWorkspace` (the
+    tenant before the transaction), with the name of its queue as `consumer`;
+  - whatever `handle` throws rolls the record back too: a failed message is not "seen", and
+    its next delivery is handled. Never write the record in a transaction of its own;
+  - a duplicate is the same `messageId`. Another message about the same fact (payments
+    answering a second command, a late answer for an old attempt) is not one: the checks by
+    state stay (`InvalidStateError` → ack), do not remove them "because there is an inbox";
+  - only what the transaction holds is covered: a call to the outside inside a handler needs
+    an idempotency key of its own;
+  - `inbox` is not a tenant table and is not partitioned (the primary key could not hold the
+    time and still catch a duplicate); `cleanup-inbox` deletes records older than
+    `INBOX_RETENTION_DAYS`, on its own BullMQ queue `inbox`;
+  - a test that publishes "the same event twice" must reuse the message object: the helpers
+    of `test/helpers/broker.ts` give every call a new `messageId`;
+  - the inbox is copied in `services/payments`, where the use case records the message itself
+    (`Inbox.record()` in the transaction that settles the payment). The deliveries are tested
+    here (`test/inbox/`).
+- **A write with no key of its own requires an `Idempotency-Key`** (ADR 0018;
+  `@Idempotent()`, `common/interceptors/idempotency.interceptor.ts`, the port `IDEMPOTENCY`
+  in `@shared/http/idempotency`, `infrastructure/idempotency/`). On `POST /orders` and
+  `POST /orders/{id}/place`: the interceptor opens a transaction, takes
+  `pg_try_advisory_xact_lock` on the key, and either returns the stored answer or runs the
+  handler and stores its answer in that transaction. Consequences:
+  - the use case of such a route joins a transaction that began before it. It must not rely
+    on "after my `@Transactional()` returns the row is committed": nothing that acts on the
+    commit (a cache invalidation, a call to the outside) belongs in it;
+  - a use case that opens its transaction in a fresh CLS scope (`createWorkspace`) does not
+    join, and cannot be wrapped: that is why the other creating routes have no key. Their
+    unique keys refuse a repetition (409);
+  - only an answered request is recorded: whatever throws rolls the key back with the rest;
+  - same key, same body → the stored status and body, the handler does not run; another
+    body → 422; still being handled → 409 with `Retry-After`. Never wait on the lock;
+  - `@Idempotent()` is route-level on purpose: its transaction has to commit inside the
+    global interceptors (`Location`, read-your-writes). Do not make it global;
+  - the route must be behind the auth guard: the key is scoped to `(user, method + path)`;
+  - `idempotency_keys` is not a tenant table (no `workspace_id`, no policy), and its cleanup
+    uses the unscoped `PrismaService`;
+  - `api.http()` in the e2e suite sends a fresh key with every request; a test about the
+    key sets or unsets the header.
+- **The system as a whole is tested by four scenarios, not by a fifth suite of rules**
+  (ADR 0022; `devtools/system`, `docker-compose.system.yml`, `pnpm test:system`). All four
+  services from their images, and a test that knows what a client and an operator know: the
+  HTTP API, `fake-psp` and Mailpit. Consequences:
+  - a new way for an order to end, or a new service on its path, is a scenario there; a rule
+    of one service is a test of that service, where the test plays the other side;
+  - `devtools/system` imports nothing from `services/*` or `@oms/contracts`, and reads no
+    database and no queue. What it cannot see through its three windows is a finding;
+  - it waits with `eventually()` only, and for the history of the order (`STOCK_RELEASED`)
+    where the order of two commands matters. Never a sleep;
+  - a new queue with a consumer is a line in `CONSUMED_QUEUES` (`test/setup/global.ts`): the
+    run starts when every queue has its consumer, and an event published before that is lost;
+  - one file, serial, on a stack built from nothing: the scenarios spend the seeded stock
+    and share the provider. A scenario gives the settings of `fake-psp` back, and none uses
+    `failureRate` (it would open the circuit of payments for the next ones);
+  - the stack differs from the `app` profile in one setting: `PSP_TIMEOUT_MS` /
+    `PSP_CALL_BUDGET_MS` of payments, so that a charge can be under way long enough to be
+    cancelled;
+  - a change to a compose file, a Dockerfile, a migration step or the topology of the broker
+    is what this suite is for: run it by hand, CI runs it on `main` and nightly only.
 - **Tenant scoping has one choke point**: `src/infrastructure/database/tenant-scope.extension.ts`.
-  Tenant models (Membership, Product, Order, OrderItem, OrderEvent) are filtered by the
+  Tenant models (Membership, Product, Order, OrderItem, OrderEvent, OrderSaga) are filtered by the
   workspace in CLS; a query without a tenant throws. Never inject `PrismaService` for tenant
   data: its only users are the extension, identity's documented cross-tenant reads
-  (`asUser`), and the partition adapter in orders (table structure, no tenant rows).
+  (`asUser`), the partition adapter in orders (table structure, no tenant rows), and the relay
+  and the cleanups of the outbox, of the inbox and of the idempotency keys (rows of no tenant).
 - **Row-Level Security is the second layer** (ADR 0006). Two database roles: `DATABASE_URL` is
   `oms_app` (api + worker: owns nothing, sees only rows of `app.workspace_id`),
   `DATABASE_ADMIN_URL` is the owner (Prisma CLI, seed, datagen, `testDb()` in tests; not in
@@ -153,16 +458,16 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   HTTP module must import `IdentityModule` (it provides `MEMBERSHIP_READER`).
 - Invalid state transitions are `InvalidStateError` → **422** (conventions), not 409.
   409 = stale `version` or duplicate.
-- Enqueue after commit is NOT atomic with the commit (Known gap → Step 3 outbox). Do not
-  "fix" it with the outbox before Step 3.
-- BullMQ 6 rejects `:` in custom job ids → `charge-<orderId>-<attempt>`.
+- BullMQ 6 rejects `:` in custom job ids (no custom id is left since the charge job went).
 - `@nestjs-cls/transactional-adapter-prisma` types clash with `exactOptionalPropertyTypes`;
   the host is typed via `DbTransactionAdapter` (see `database.tokens.ts`).
 - Money in JSON is `{ amountMinor, currency }`; inside the code it is `bigint` (`Money` VO).
 
 ## Deviations from the conventions templates
 
-- `eslint.config.mjs` is the template plus two additions: the generated Prisma client,
+- `eslint.config.mjs` is the template plus four additions (3: `@oms/contracts` is a layer of
+  its own, importable from `infrastructure/`, a module's adapters and its consumers only;
+  4: `@RabbitSubscribe` is an entry decorator). The first two: the generated Prisma client,
   `prisma/` and root tool files are outside the layer map; `test/factories`, `test/doubles`
   and `test/helpers` may import module internals. Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
@@ -185,14 +490,69 @@ Process model: `src/entrypoints/main.api.ts` + `main.worker.ts`, one image.
   vitest runner is patched for Vitest 5. Details: `.claude/rules/project/testing.md`.
 - `pnpm audit` exceptions live in `package.json` → `pnpm.auditConfig`, the reason next to the
   `overrides` in `pnpm-workspace.yaml` (JSON has no comments).
+- `devtools/system` is a level of tests the conventions do not have (`quality/testing.md`
+  ends at e2e with fake vendors, one service): `docs/conventions-backlog.md` §22.
+- A message between services has no integration event class in `<module>/events/`
+  (`events.md` §1): its contract is the schema in `@oms/contracts`. Domain events stay classes.
+  Why, and what to change in the conventions: `docs/conventions-backlog.md` §1–3.
 - No `docs-json` diff in CI yet (`git-pr.md` §5): the nightly Schemathesis run checks the API
   against its own OpenAPI document; a committed `openapi.json` diff comes when a client does.
 - `tsconfig.json` sets `strictPropertyInitialization: false`: DTO classes are filled by
   class-transformer and Nest, never by a constructor.
 - `register` and `login` take no `Actor` (the caller is anonymous); `createWorkspace` has no
   policy call, because any signed-in user may create one (`principles.md` §2.2).
-- `SchedulePaymentChargeHandler` calls the scheduler port, not a use case (`events.md` §3): it
-  only enqueues, and the Step 3 outbox replaces it.
+- The use cases of the saga call adapters inside `@Transactional()` (`write-service.md` §4
+  forbids it for a call to the outside): `StockReservationScheduler`, `PaymentChargeScheduler`
+  and `SagaTimeoutScheduler` write outbox rows through `txHost.tx` and call nothing. The outbox itself differs from `transactions.md` §5 in three
+  ways (relayed to a broker through a port, the row carries its address, a command goes
+  through it too): `docs/conventions-backlog.md` §8.
+- The outbox has entry classes in `infrastructure/` (`outbox.consumer.ts`, `cleanup-outbox.job.ts`,
+  `outbox-relay.runner.ts`, wired by `outbox.worker.module.ts`): it is a technical capability
+  with work of its own, not a business module. `process-graph.spec.ts` checks that the api
+  process gets none of them.
+- `OutboxCleanup` is called by its job directly, with no use case and no `Actor`
+  (`transport/cron.md` §1 asks for a use case): one `DELETE` on a table of no tenant.
+- The inbox has the same shape: entry classes in `infrastructure/inbox/` (`inbox.consumer.ts`,
+  `cleanup-inbox.job.ts`, wired by `inbox.worker.module.ts`), and `InboxCleanup` called by its
+  job directly. So have the idempotency keys (`infrastructure/idempotency/`).
+- The `Idempotency-Key` is required on two routes, not on every creating `POST`
+  (`api-conventions.md` §5 allows that), and the transaction of those routes opens in an
+  interceptor, around the use case (`write-service.md`: the use case owns the transaction):
+  the key and the write have to be one transaction, as with the inbox
+  (`docs/conventions-backlog.md` §17).
+- `outbox` and `inbox` are not partitioned and are cleaned with `DELETE` (`db-general.md` §9
+  asks for `PARTITION BY RANGE` on log-like tables): `docs/conventions-backlog.md` §9.
+- `PaymentEventsConsumer` calls its use case through the inbox port, so the transaction opens
+  around the use case, not in it (`transport/queues.md` §3: "no transaction" in a consumer):
+  the record of the message and the use case have to be one transaction, and the consumer
+  still holds no logic (`docs/conventions-backlog.md` §10).
+- The saga is a second aggregate in `orders`, and its use cases save it together with the
+  order in one transaction (`domain-model.md` §1: the aggregate is the consistency boundary):
+  a step of the process and the status the client sees must not disagree. The timeouts are
+  delayed messages of the broker, not BullMQ delayed jobs as the roadmap named them. Why,
+  and what the conventions lack: `docs/conventions-backlog.md` §14, §15.
+- `OrderSagaSteps` is an injectable of `application/` that is not a use case: the repository
+  of the saga and the three ports a step sends through, as one collaborator. Six constructor
+  dependencies are the limit (`code-style.md` §2), and every use case of the saga needs these
+  four.
+- `POST …/orders/{id}/cancel` has two success statuses, 204 and 202
+  (`http/controller.md`: one status per route): `docs/conventions-backlog.md` §16.
+- `OrderSaga` does not extend `AggregateRoot`: it records no events, and its version is
+  checked by the repository only (no client holds it).
+- A message contract has tests the conventions do not ask for (`quality/testing.md` §5 knows
+  the HTTP contract only): the released versions, the map of parties and a
+  `<m>.contract.spec.ts` per service (`docs/conventions-backlog.md` §21). The spec sits at
+  the root of the module, not beside one file: it covers the consumers and the adapters of
+  the module together.
+- A broker consumer has no rule file of its own (`transport/queues.md` is BullMQ): ack, reject
+  and prefetch replace attempts, backoff and concurrency. What we do: `docs/conventions-backlog.md` §4, §7.
+- `UnprocessableMessageError` extends `InfrastructureError` and lives in `shared/errors/`,
+  with `Delivery` in `shared/messaging/`: a consumer is an entry class and may not import
+  `infrastructure/` (lint), and both are plain types.
+- `OrderRecipientsReader` is a class of `application/` that implements a port asked by
+  `infrastructure/` (`domain/ports-adapters.md` puts an implementation in `infrastructure/`):
+  it reads another module through its facade, which only `application/` may do
+  (`docs/conventions-backlog.md` §19).
 - Orders has a repository port although Postgres is the only implementation
   (`architecture.md` §4): it lets the use-case unit tests run on the in-memory repository in
   `application/__test__/`. Details: `.claude/rules/project/testing.md`.

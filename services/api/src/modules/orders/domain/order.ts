@@ -11,12 +11,19 @@ import {
   PaymentAttemptNotPendingError,
   ProductNotActiveError,
 } from './errors';
+import { OrderCancelled } from './events/order-cancelled.event';
+import { OrderFulfilled } from './events/order-fulfilled.event';
+import { OrderPaid } from './events/order-paid.event';
+import { OrderPaymentFailed } from './events/order-payment-failed.event';
 import { OrderPlaced } from './events/order-placed.event';
+import { OrderReturnedToDraft } from './events/order-returned-to-draft.event';
 import { OrderLine } from './order-line';
 import { OrderEventType, OrderStatus, TRANSITIONS } from './order-status';
 import { calculateTotals } from './order-totals';
 
 import type { Discount } from './discount';
+import type { OrderRef } from './events/order-ref';
+import type { SagaNote } from './order-status';
 import type { OrderTotals } from './order-totals';
 
 export const MAX_LINES = 50;
@@ -31,6 +38,15 @@ export interface OrderLineInput {
   quantity: number;
 }
 
+/** A product an order asked more of than was free, as inventory reported it. */
+export interface StockShortage {
+  productId: string;
+  requested: number;
+  available: number;
+}
+
+type HistoryPayload = Record<string, string | number | readonly StockShortage[]>;
+
 /** One row of the order history, written in the same transaction as the status change. */
 export interface OrderHistoryEntry {
   id: string;
@@ -39,7 +55,7 @@ export interface OrderHistoryEntry {
   toStatus: OrderStatus;
   /** Opaque audit reference (user id or `system:<source>`); the domain never interprets it. */
   changedBy: string;
-  payload: Record<string, string | number>;
+  payload: HistoryPayload;
   at: Date;
 }
 
@@ -141,22 +157,54 @@ export class Order extends AggregateRoot {
     this.addHistory(OrderEventType.OrderPlaced, from, change, {
       paymentAttempt: this.props.paymentAttempt,
     });
-    this.record(new OrderPlaced(this.workspaceId, this.id, this.props.paymentAttempt, change.now));
+    this.record(new OrderPlaced(this.ref, this.props.paymentAttempt, this.amountDue, change.now));
   }
 
   cancel(change: Change): void {
     const from = this.transitionTo(OrderStatus.Cancelled, 'cancel');
     this.props.cancelledAt = change.now;
     this.addHistory(OrderEventType.OrderCancelled, from, change);
+    this.record(new OrderCancelled(this.ref, change.now));
   }
 
   fulfill(change: Change): void {
     const from = this.transitionTo(OrderStatus.Fulfilled, 'fulfill');
     this.props.fulfilledAt = change.now;
     this.addHistory(OrderEventType.OrderFulfilled, from, change);
+    this.record(new OrderFulfilled(this.ref, change.now));
   }
 
-  /** Guards a charge job: only the attempt the order is waiting for may be charged. */
+  /**
+   * PENDING_PAYMENT → DRAFT: the attempt ended before a charge was asked for. The stock was
+   * not there (`shortages`), or inventory never said. The order can be changed and placed
+   * again, which is a new attempt.
+   */
+  returnToDraft(
+    input: Change & { attempt: number; reason: string; shortages?: readonly StockShortage[] },
+  ): void {
+    this.assertAwaitingPayment(input.attempt);
+    // Stryker disable next-line StringLiteral: unreachable, assertAwaitingPayment guarantees PENDING_PAYMENT → DRAFT
+    const from = this.transitionTo(OrderStatus.Draft, 'return to draft');
+    this.props.failureReason = input.reason;
+    this.props.placedAt = null;
+    this.addHistory(OrderEventType.StockReservationFailed, from, input, {
+      paymentAttempt: input.attempt,
+      reason: input.reason,
+      ...(input.shortages && { shortages: input.shortages }),
+    });
+    this.record(new OrderReturnedToDraft(this.ref, input.attempt, input.reason, input.now));
+  }
+
+  /**
+   * A step of the saga of `attempt` that changes no status: a row of the history, from and
+   * to the status the order has. No guard on the status: stock is released after the order
+   * has left PENDING_PAYMENT, and maybe after it was placed again.
+   */
+  note(type: SagaNote, input: Change & { attempt: number }): void {
+    this.addHistory(type, this.props.status, input, { paymentAttempt: input.attempt });
+  }
+
+  /** Guards a payment outcome: only the attempt the order is waiting for may be settled. */
   assertAwaitingPayment(attempt: number): void {
     if (this.props.status !== OrderStatus.PendingPayment || this.props.paymentAttempt !== attempt) {
       throw new PaymentAttemptNotPendingError(
@@ -178,6 +226,8 @@ export class Order extends AggregateRoot {
       paymentAttempt: input.attempt,
       pspChargeId: input.pspChargeId,
     });
+    const { attempt, pspChargeId, now } = input;
+    this.record(new OrderPaid(this.ref, attempt, pspChargeId, this.amountDue, now));
   }
 
   markPaymentFailed(input: Change & { attempt: number; reason: string }): void {
@@ -189,6 +239,8 @@ export class Order extends AggregateRoot {
       paymentAttempt: input.attempt,
       reason: input.reason,
     });
+    const { attempt, reason, now } = input;
+    this.record(new OrderPaymentFailed(this.ref, attempt, reason, this.amountDue, now));
   }
 
   get id(): string {
@@ -234,6 +286,11 @@ export class Order extends AggregateRoot {
     return entries;
   }
 
+  /** What every event of the order starts with. */
+  private get ref(): OrderRef {
+    return { workspaceId: this.workspaceId, orderId: this.id, createdBy: this.props.createdBy };
+  }
+
   private buildLines(inputs: readonly OrderLineInput[]): OrderLine[] {
     if (inputs.length > MAX_LINES) {
       throw new InvalidOrderError('An order has at most 50 items', { count: inputs.length });
@@ -271,7 +328,7 @@ export class Order extends AggregateRoot {
     type: OrderEventType,
     from: OrderStatus | null,
     change: Change,
-    payload: Record<string, string | number> = {},
+    payload: HistoryPayload = {},
   ): void {
     this.props.updatedAt = change.now;
     this.newHistory.push({

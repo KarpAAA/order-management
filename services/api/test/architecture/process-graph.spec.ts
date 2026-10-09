@@ -1,13 +1,16 @@
 // Process graph (principles #12, ops/process-model.md): walks the Nest module metadata of each
-// entrypoint without starting it. A @Processor that reaches the api graph makes every api
-// replica a queue consumer; a controller in the worker graph serves nothing. The lint rules
+// entrypoint without starting it. A @Processor or a class with a @RabbitSubscribe method that
+// reaches the api graph makes every api replica a consumer; a controller in the worker graph serves nothing. The lint rules
 // catch the imports; this checks where the classes actually end up registered.
+import { RABBIT_HANDLER } from '@golevelup/nestjs-rabbitmq';
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { beforeAll, describe, expect, it } from 'vitest';
 
 // relative: entrypoints have no alias, and test/ reaches them only here
 import { ApiModule } from '../../src/entrypoints/api.module';
 import { WorkerModule } from '../../src/entrypoints/worker.module';
+import { Outbox } from '../../src/infrastructure/outbox/outbox';
+import { OutboxRelayRunner } from '../../src/infrastructure/outbox/outbox-relay.runner';
 
 // @nestjs/bullmq keeps it in dist/bull.constants.js and does not export it
 const PROCESSOR_METADATA = 'bullmq:processor_metadata';
@@ -93,8 +96,26 @@ async function moduleGraph(root: Ctor): Promise<ModuleNode[]> {
 const isProcessor = (ctor: Ctor): boolean =>
   Reflect.getMetadata(PROCESSOR_METADATA, ctor) !== undefined;
 
+/** A class with at least one @RabbitSubscribe method: it consumes from the broker. */
+const isSubscriber = (ctor: Ctor): boolean => {
+  const prototype = ctor.prototype as Record<string, unknown> | undefined;
+  if (!prototype) return false;
+  return Object.getOwnPropertyNames(prototype).some((name) => {
+    const method = Object.getOwnPropertyDescriptor(prototype, name)?.value as unknown;
+    return (
+      typeof method === 'function' && Reflect.getMetadata(RABBIT_HANDLER, method) !== undefined
+    );
+  });
+};
+
+const subscribersOf = (nodes: ModuleNode[]): string[] =>
+  nodes.flatMap((node) => node.providers.filter(isSubscriber).map((ctor) => ctor.name));
+
 const processorsOf = (nodes: ModuleNode[]): string[] =>
   nodes.flatMap((node) => node.providers.filter(isProcessor).map((ctor) => ctor.name));
+
+const providersOf = (nodes: ModuleNode[]): string[] =>
+  nodes.flatMap((node) => node.providers.map((ctor) => ctor.name));
 
 const controllersOf = (nodes: ModuleNode[]): string[] =>
   nodes.flatMap((node) => node.controllers.map((ctor) => ctor.name));
@@ -118,6 +139,15 @@ beforeAll(async () => {
 describe('api process', () => {
   it('registers no queue consumer', () => {
     expect(processorsOf(apiGraph)).toEqual([]);
+  });
+
+  it('registers no broker consumer: it only publishes', () => {
+    expect(subscribersOf(apiGraph)).toEqual([]);
+  });
+
+  it('writes to the outbox and never relays it: the relay starts on its own', () => {
+    expect(providersOf(apiGraph)).toContain(Outbox.name);
+    expect(providersOf(apiGraph)).not.toContain(OutboxRelayRunner.name);
   });
 
   it('declares controllers only in *HttpModule', () => {
@@ -144,7 +174,27 @@ describe('worker process', () => {
     ).toEqual([]);
   });
 
-  it('registers the orders consumer (the walk is not vacuous)', () => {
-    expect(processorsOf(workerGraph)).toEqual(['OrdersConsumer']);
+  it('declares broker consumers only in *WorkerModule', () => {
+    expect(
+      declaredOutside(workerGraph, 'WorkerModule', (node) => node.providers.some(isSubscriber)),
+    ).toEqual([]);
+  });
+
+  it('registers the consumers of orders, of the outbox and of the inbox (the walk is not vacuous)', () => {
+    expect(processorsOf(workerGraph)).toEqual([
+      'OrdersConsumer',
+      'OutboxConsumer',
+      'InboxConsumer',
+      'IdempotencyConsumer',
+    ]);
+    expect(subscribersOf(workerGraph)).toEqual([
+      'InventoryEventsConsumer',
+      'PaymentEventsConsumer',
+      'SagaTimeoutsConsumer',
+    ]);
+  });
+
+  it('runs the relay of the outbox', () => {
+    expect(providersOf(workerGraph)).toContain(OutboxRelayRunner.name);
   });
 });

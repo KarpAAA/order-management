@@ -1,5 +1,6 @@
 packages:
   - services/*
+  - packages/*
   - devtools/*
 ignoredBuiltDependencies:
   - '@scarf/scarf'

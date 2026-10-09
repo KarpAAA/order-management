@@ -13,12 +13,16 @@ FROM base AS build
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 # patchedDependencies in pnpm-workspace.yaml: the install fails when a patch file is missing
 COPY patches patches
+# the message contracts are a workspace dependency, consumed from their dist (docs/adr/0011)
+COPY packages/contracts/package.json packages/contracts/
 COPY services/api/package.json services/api/
 RUN pnpm install --frozen-lockfile --filter @oms/api...
+COPY packages/contracts packages/contracts
 COPY services/api services/api
 # prisma.config.ts resolves DATABASE_ADMIN_URL even for `generate`; any syntactically valid URL works.
 ENV DATABASE_ADMIN_URL=postgresql://build:build@localhost:5432/build
-RUN pnpm --filter @oms/api build \
+RUN pnpm --filter @oms/contracts build \
+ && pnpm --filter @oms/api build \
  && pnpm --filter @oms/api deploy --prod --legacy /out
 
 # ── runtime: production deps + compiled code, non-root ───────────────────────

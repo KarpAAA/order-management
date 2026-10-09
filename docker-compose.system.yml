@@ -1,0 +1,82 @@
+# System tests: an override of docker-compose.yml for the separate `oms-system` project
+# (docs/adr/0022-system-tests.md).
+#   pnpm test:system    fresh stack + both seeds → devtools/system, run on the host
+#   pnpm system:down    remove the project with its volumes
+# Every service runs from its image, with the configuration of the `app` profile. The test is a
+# client and an operator, nothing more: it reaches the api, the provider and the mail server
+# through the three host ports below, chosen to stand next to the dev stack.
+
+services:
+  postgres:
+    ports: !reset []
+  postgres-replica:
+    ports: !reset []
+  postgres-payments:
+    ports: !reset []
+  postgres-inventory:
+    ports: !reset []
+  postgres-notifications:
+    ports: !reset []
+  pgbouncer:
+    ports: !reset []
+  redis:
+    ports: !reset []
+  rabbitmq:
+    ports: !reset []
+
+  # what the mail server took: its HTTP API only, nobody outside sends mail
+  mailpit:
+    ports: !override
+      - '${SYSTEM_MAILPIT_PORT:-8125}:8025'
+
+  fake-psp:
+    ports: !override
+      - '${SYSTEM_PSP_PORT:-4110}:4010'
+
+  # Fixed-id data (README → Seeded data): the users, the workspace and the products the
+  # scenarios use. The same step as in docker-compose.contract.yml.
+  seed:
+    profiles: [app]
+    image: oms-api-build:local
+    working_dir: /repo/services/api
+    command: ['pnpm', 'exec', 'prisma', 'db', 'seed']
+    environment:
+      DATABASE_ADMIN_URL: postgresql://oms:oms@postgres:5432/oms?schema=public
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  # The stock of those products (services/inventory/prisma/seed.ts): 100 of each, one of the
+  # last, none of the one before it.
+  seed-inventory:
+    profiles: [app]
+    image: oms-inventory-build:local
+    working_dir: /repo/services/inventory
+    command: ['pnpm', 'exec', 'prisma', 'db', 'seed']
+    environment:
+      DATABASE_ADMIN_URL: postgresql://inventory:inventory@postgres-inventory:5432/inventory?schema=public
+    depends_on:
+      migrate-inventory:
+        condition: service_completed_successfully
+
+  api:
+    ports: !override
+      - '${SYSTEM_API_PORT:-3100}:3000'
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+
+  inventory:
+    depends_on:
+      seed-inventory:
+        condition: service_completed_successfully
+
+  # The only setting that differs from the `app` profile. A call to the provider may take ten
+  # seconds here, not two: the scenario that cancels an order while its charge is under way
+  # slows the provider down, and needs that charge to stay under way until the cancellation
+  # has crossed two services. 4 deliveries x 12 s + 3 x 30 s between them = 138 s, still below
+  # ORDER_SAGA_CHARGE_TIMEOUT_MS of the api (150 s), as services/payments/.env.example asks.
+  payments:
+    environment:
+      PSP_TIMEOUT_MS: 10000
+      PSP_CALL_BUDGET_MS: 12000

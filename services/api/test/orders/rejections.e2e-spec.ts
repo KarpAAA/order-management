@@ -219,7 +219,7 @@ describe('transitions the state machine refuses → 422, nothing written (ORD-01
     ['place', 'PAID', member],
     ['place', 'FULFILLED', member],
     ['place', 'CANCELLED', member],
-    ['cancel', 'PENDING_PAYMENT', member], // ORD-015: Step 0; the saga changes this in Step 3
+    // cancel from PENDING_PAYMENT is a request to the saga (ORD-015): saga-cancel.e2e-spec.ts
     ['cancel', 'PAID', member],
     ['cancel', 'FULFILLED', member],
     ['cancel', 'CANCELLED', member],

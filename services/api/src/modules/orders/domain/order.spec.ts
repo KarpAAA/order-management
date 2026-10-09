@@ -12,6 +12,7 @@ import {
   orderIn,
   PRODUCT_1,
   PRODUCT_2,
+  refOf,
   SYSTEM_ACTOR,
   TAX_RATE_BPS,
   USER,
@@ -25,7 +26,12 @@ import {
   PaymentAttemptNotPendingError,
   ProductNotActiveError,
 } from './errors';
+import { OrderCancelled } from './events/order-cancelled.event';
+import { OrderFulfilled } from './events/order-fulfilled.event';
+import { OrderPaid } from './events/order-paid.event';
+import { OrderPaymentFailed } from './events/order-payment-failed.event';
 import { OrderPlaced } from './events/order-placed.event';
+import { OrderReturnedToDraft } from './events/order-returned-to-draft.event';
 import { Order } from './order';
 import { OrderEventType, OrderStatus } from './order-status';
 
@@ -193,7 +199,7 @@ describe('Order.place', () => {
     ]);
   });
 
-  it('PAY-001 publishes OrderPlaced for the new attempt, to enqueue the charge', () => {
+  it('PAY-001 publishes OrderPlaced for the new attempt with the amount due, to request the charge', () => {
     const order = orderIn(OrderStatus.Draft);
     order.place(change());
     const events = order.pullEvents();
@@ -201,9 +207,10 @@ describe('Order.place', () => {
     expect(events[0]).toBeInstanceOf(OrderPlaced);
     expect(events[0]).toMatchObject({
       name: 'order.placed',
-      workspaceId: WORKSPACE,
-      orderId: order.id,
+      delivery: 'reliable',
+      order: { workspaceId: WORKSPACE, orderId: order.id, createdBy: USER },
       paymentAttempt: 1,
+      amountDue: order.totals.total,
       occurredAt: LATER,
     });
   });
@@ -228,8 +235,8 @@ describe('Order.place', () => {
 });
 
 describe('Order.cancel', () => {
-  it.each([OrderStatus.Draft, OrderStatus.PaymentFailed])(
-    'ORD-014 cancels a %s order and records ORDER_CANCELLED',
+  it.each([OrderStatus.Draft, OrderStatus.PaymentFailed, OrderStatus.PendingPayment])(
+    'ORD-014 SAGA-020 cancels a %s order and records ORDER_CANCELLED',
     (status) => {
       const order = orderIn(status);
       order.cancel(change());
@@ -245,6 +252,13 @@ describe('Order.cancel', () => {
       ]);
     },
   );
+
+  it('OBX-007 records OrderCancelled, reliable', () => {
+    const order = orderIn(OrderStatus.Draft);
+    order.cancel(change());
+    expect(order.pullEvents()).toEqual([new OrderCancelled(refOf(order), LATER)]);
+    expect(new OrderCancelled(refOf(order), LATER).delivery).toBe('reliable');
+  });
 });
 
 describe('Order.fulfill', () => {
@@ -261,6 +275,13 @@ describe('Order.fulfill', () => {
         payload: {},
       }),
     ]);
+  });
+
+  it('OBX-007 records OrderFulfilled, reliable', () => {
+    const order = orderIn(OrderStatus.Paid);
+    order.fulfill(change());
+    expect(order.pullEvents()).toEqual([new OrderFulfilled(refOf(order), LATER)]);
+    expect(new OrderFulfilled(refOf(order), LATER).delivery).toBe('reliable');
   });
 });
 
@@ -281,6 +302,14 @@ describe('Order.markPaid', () => {
         payload: { paymentAttempt: 1, pspChargeId: 'ch_42' },
       }),
     ]);
+  });
+
+  it('OBX-007 records OrderPaid with the attempt and the charge, reliable', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.markPaid({ ...change({ changedBy: SYSTEM_ACTOR }), attempt: 1, pspChargeId: 'ch_42' });
+    const paid = new OrderPaid(refOf(order), 1, 'ch_42', order.amountDue, LATER);
+    expect(order.pullEvents()).toEqual([paid]);
+    expect(paid.delivery).toBe('reliable');
   });
 });
 
@@ -304,6 +333,132 @@ describe('Order.markPaymentFailed', () => {
       }),
     ]);
   });
+
+  it('NTF-032 records OrderPaymentFailed with the attempt, the reason and the amount, reliable', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.markPaymentFailed({ ...change(), attempt: 1, reason: 'card_declined' });
+    const failed = new OrderPaymentFailed(refOf(order), 1, 'card_declined', order.amountDue, LATER);
+    expect(order.pullEvents()).toEqual([failed]);
+    expect(failed.delivery).toBe('reliable');
+  });
+});
+
+describe('Order.returnToDraft', () => {
+  const shortages = [{ productId: PRODUCT_1, requested: 3, available: 1 }];
+
+  it('SAGA-003 makes the awaited attempt a DRAFT again, with the reason, and no longer placed', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.returnToDraft({
+      ...change({ changedBy: SYSTEM_ACTOR }),
+      attempt: 1,
+      reason: 'out_of_stock',
+      shortages,
+    });
+
+    expect(order.snapshot()).toMatchObject({
+      status: OrderStatus.Draft,
+      failureReason: 'out_of_stock',
+      placedAt: null,
+      // the attempt was made: the next placing is another one
+      paymentAttempt: 1,
+    });
+  });
+
+  it.each(['out_of_stock', 'inventory_unavailable'])(
+    'NTF-032 records OrderReturnedToDraft with the attempt and the reason %s, reliable',
+    (reason) => {
+      const order = orderIn(OrderStatus.PendingPayment);
+      order.returnToDraft({ ...change({ changedBy: SYSTEM_ACTOR }), attempt: 1, reason });
+      const returned = new OrderReturnedToDraft(refOf(order), 1, reason, LATER);
+      expect(order.pullEvents()).toEqual([returned]);
+      expect(returned.delivery).toBe('reliable');
+    },
+  );
+
+  it('ORD-021 records STOCK_RESERVATION_FAILED with the attempt, the reason and the shortages', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.returnToDraft({
+      ...change({ changedBy: SYSTEM_ACTOR }),
+      attempt: 1,
+      reason: 'out_of_stock',
+      shortages,
+    });
+
+    expect(order.pullHistory()).toEqual([
+      expect.objectContaining({
+        type: OrderEventType.StockReservationFailed,
+        fromStatus: OrderStatus.PendingPayment,
+        toStatus: OrderStatus.Draft,
+        changedBy: SYSTEM_ACTOR,
+        payload: { paymentAttempt: 1, reason: 'out_of_stock', shortages },
+      }),
+    ]);
+  });
+
+  it('SAGA-007 records no shortages when inventory never said', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.returnToDraft({ ...change(), attempt: 1, reason: 'inventory_unavailable' });
+
+    expect(order.pullHistory()[0]?.payload).toEqual({
+      paymentAttempt: 1,
+      reason: 'inventory_unavailable',
+    });
+  });
+
+  it('SAGA-003 can be placed again, as the next attempt', () => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    order.returnToDraft({ ...change(), attempt: 1, reason: 'out_of_stock' });
+
+    order.place(change());
+
+    expect(order.snapshot()).toMatchObject({
+      status: OrderStatus.PendingPayment,
+      paymentAttempt: 2,
+      failureReason: null,
+    });
+  });
+});
+
+describe('Order.note', () => {
+  it.each([
+    OrderEventType.StockReserved,
+    OrderEventType.StockReleased,
+    OrderEventType.PaymentTimedOut,
+    OrderEventType.CancellationRequested,
+  ] as const)('ORD-018 ORD-021 records %s from and to the status the order has', (type) => {
+    const order = orderIn(OrderStatus.PendingPayment);
+    const before = order.snapshot();
+
+    order.note(type, { ...change({ changedBy: SYSTEM_ACTOR }), attempt: 1 });
+
+    expect(order.pullHistory()).toEqual([
+      expect.objectContaining({
+        type,
+        fromStatus: OrderStatus.PendingPayment,
+        toStatus: OrderStatus.PendingPayment,
+        changedBy: SYSTEM_ACTOR,
+        payload: { paymentAttempt: 1 },
+        at: LATER,
+      }),
+    ]);
+    // nothing but the time of the last change moves
+    expect(order.snapshot()).toEqual({ ...before, updatedAt: LATER });
+    expect(order.pullEvents()).toEqual([]);
+  });
+
+  it('SAGA-006 notes a release on an order that was placed again since', () => {
+    const order = orderIn(OrderStatus.PendingPayment, { paymentAttempt: 2 });
+
+    order.note(OrderEventType.StockReleased, { ...change(), attempt: 1 });
+
+    expect(order.pullHistory()).toEqual([
+      expect.objectContaining({
+        fromStatus: OrderStatus.PendingPayment,
+        toStatus: OrderStatus.PendingPayment,
+        payload: { paymentAttempt: 1 },
+      }),
+    ]);
+  });
 });
 
 describe('payment outcome of another attempt', () => {
@@ -313,6 +468,9 @@ describe('payment outcome of another attempt', () => {
     },
     markPaymentFailed: (order: Order, attempt: number) => {
       order.markPaymentFailed({ ...change(), attempt, reason: 'card_declined' });
+    },
+    returnToDraft: (order: Order, attempt: number) => {
+      order.returnToDraft({ ...change(), attempt, reason: 'out_of_stock' });
     },
   };
 

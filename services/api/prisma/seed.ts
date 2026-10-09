@@ -22,8 +22,8 @@ import {
 } from './seed-data';
 import { seedIdentity } from './seed-identity';
 
-import type { SeedOrder, WorkspaceKey } from './seed-data';
-import type { OrderEventType } from '../src/infrastructure/database/generated/prisma/client';
+import type { SeedEventType, SeedOrder, WorkspaceKey } from './seed-data';
+import type { OrderSagaStep } from '../src/infrastructure/database/generated/prisma/client';
 
 try {
   process.loadEnvFile('.env');
@@ -85,11 +85,11 @@ async function seedOrder(ws: WorkspaceKey, order: SeedOrder, products: readonly 
     taxRateBps,
   });
   const eventTime = (i: number) => seedTime(100 + order.n * 10 + i);
-  const reached = (type: OrderEventType) => {
+  const reached = (type: SeedEventType) => {
     const i = order.history.indexOf(type);
     return i === -1 ? null : eventTime(i);
   };
-  const actorOf = (type: OrderEventType) => {
+  const actorOf = (type: SeedEventType) => {
     if (type === 'PAYMENT_SUCCEEDED' || type === 'PAYMENT_FAILED') return 'system:consumer:orders';
     return type === 'ORDER_FULFILLED' ? fulfiller : creator;
   };
@@ -155,10 +155,46 @@ async function seedOrder(ws: WorkspaceKey, order: SeedOrder, products: readonly 
   });
 }
 
+/** Where the saga of a placed order stands, as its status implies (docs/adr/0017). */
+const SAGA_STEP: Partial<Record<SeedOrder['status'], OrderSagaStep>> = {
+  // the charge was asked for: the order can be cancelled, which asks payments to cancel it
+  PENDING_PAYMENT: 'CHARGING',
+  PAID: 'COMPLETED',
+  FULFILLED: 'COMPLETED',
+  PAYMENT_FAILED: 'ABORTED',
+};
+
+/** The saga of the last placing of an order; an order that was never placed has none. */
+async function seedSaga(ws: WorkspaceKey, order: SeedOrder): Promise<void> {
+  const step = SAGA_STEP[order.status];
+  if (step === undefined || order.paymentAttempt === 0) return;
+  const { id: workspaceId, group } = WORKSPACES[ws];
+  const placedAt = seedTime(100 + order.n * 10 + order.history.indexOf('ORDER_PLACED'));
+  const endedAt = seedTime(100 + order.n * 10 + order.history.length - 1);
+  await prisma.orderSaga.createMany({
+    skipDuplicates: true,
+    data: [
+      {
+        workspaceId,
+        orderId: seedId(`${group}2`, order.n),
+        attempt: order.paymentAttempt,
+        step,
+        // long past: no timeout is under way for a seeded order
+        deadlineAt: step === 'CHARGING' ? placedAt : null,
+        createdAt: placedAt,
+        updatedAt: endedAt,
+      },
+    ],
+  });
+}
+
 async function seedWorkspaceData(ws: WorkspaceKey): Promise<void> {
   const products = productRows(ws);
   await prisma.product.createMany({ data: products, skipDuplicates: true });
-  for (const order of ORDERS) await seedOrder(ws, order, products);
+  for (const order of ORDERS) {
+    await seedOrder(ws, order, products);
+    await seedSaga(ws, order);
+  }
 }
 
 async function main(): Promise<void> {

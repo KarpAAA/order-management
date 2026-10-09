@@ -1,6 +1,6 @@
 // Vitest setupFiles for the e2e project: runs inside EVERY test file.
-// The file gets its own database, copied from the migrated + seeded template, so files run
-// in parallel and never share rows. Inside a file tests run in order and may build on each
+// The file gets its own database, copied from the migrated + seeded template, and its own
+// RabbitMQ vhost, so files run in parallel and never share rows or messages. Inside a file tests run in order and may build on each
 // other; call truncateAll() between `describe`s when one needs a clean slate.
 import { randomUUID } from 'node:crypto';
 
@@ -13,6 +13,7 @@ import { PrismaClient } from '@infra/database/generated/prisma/client';
 import { seedTest } from '../seed/seed-test';
 
 import { adminQuery, appRoleUrl, databaseUrl, TEMPLATE_DB } from './database-url';
+import { createVhost, dropVhost } from './rabbitmq';
 
 let prisma: PrismaClient | undefined;
 let dbName: string | undefined;
@@ -36,12 +37,19 @@ beforeAll(async () => {
   process.env.QUEUE_PREFIX = dbName;
   // and its own cache keys: the seed gives every file the same workspace ids
   process.env.CACHE_PREFIX = dbName;
+  // and its own exchanges and queues: a consumer in one file never takes the messages of another
+  process.env.RABBITMQ_URL = await createVhost(
+    inject('rabbitManagementUrl'),
+    inject('rabbitUrl'),
+    dbName,
+  );
   prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
   faker.seed(20260928); // generated values repeat from run to run: a failure reproduces
 });
 
 afterAll(async () => {
   await prisma?.$disconnect();
+  if (dbName) await dropVhost(inject('rabbitManagementUrl'), dbName);
   // FORCE: a closing app's pool (e.g. a worker's) may still hold a connection for a moment
   if (dbName)
     await adminQuery(inject('pgServerUrl'), `DROP DATABASE IF EXISTS ${dbName} WITH (FORCE)`);

@@ -1,6 +1,7 @@
 // Tenancy model (docs/adr/0002-composite-tenant-keys.md):
 // - global tables: users, workspaces (future Citus reference tables)
 // - tenant tables: PK (workspace_id, id); FKs between tenant tables include workspace_id
+//   (order_sagas: PK (workspace_id, order_id, attempt), a saga has no id of its own)
 // - order_events: PK (workspace_id, id, created_at); PARTITION BY RANGE (created_at), monthly.
 //   Prisma cannot express that: the DDL is in migration 20261001120000_partition_order_events,
 //   later partitions come from the worker job (docs/adr/0005-order-events-partitioning.md)
@@ -34,8 +35,9 @@ model User {
   createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  memberships   Membership[]
-  createdOrders Order[]
+  memberships     Membership[]
+  createdOrders   Order[]
+  idempotencyKeys IdempotencyKey[]
 
   @@map("users")
 }
@@ -54,6 +56,7 @@ model Workspace {
   orders      Order[]
   orderItems  OrderItem[]
   orderEvents OrderEvent[]
+  orderSagas  OrderSaga[]
 
   @@map("workspaces")
 }
@@ -130,6 +133,20 @@ enum OrderEventType {
   PAYMENT_FAILED
   ORDER_FULFILLED
   ORDER_CANCELLED
+  STOCK_RESERVED
+  STOCK_RESERVATION_FAILED
+  STOCK_RELEASED
+  PAYMENT_TIMED_OUT
+  CANCELLATION_REQUESTED
+}
+
+enum OrderSagaStep {
+  RESERVING
+  CHARGING
+  CANCELLING_PAYMENT
+  RELEASING
+  COMPLETED
+  ABORTED
 }
 
 model Order {
@@ -161,6 +178,7 @@ model Order {
   creator   User         @relation(fields: [createdBy], references: [id], onDelete: Restrict)
   items     OrderItem[]
   events    OrderEvent[]
+  sagas     OrderSaga[]
 
   @@id([workspaceId, id])
   @@index([workspaceId, createdAt(sort: Desc), id(sort: Desc)])
@@ -213,4 +231,96 @@ model OrderEvent {
   // keyset history: oldest first with the id tiebreak (read/query-service.md §4)
   @@index([workspaceId, orderId, createdAt, id])
   @@map("order_events")
+}
+
+/// Where one placing of an order is in its process across inventory and payments
+/// (docs/adr/0017-order-saga.md). One row per payment attempt: placed again, an order starts a
+/// new saga, and a late answer of the old one finds the old row.
+model OrderSaga {
+  workspaceId String        @map("workspace_id") @db.Uuid
+  orderId     String        @map("order_id") @db.Uuid
+  /// = `payment_attempt` of the order when it was placed
+  attempt     Int
+  step        OrderSagaStep
+  /// until when the step waits for its answer; null once the saga has ended
+  deadlineAt  DateTime?     @map("deadline_at") @db.Timestamptz(3)
+  /// when the user asked to cancel the order while this saga was running; the saga ends the
+  /// order as CANCELLED, unless the charge was made first
+  cancelRequestedAt DateTime? @map("cancel_requested_at") @db.Timestamptz(3)
+  version     Int           @default(0)
+  createdAt   DateTime      @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime      @map("updated_at") @db.Timestamptz(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Restrict)
+  order     Order     @relation(fields: [workspaceId, orderId], references: [workspaceId, id], onDelete: Cascade)
+
+  @@id([workspaceId, orderId, attempt])
+  @@map("order_sagas")
+}
+
+// ── outbox ──────────────────────────────────────────────────────────────────
+
+/// A message for the broker, written in the transaction of the change it tells about and
+/// published by the relay of the worker (docs/adr/0014-transactional-outbox.md).
+/// Not a tenant table: the relay reads every tenant's rows, and the tenant travels inside
+/// `payload` (the envelope). No updated_at: the only update is `published_at`, once.
+model OutboxMessage {
+  /// = `messageId` of the envelope: a message published twice is the same message
+  id          String    @id @db.Uuid
+  exchange    String
+  routingKey  String    @map("routing_key")
+  /// the whole envelope, as `Contract.create()` built it
+  payload     Json
+  occurredAt  DateTime  @map("occurred_at") @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  publishedAt DateTime? @map("published_at") @db.Timestamptz(3)
+
+  // the relay: `published_at IS NULL ORDER BY id`; the cleanup: `published_at < …`
+  @@index([publishedAt, id])
+  @@map("outbox")
+}
+
+// ── inbox ───────────────────────────────────────────────────────────────────
+
+/// A broker message a consumer of this service has handled, written in the transaction of
+/// what the message caused (docs/adr/0015-idempotent-consumers.md): the same message is
+/// handled once per consumer. Not a tenant table: a row is an id and a time, and the cleanup
+/// reads every tenant's rows.
+model InboxMessage {
+  /// the queue the message was read from: two consumers of one event each handle it once
+  consumer    String
+  /// = `messageId` of the envelope
+  messageId   String   @map("message_id") @db.Uuid
+  processedAt DateTime @map("processed_at") @db.Timestamptz(3)
+
+  @@id([consumer, messageId])
+  // the cleanup: `processed_at < …`
+  @@index([processedAt])
+  @@map("inbox")
+}
+
+// ── idempotency keys ────────────────────────────────────────────────────────
+
+/// A write the API has answered, under the key its client chose for it
+/// (docs/adr/0018-http-idempotency-key.md): the same key again gets the same answer, and
+/// the write is not made twice. Written in the transaction of the write. Not a tenant table:
+/// a key belongs to its user and its route, and the cleanup reads the keys of everybody.
+model IdempotencyKey {
+  userId      String   @map("user_id") @db.Uuid
+  /// the method and the path of the request: one key never answers two routes
+  scope       String
+  key         String   @db.Uuid
+  /// sha-256 of the request body: the same key with another body is refused
+  fingerprint String
+  statusCode  Int      @map("status_code")
+  /// the response body as it was sent; null for a response without one
+  response    Json?
+  createdAt   DateTime @map("created_at") @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, scope, key])
+  // the cleanup: `created_at < …`
+  @@index([createdAt])
+  @@map("idempotency_keys")
 }

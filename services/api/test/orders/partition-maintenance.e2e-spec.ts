@@ -8,7 +8,6 @@ import { addMonths, yearMonthOf } from '@shared/domain/year-month';
 
 import { ORDERS_QUEUE } from '@modules/orders';
 
-import { TestPsp } from '../doubles/test-psp';
 import { createApiApp, type ApiApp } from '../helpers/api-app';
 import { waitFor } from '../helpers/waiting';
 import { createWorkerApp, type WorkerApp } from '../helpers/worker-app';
@@ -48,7 +47,7 @@ describe('partition maintenance on worker start (OPS-001)', () => {
     await testDb().$executeRawUnsafe(`DROP TABLE "${lastMonthAhead}"`);
     expect(await exists(lastMonthAhead)).toBe(false);
 
-    worker = await createWorkerApp(new TestPsp());
+    worker = await createWorkerApp();
 
     const finished = await waitFor(
       async () => (await queue.getJobs(['completed', 'failed'])).filter((j) => j.name === CRON_JOB),

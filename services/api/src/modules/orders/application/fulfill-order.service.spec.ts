@@ -4,7 +4,8 @@ import { WorkspaceRole } from '@shared/auth/workspace-role';
 import { StaleVersionError } from '@shared/errors/domain-error';
 import { ForbiddenError } from '@shared/errors/forbidden-error';
 
-import { LATER, ORDER, orderIn } from '../domain/__test__/builders';
+import { LATER, ORDER, ORDER_REF, orderIn } from '../domain/__test__/builders';
+import { OrderFulfilled } from '../domain/events/order-fulfilled.event';
 import { OrderStatus } from '../domain/order-status';
 
 import { enableNoOpTransactions, fixedClock, member, tenantAs } from './__test__/fixtures';
@@ -39,6 +40,14 @@ describe('FulfillOrderService', () => {
     expect(saved.status).toBe(OrderStatus.Fulfilled);
     expect(saved.snapshot().fulfilledAt).toEqual(LATER);
     expect(saved.version).toBe(VERSION + 1);
+  });
+
+  it('OBX-007 publishes OrderFulfilled', async () => {
+    orders.put(orderIn(OrderStatus.Paid));
+
+    await fulfillOrder().execute({ orderId: ORDER, version: VERSION }, member);
+
+    expect(events.published).toEqual([new OrderFulfilled(ORDER_REF, LATER)]);
   });
 
   it('PERM-001 forbids a MEMBER and leaves the order PAID', async () => {

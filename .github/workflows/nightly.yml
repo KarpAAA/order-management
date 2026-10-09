@@ -54,3 +54,23 @@ jobs:
       - run: pnpm test:contract
       - if: always()
         run: pnpm contract:down
+
+  # The four services from their images, an order through all of them (docs/adr/0022).
+  system:
+    name: system
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # the stack runs in docker compose; the tests run here, against its published ports
+      - uses: ./.github/actions/setup
+      - run: pnpm test:system
+      # the logs of every container: a failed scenario cannot be explained without them
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: system-stack-logs
+          path: devtools/system/reports
+          if-no-files-found: ignore
+      - if: always()
+        run: pnpm system:down

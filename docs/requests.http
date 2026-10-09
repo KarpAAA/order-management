@@ -1,4 +1,5 @@
-### WebStorm HTTP Client. Run top to bottom after `pnpm infra:up`, `pnpm db:seed`, `pnpm dev`.
+### WebStorm HTTP Client. Run top to bottom after `pnpm infra:up`, `pnpm db:seed`, `pnpm dev`
+### (`pnpm dev` starts payments-service too: without it a placed order stays PENDING_PAYMENT).
 ### Seeded ids and credentials: README.md → "Seeded data". Password for every user: Passw0rd!
 
 @api = http://localhost:3000/v1
@@ -52,6 +53,7 @@ Authorization: Bearer {{member}}
 
 ### Create a DRAFT order (2 mugs, 10 % off)
 POST {{api}}/workspaces/{{acme}}/orders
+Idempotency-Key: {{$random.uuid}}
 Authorization: Bearer {{member}}
 Content-Type: application/json
 
@@ -68,8 +70,9 @@ Authorization: Bearer {{member}}
 
 > {% client.global.set("version", response.body.version); %}
 
-### Place → 202, status PENDING_PAYMENT
+### Place → 202, status PENDING_PAYMENT (repeat it with the same Idempotency-Key: 202 again, one attempt)
 POST {{api}}/workspaces/{{acme}}/orders/{{orderId}}/place
+Idempotency-Key: {{$random.uuid}}
 Authorization: Bearer {{member}}
 Content-Type: application/json
 
@@ -109,6 +112,7 @@ Authorization: Bearer {{member}}
 
 ### VIEWER creates an order → 403
 POST {{api}}/workspaces/{{acme}}/orders
+Idempotency-Key: {{$random.uuid}}
 Authorization: Bearer {{viewer}}
 Content-Type: application/json
 
@@ -121,7 +125,8 @@ Content-Type: application/json
 
 { "version": 0 }
 
-### Cancel a PENDING_PAYMENT order → 422 ORDER_INVALID_TRANSITION (Step 0 rule)
+### Cancel a PENDING_PAYMENT order → 202: its charge is under way, payments is asked to cancel it;
+### then poll until CANCELLED (the saga, ADR 0017)
 POST {{api}}/workspaces/{{acme}}/orders/{{acmePendingOrder}}/cancel
 Authorization: Bearer {{member}}
 Content-Type: application/json
@@ -130,6 +135,7 @@ Content-Type: application/json
 
 ### Archived product → 422 PRODUCT_NOT_ACTIVE
 POST {{api}}/workspaces/{{acme}}/orders
+Idempotency-Key: {{$random.uuid}}
 Authorization: Bearer {{member}}
 Content-Type: application/json
 
@@ -137,6 +143,7 @@ Content-Type: application/json
 
 ### Validation → 400 VALIDATION_FAILED with field paths
 POST {{api}}/workspaces/{{acme}}/orders
+Idempotency-Key: {{$random.uuid}}
 Authorization: Bearer {{member}}
 Content-Type: application/json
 

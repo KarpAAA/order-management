@@ -3,10 +3,13 @@ import { Money } from '@shared/domain/money';
 import { NO_DISCOUNT } from '../discount';
 import { Order } from '../order';
 import { OrderLine } from '../order-line';
+import { OrderSaga } from '../order-saga';
+import { OrderSagaStep } from '../order-saga-step';
 import { OrderStatus } from '../order-status';
 
 import type { OrderLineInput, OrderProps } from '../order';
 import type { OrderLineProps } from '../order-line';
+import type { OrderSagaProps } from '../order-saga';
 
 export const CURRENCY = 'EUR';
 export const TAX_RATE_BPS = 2000;
@@ -19,6 +22,12 @@ export const USER = '01950000-0000-7000-8000-00000000c001';
 export const PRODUCT_1 = '01950000-0000-7000-8000-00000000d001';
 export const PRODUCT_2 = '01950000-0000-7000-8000-00000000d002';
 export const SYSTEM_ACTOR = 'system:consumer:orders';
+
+/** What every event of ORDER starts with: the order, and USER who created it. */
+export const ORDER_REF = { workspaceId: WORKSPACE, orderId: ORDER, createdBy: USER };
+
+/** The same for an order a test built itself. */
+export const refOf = (order: Order): typeof ORDER_REF => ({ ...ORDER_REF, orderId: order.id });
 
 /** Who and when for a state change; defaults to the user acting LATER than the order was built. */
 export function change(overrides: Partial<{ now: Date; changedBy: string }> = {}): {
@@ -105,4 +114,25 @@ export function orderProps(status: OrderStatus, overrides: Partial<OrderProps> =
 
 export function orderIn(status: OrderStatus, overrides: Partial<OrderProps> = {}): Order {
   return Order.restore(orderProps(status, overrides));
+}
+
+/** When the timeout of the step a restored saga waits in goes off. */
+export const DEADLINE = new Date('2026-01-15T10:05:00.000Z');
+
+const ENDED: readonly OrderSagaStep[] = [OrderSagaStep.Completed, OrderSagaStep.Aborted];
+
+/** The saga of attempt 1 of ORDER in `step`, at version 2; tests override only what they test. */
+export function sagaIn(step: OrderSagaStep, overrides: Partial<OrderSagaProps> = {}): OrderSaga {
+  return OrderSaga.restore({
+    workspaceId: WORKSPACE,
+    orderId: ORDER,
+    attempt: 1,
+    step,
+    deadlineAt: ENDED.includes(step) ? null : DEADLINE,
+    cancelRequestedAt: null,
+    version: 2,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  });
 }

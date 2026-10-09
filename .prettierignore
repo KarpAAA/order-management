@@ -4,3 +4,4 @@ pnpm-lock.yaml
 **/generated
 **/migrations
 .claude/rules/shared
+packages/contracts/released

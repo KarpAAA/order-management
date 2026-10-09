@@ -13,9 +13,16 @@ import type { Order } from './order';
  * built from `TRANSITIONS`: a test derived from the code it tests would agree with any bug.
  */
 
-type Action = 'place' | 'cancel' | 'fulfill' | 'markPaid' | 'markPaymentFailed';
+type Action = 'place' | 'cancel' | 'fulfill' | 'markPaid' | 'markPaymentFailed' | 'returnToDraft';
 
-const ACTIONS: readonly Action[] = ['place', 'cancel', 'fulfill', 'markPaid', 'markPaymentFailed'];
+const ACTIONS: readonly Action[] = [
+  'place',
+  'cancel',
+  'fulfill',
+  'markPaid',
+  'markPaymentFailed',
+  'returnToDraft',
+];
 
 const ALLOWED: readonly {
   from: OrderStatus;
@@ -48,6 +55,19 @@ const ALLOWED: readonly {
     recorded: OrderEventType.PaymentFailed,
   },
   {
+    // the domain allows it; whether it is safe is the saga's decision (SAGA-020, SAGA-021)
+    from: OrderStatus.PendingPayment,
+    action: 'cancel',
+    to: OrderStatus.Cancelled,
+    recorded: OrderEventType.OrderCancelled,
+  },
+  {
+    from: OrderStatus.PendingPayment,
+    action: 'returnToDraft',
+    to: OrderStatus.Draft,
+    recorded: OrderEventType.StockReservationFailed,
+  },
+  {
     from: OrderStatus.PaymentFailed,
     action: 'place',
     to: OrderStatus.PendingPayment,
@@ -73,9 +93,12 @@ const FORBIDDEN = Object.values(OrderStatus).flatMap((from) =>
   ),
 );
 
-/** Payment outcomes are guarded by the awaited attempt first (PAY-009); user actions by the table. */
+/**
+ * What the saga of an attempt decides is guarded by the awaited attempt first (PAY-009); user
+ * actions by the table.
+ */
 const isPaymentOutcome = (action: Action): boolean =>
-  action === 'markPaid' || action === 'markPaymentFailed';
+  action === 'markPaid' || action === 'markPaymentFailed' || action === 'returnToDraft';
 
 /** Runs `action` the way its caller would; payment outcomes carry the order's current attempt. */
 function run(order: Order, action: Action): void {
@@ -99,13 +122,16 @@ function run(order: Order, action: Action): void {
         reason: 'card_declined',
       });
       return;
+    case 'returnToDraft':
+      order.returnToDraft({ ...change(), attempt: order.paymentAttempt, reason: 'out_of_stock' });
+      return;
   }
 }
 
 describe('Order state machine', () => {
-  it('covers 6 statuses × 5 actions: 7 allowed, 23 forbidden', () => {
-    expect(ALLOWED).toHaveLength(7);
-    expect(FORBIDDEN).toHaveLength(23);
+  it('covers 6 statuses × 6 actions: 9 allowed, 27 forbidden', () => {
+    expect(ALLOWED).toHaveLength(9);
+    expect(FORBIDDEN).toHaveLength(27);
   });
 
   it.each(ALLOWED)(

@@ -9,6 +9,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 interface Behaviour {
   latencyMs: number;
   failureRate: number;
+  /** Share of calls refused with 429 and a Retry-After: the provider is there, and busy. */
+  throttleRate: number;
   declineRate: number;
 }
 
@@ -21,6 +23,8 @@ interface Charge {
   reference: string;
   idempotencyKey: string;
   createdAt: string;
+  /** Set when the charge was taken back. A declined charge moved no money and is never void. */
+  voidedAt?: string;
 }
 
 const DECLINE_CODES = ['insufficient_funds', 'card_declined', 'expired_card'] as const;
@@ -29,10 +33,19 @@ const port = Number(process.env.PORT ?? 4010);
 const behaviour: Behaviour = {
   latencyMs: numberFromEnv('FAKE_PSP_LATENCY_MS', 200),
   failureRate: numberFromEnv('FAKE_PSP_FAILURE_RATE', 0),
+  throttleRate: numberFromEnv('FAKE_PSP_THROTTLE_RATE', 0),
   declineRate: numberFromEnv('FAKE_PSP_DECLINE_RATE', 0),
 };
+/** Seconds a throttled caller is told to wait. */
+const RETRY_AFTER_SECONDS = 1;
 // Idempotency store: the same key always returns exactly the same response.
 const chargesByKey = new Map<string, Charge>();
+// Calls to the provider itself (charges and voids, not /admin), by the status they got:
+// what a caller that says "I stopped calling" is checked against.
+const answered = new Map<number, number>();
+// Calls to the provider that were taken and not answered yet: how a caller that wants to act
+// while a charge is under way knows that one is (the system tests, docs/adr/0022).
+let inFlight = 0;
 
 function numberFromEnv(name: string, fallback: number): number {
   const raw = process.env[name];
@@ -44,6 +57,26 @@ function numberFromEnv(name: string, fallback: number): number {
 function send(res: ServerResponse, status: number, body: unknown): void {
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
+}
+
+/** Answers a call to the provider, and counts it. */
+function answer(res: ServerResponse, status: number, body: unknown): void {
+  answered.set(status, (answered.get(status) ?? 0) + 1);
+  send(res, status, body);
+}
+
+/** A failure that passes: 429 with a Retry-After, or 503. Stores nothing. */
+function failsForNow(res: ServerResponse): boolean {
+  if (Math.random() < behaviour.throttleRate) {
+    res.setHeader('retry-after', String(RETRY_AFTER_SECONDS));
+    answer(res, 429, { error: 'too many requests' });
+    return true;
+  }
+  if (Math.random() < behaviour.failureRate) {
+    answer(res, 503, { error: 'temporarily unavailable' });
+    return true;
+  }
+  return false;
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -65,7 +98,7 @@ const latency = () => behaviour.latencyMs + Math.random() * behaviour.latencyMs 
 async function createCharge(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const key = req.headers['idempotency-key'];
   if (typeof key !== 'string' || key === '') {
-    send(res, 400, { error: 'Idempotency-Key header is required' });
+    answer(res, 400, { error: 'Idempotency-Key header is required' });
     return;
   }
   const body = await readJson(req);
@@ -78,7 +111,7 @@ async function createCharge(req: IncomingMessage, res: ServerResponse): Promise<
     !/^[A-Z]{3}$/.test(currency) ||
     typeof reference !== 'string'
   ) {
-    send(res, 400, {
+    answer(res, 400, {
       error: 'body must be { amountMinor: int >= 0, currency: ISO 4217, reference: string }',
     });
     return;
@@ -88,14 +121,11 @@ async function createCharge(req: IncomingMessage, res: ServerResponse): Promise<
 
   const existing = chargesByKey.get(key);
   if (existing) {
-    send(res, 201, publicView(existing));
+    answer(res, 201, publicView(existing));
     return;
   }
   // A transient failure stores nothing: a retry with the same key gets a fresh chance.
-  if (Math.random() < behaviour.failureRate) {
-    send(res, 503, { error: 'temporarily unavailable' });
-    return;
-  }
+  if (failsForNow(res)) return;
   const declined = Math.random() < behaviour.declineRate;
   const charge: Charge = {
     id: `ch_${randomUUID()}`,
@@ -111,17 +141,34 @@ async function createCharge(req: IncomingMessage, res: ServerResponse): Promise<
   };
   chargesByKey.set(key, charge);
   log(`charge ${charge.id} ${charge.status} key=${key} amount=${amountMinor} ${currency}`);
-  send(res, 201, publicView(charge));
+  answer(res, 201, publicView(charge));
 }
 
 function publicView(c: Charge) {
   return { id: c.id, status: c.status, ...(c.declineCode && { declineCode: c.declineCode }) };
 }
 
+// Takes a charge back. Repeatable: a charge that is void stays void, with its first date.
+async function voidCharge(id: string, res: ServerResponse): Promise<void> {
+  await sleep(latency());
+
+  const charge = [...chargesByKey.values()].find((c) => c.id === id);
+  if (!charge) {
+    answer(res, 404, { error: `no charge ${id}` });
+    return;
+  }
+  if (failsForNow(res)) return;
+  if (charge.status === 'succeeded' && charge.voidedAt === undefined) {
+    charge.voidedAt = new Date().toISOString();
+    log(`void ${charge.id} key=${charge.idempotencyKey}`);
+  }
+  answer(res, 200, { id: charge.id, status: 'voided' });
+}
+
 async function updateConfig(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = await readJson(req);
   const next = { ...behaviour };
-  for (const field of ['latencyMs', 'failureRate', 'declineRate'] as const) {
+  for (const field of ['latencyMs', 'failureRate', 'throttleRate', 'declineRate'] as const) {
     const value = body[field];
     if (value === undefined) continue;
     const isRate = field !== 'latencyMs';
@@ -136,24 +183,45 @@ async function updateConfig(req: IncomingMessage, res: ServerResponse): Promise<
   send(res, 200, behaviour);
 }
 
+/** Runs one call to the provider, counted as under way until it is answered. */
+async function underWay(call: () => Promise<void>): Promise<void> {
+  inFlight += 1;
+  try {
+    await call();
+  } finally {
+    inFlight -= 1;
+  }
+}
+
 function log(message: string): void {
   process.stdout.write(`[fake-psp] ${new Date().toISOString()} ${message}\n`);
 }
 
+const VOID_ROUTE = /^POST \/charges\/([^/]+)\/void$/;
+
 const server = createServer((req, res) => {
   const route = `${req.method ?? ''} ${(req.url ?? '').split('?')[0] ?? ''}`;
   const handle = async () => {
+    const voided = VOID_ROUTE.exec(route)?.[1];
+    if (voided !== undefined) return underWay(() => voidCharge(decodeURIComponent(voided), res));
     switch (route) {
       case 'POST /charges':
-        return createCharge(req, res);
+        return underWay(() => createCharge(req, res));
       case 'GET /charges':
         return send(res, 200, [...chargesByKey.values()]);
       case 'GET /admin/config':
         return send(res, 200, behaviour);
       case 'POST /admin/config':
         return updateConfig(req, res);
+      case 'GET /admin/stats':
+        return send(res, 200, {
+          calls: [...answered.values()].reduce((sum, count) => sum + count, 0),
+          byStatus: Object.fromEntries(answered),
+          inFlight,
+        });
       case 'POST /admin/reset':
         chargesByKey.clear();
+        answered.clear();
         log('reset');
         return send(res, 200, { ok: true });
       default:

@@ -1,10 +1,8 @@
-// The worker process inside the test: WorkerModule exactly as main.worker.ts boots it, with
-// the payment provider replaced by a test double. It shares only the database and Redis with
-// the API app of the same file — as the two processes do in production (api+worker).
+// The worker process inside the test: WorkerModule exactly as main.worker.ts boots it. It
+// shares only the database, Redis and the broker with the API app of the same file, as the
+// two processes do in production (api+worker).
 import { ConsoleLogger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-
-import { PAYMENT_GATEWAY, type PaymentGateway } from '@modules/orders/ports/payment-gateway.port';
 
 import { WorkerModule } from '../../src/entrypoints/worker.module';
 
@@ -15,13 +13,12 @@ export interface WorkerApp {
   close(): Promise<void>;
 }
 
-export async function createWorkerApp(gateway: PaymentGateway): Promise<WorkerApp> {
+export async function createWorkerApp(): Promise<WorkerApp> {
   const moduleRef = await Test.createTestingModule({ imports: [WorkerModule] })
-    .overrideProvider(PAYMENT_GATEWAY)
-    .useValue(gateway)
-    .setLogger(new ConsoleLogger({ logLevels: ['fatal', 'error'] }))
+    // quiet, not blind: a rejected message is an error by design, and the suite provokes them
+    .setLogger(new ConsoleLogger({ logLevels: ['fatal'] }))
     .compile();
-  await moduleRef.init(); // module init + bootstrap hooks: the BullMQ worker starts consuming
+  await moduleRef.init(); // module init + bootstrap hooks: the queue worker and the broker consumer start
 
   return {
     get: (token) => moduleRef.get(token),

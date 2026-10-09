@@ -4,6 +4,7 @@
 import { ConsoleLogger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
+import { v7 as uuidv7 } from 'uuid';
 
 import { PrismaService } from '@infra/database/prisma.service';
 
@@ -14,6 +15,12 @@ import type { Type } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
 export interface ApiApp {
+  /**
+   * One request to the API. Every request carries an `Idempotency-Key` of its own, as a
+   * well-behaved client sends one: the routes that need it get it, the others ignore it. A
+   * test about the key sets its own (`.set('Idempotency-Key', …)`) or sends none
+   * (`.unset('Idempotency-Key')`).
+   */
   http(): ReturnType<typeof request>;
   /**
    * Runs `work` and returns how many data statements the app sent meanwhile. The frame around
@@ -43,7 +50,7 @@ export async function createApiApp(): Promise<ApiApp> {
   });
 
   return {
-    http: () => request(app.getHttpServer()),
+    http: () => request.agent(app.getHttpServer()).set('Idempotency-Key', uuidv7()),
     countQueries: async (work) => {
       const before = queries;
       await work();

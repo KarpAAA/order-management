@@ -1,18 +1,23 @@
+import type { Money } from '@shared/domain/money';
 import type { DomainEvent } from '@shared/events/domain-event';
 
+import type { OrderRef } from './order-ref';
+
 /**
- * An order entered PENDING_PAYMENT for `paymentAttempt`. In-process only in Step 0: its
- * handler enqueues the charge after commit, and the enqueue is NOT atomic with the commit
- * (docs/architecture.md → Known gaps; Step 3 moves it to the outbox).
+ * An order entered PENDING_PAYMENT for `paymentAttempt`. Reliable: written to the outbox in
+ * the transaction of the placement and published as `orders.order-placed`
+ * (infrastructure/order-events.translator.ts).
+ *
+ * It carries the amount to charge: whoever reads the event cannot read the order.
  */
 export class OrderPlaced implements DomainEvent {
   readonly name = 'order.placed';
-  readonly delivery = 'in-process' as const;
+  readonly delivery = 'reliable' as const;
 
   constructor(
-    readonly workspaceId: string,
-    readonly orderId: string,
+    readonly order: OrderRef,
     readonly paymentAttempt: number,
+    readonly amountDue: Money,
     readonly occurredAt: Date,
   ) {}
 }

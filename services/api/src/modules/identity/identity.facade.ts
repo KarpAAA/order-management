@@ -10,6 +10,11 @@ export interface WorkspaceTerms {
   taxRateBps: number;
 }
 
+export interface UserContact {
+  userId: string;
+  email: string;
+}
+
 /** Public API of identity: reads other modules and the access guard need. */
 @Injectable()
 export class IdentityFacade implements MembershipReader {
@@ -23,5 +28,10 @@ export class IdentityFacade implements MembershipReader {
   /** Commercial terms an order snapshots at creation. */
   getWorkspaceTerms(workspaceId: string): Promise<WorkspaceTerms> {
     return this.query.getWorkspaceTerms(workspaceId);
+  }
+
+  /** Where a message for a user goes: the address an event about their order carries. */
+  getUserContact(userId: string): Promise<UserContact> {
+    return this.query.getUserContact(userId);
   }
 }

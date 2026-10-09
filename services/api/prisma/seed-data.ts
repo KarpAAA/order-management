@@ -95,13 +95,23 @@ export const PRODUCT_NAMES = [
 /** 1-based product numbers that are ARCHIVED in every workspace. */
 export const ARCHIVED_PRODUCTS: ReadonlySet<number> = new Set([4, 11, 16]);
 
+/** The seed writes the status changes of an order, not the steps of its saga in between. */
+export type SeedEventType = Exclude<
+  OrderEventType,
+  | 'STOCK_RESERVED'
+  | 'STOCK_RESERVATION_FAILED'
+  | 'STOCK_RELEASED'
+  | 'PAYMENT_TIMED_OUT'
+  | 'CANCELLATION_REQUESTED'
+>;
+
 export interface SeedOrder {
   n: number;
   status: OrderStatus;
   lines: { product: number; quantity: number }[];
   discount: Discount;
   /** Status changes in order; the first is always ORDER_CREATED. */
-  history: OrderEventType[];
+  history: SeedEventType[];
   paymentAttempt: number;
   failureReason?: string;
 }
@@ -175,7 +185,7 @@ export const ORDERS: SeedOrder[] = [
   },
 ];
 
-export const STATUS_AFTER: Record<OrderEventType, OrderStatus> = {
+export const STATUS_AFTER: Record<SeedEventType, OrderStatus> = {
   ORDER_CREATED: 'DRAFT',
   ORDER_PLACED: 'PENDING_PAYMENT',
   PAYMENT_SUCCEEDED: 'PAID',

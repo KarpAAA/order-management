@@ -1,0 +1,13 @@
+{
+  "messageId": "01927f4e-8b2a-7c3d-9e4f-5a6b7c8d9e01",
+  "name": "inventory.stock-adjusted",
+  "version": 1,
+  "occurredAt": "2026-10-09T10:15:30.123Z",
+  "workspaceId": "01927f4e-8b2a-7c3d-9e4f-5a6b7c8d9e02",
+  "correlationId": "01927f4e-8b2a-7c3d-9e4f-5a6b7c8d9e03",
+  "payload": {
+    "productId": "01927f4e-8b2a-7c3d-9e4f-5a6b7c8d9e05",
+    "onHand": 50,
+    "reserved": 0
+  }
+}

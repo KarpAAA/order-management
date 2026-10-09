@@ -1,5 +1,5 @@
 // Vitest globalSetup: runs ONCE per `pnpm test:e2e`, in the main process, before any file.
-//  1. Postgres + Redis in Testcontainers (random ports, never the dev containers), plus a
+//  1. Postgres, Redis and RabbitMQ in Testcontainers (random ports, never the dev containers), plus a
 //     PgBouncer in front of that Postgres and a streaming replica behind it, each for the one
 //     file that tests that path;
 //  2. `test_template` = migrations (the real `prisma migrate deploy`) + test seed;
@@ -17,15 +17,17 @@ import { seedTest } from '../seed/seed-test';
 import { adminQuery, APP_ROLE, databaseUrl, TEMPLATE_DB } from './database-url';
 import { pgBouncerUrl, startPgBouncer } from './pgbouncer';
 import { startPostgres } from './postgres';
+import { rabbitManagementUrl, startRabbit } from './rabbitmq';
 import { replicaUrl, startReplica } from './replica';
 
 import type { TestProject } from 'vitest/node';
 
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
   const network = await new Network().start();
-  const [pg, redis, pgBouncer, replica] = await Promise.all([
+  const [pg, redis, rabbit, pgBouncer, replica] = await Promise.all([
     startPostgres(network),
     new RedisContainer('redis:7-alpine').start(),
+    startRabbit(),
     // connects to Postgres on a client's first query, so it may start beside it
     startPgBouncer(network),
     // waits for Postgres by itself, then copies it and streams everything after
@@ -56,11 +58,13 @@ export default async function setup(project: TestProject): Promise<() => Promise
 
   project.provide('pgServerUrl', serverUrl);
   project.provide('redisUrl', redis.getConnectionUrl());
+  project.provide('rabbitUrl', rabbit.getAmqpUrl());
+  project.provide('rabbitManagementUrl', rabbitManagementUrl(rabbit));
   project.provide('pgBouncerUrl', pgBouncerUrl(pgBouncer));
   project.provide('pgReplicaUrl', replicaUrl(replica, serverUrl));
 
   return async () => {
-    await Promise.all([pgBouncer.stop(), replica.stop(), pg.stop(), redis.stop()]);
+    await Promise.all([pgBouncer.stop(), replica.stop(), pg.stop(), redis.stop(), rabbit.stop()]);
     await network.stop();
   };
 }

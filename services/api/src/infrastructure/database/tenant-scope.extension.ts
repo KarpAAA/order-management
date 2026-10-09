@@ -27,6 +27,7 @@ export const TENANT_MODELS: ReadonlySet<string> = new Set([
   'Order',
   'OrderItem',
   'OrderEvent',
+  'OrderSaga',
 ]);
 
 type Args = Record<string, unknown>;
