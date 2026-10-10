@@ -187,6 +187,15 @@ export default tseslint.config(
               message: 'Cross-module imports use the @modules alias.',
             },
           ],
+          // as in the api: one logger, injected
+          paths: [
+            {
+              name: '@nestjs/common',
+              importNames: ['Logger', 'ConsoleLogger'],
+              message:
+                'Inject LOGGER (@shared/logger/logger): one logger, structured (ops/logging.md §1).',
+            },
+          ],
         },
       ],
 

@@ -1,9 +1,9 @@
-import { Logger } from '@nestjs/common';
 import { delay, http, HttpResponse } from 'msw';
 import { setupServer } from 'msw/node';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import type { GatewayConfig } from '@config/configuration';
+import { silentLogger } from '@shared/logger/silent-logger';
 
 import { FakePaymentGateway } from './fake-payment-gateway.adapter';
 import { HttpPaymentGateway } from './http-payment-gateway.adapter';
@@ -31,6 +31,10 @@ const config = (overrides: Partial<GatewayConfig> = {}): GatewayConfig => ({
   ...overrides,
 });
 const CHARGES_URL = 'http://psp.test/charges';
+
+/** The gateway as the service builds it, in the chain `correlationId` (none by default). */
+const httpGateway = (gatewayConfig: GatewayConfig, correlationId?: string): HttpPaymentGateway =>
+  new HttpPaymentGateway(gatewayConfig, silentLogger, { current: () => correlationId });
 
 const request = (overrides: Partial<ChargeRequest> = {}): ChargeRequest => ({
   amount: { amountMinor: 12_50n, currency: 'EUR' },
@@ -66,7 +70,6 @@ const fakeVoid = http.post(`${CHARGES_URL}/:id/void`, ({ params }) => {
 const server = setupServer(fakePsp, fakeVoid);
 
 beforeAll(() => {
-  Logger.overrideLogger(false);
   server.listen({ onUnhandledRequest: 'error' });
 });
 afterEach(() => {
@@ -89,7 +92,7 @@ async function gatewayError(gateway: PaymentGateway): Promise<PaymentGatewayErro
 }
 
 describe.each([
-  { name: 'HttpPaymentGateway', create: (): PaymentGateway => new HttpPaymentGateway(config()) },
+  { name: 'HttpPaymentGateway', create: (): PaymentGateway => httpGateway(config()) },
   { name: 'FakePaymentGateway', create: (): PaymentGateway => new FakePaymentGateway() },
 ])('$name — PaymentGateway contract', ({ create }) => {
   it('returns succeeded with a charge id', async () => {
@@ -141,7 +144,7 @@ describe('HttpPaymentGateway', () => {
   // one per test: the gateway remembers how its provider has been doing
   let gateway: HttpPaymentGateway;
   beforeEach(() => {
-    gateway = new HttpPaymentGateway(config());
+    gateway = httpGateway(config());
   });
   const respondWith = (resolver: Parameters<typeof http.post>[1]): void => {
     server.use(http.post(CHARGES_URL, resolver));
@@ -334,7 +337,7 @@ const repeat = (answer: Answer, times: number): Answer[] =>
 
 describe('HttpPaymentGateway: a call that may pass is made again (PAY-027)', () => {
   const retrying = (overrides: Partial<GatewayConfig> = {}): HttpPaymentGateway =>
-    new HttpPaymentGateway(config({ pspMaxRetries: 2, ...overrides }));
+    httpGateway(config({ pspMaxRetries: 2, ...overrides }));
 
   it.each<[string, Answer]>([
     ['a 503', 503],
@@ -395,7 +398,7 @@ describe('HttpPaymentGateway: a call that may pass is made again (PAY-027)', () 
 describe('HttpPaymentGateway: the pause a provider asks for (PAY-028)', () => {
   it('waits as long as Retry-After says before the next call', async () => {
     const psp = script(CHARGES_URL, throttled('1'));
-    const gateway = new HttpPaymentGateway(config({ pspMaxRetries: 1, pspRetryMaxDelayMs: 1500 }));
+    const gateway = httpGateway(config({ pspMaxRetries: 1, pspRetryMaxDelayMs: 1500 }));
     const startedAt = performance.now();
 
     await gateway.charge(request());
@@ -406,7 +409,7 @@ describe('HttpPaymentGateway: the pause a provider asks for (PAY-028)', () => {
 
   it('does not sit out a pause longer than its own: the error says how long', async () => {
     const psp = script(CHARGES_URL, throttled('30'));
-    const gateway = new HttpPaymentGateway(config({ pspMaxRetries: 2 }));
+    const gateway = httpGateway(config({ pspMaxRetries: 2 }));
 
     const err = await gatewayError(gateway);
 
@@ -433,7 +436,7 @@ describe('HttpPaymentGateway: the pause a provider asks for (PAY-028)', () => {
 describe('HttpPaymentGateway: an operation has a time budget (PAY-029)', () => {
   it('stops a call that is under way when the budget ends', async () => {
     const psp = script(CHARGES_URL, ...repeat('slow', 10));
-    const gateway = new HttpPaymentGateway(config({ pspMaxRetries: 5, pspCallBudgetMs: 150 }));
+    const gateway = httpGateway(config({ pspMaxRetries: 5, pspCallBudgetMs: 150 }));
     const startedAt = performance.now();
 
     const err = await gatewayError(gateway);
@@ -446,7 +449,7 @@ describe('HttpPaymentGateway: an operation has a time budget (PAY-029)', () => {
 
   it('makes no further call when the budget ends during a pause', async () => {
     const psp = script(CHARGES_URL, throttled('1'), throttled('1'));
-    const gateway = new HttpPaymentGateway(
+    const gateway = httpGateway(
       config({ pspMaxRetries: 2, pspRetryMaxDelayMs: 1500, pspCallBudgetMs: 200 }),
     );
 
@@ -461,7 +464,7 @@ describe('HttpPaymentGateway: a provider that keeps failing is not called (PAY-0
   const HALF_OPEN_MS = 100;
   // opens once more than half of at least four calls have failed
   const guarded = (overrides: Partial<GatewayConfig> = {}): HttpPaymentGateway =>
-    new HttpPaymentGateway(
+    httpGateway(
       config({ pspBreakerMinCalls: 4, pspBreakerHalfOpenMs: HALF_OPEN_MS, ...overrides }),
     );
   const fail = async (gateway: PaymentGateway, times: number): Promise<void> => {
@@ -570,5 +573,43 @@ describe('HttpPaymentGateway: a provider that keeps failing is not called (PAY-0
     // the fourth failed call opened it; the retry after that was not made
     expect(err).toMatchObject(OPEN);
     expect(psp.calls).toHaveLength(4);
+  });
+});
+
+describe('HttpPaymentGateway: the chain a call belongs to (LOG-040)', () => {
+  const CORRELATION_ID = '01927f4e-8b2a-7c3d-9e4f-5a6b7c8d9e03';
+
+  /** The `x-correlation-id` of every call the provider got. */
+  function chains(): (string | null)[] {
+    const seen: (string | null)[] = [];
+    server.use(
+      http.post(CHARGES_URL, ({ request: req }) => {
+        seen.push(req.headers.get('x-correlation-id'));
+        return HttpResponse.json({ id: 'ch_1', status: 'succeeded' }, { status: 201 });
+      }),
+      http.post(`${CHARGES_URL}/:id/void`, ({ request: req }) => {
+        seen.push(req.headers.get('x-correlation-id'));
+        return HttpResponse.json({ status: 'voided' });
+      }),
+    );
+    return seen;
+  }
+
+  it('names the chain of the command on a charge and on a void', async () => {
+    const seen = chains();
+    const gateway = httpGateway(config(), CORRELATION_ID);
+
+    await gateway.charge(request());
+    await gateway.void('ch_1');
+
+    expect(seen).toEqual([CORRELATION_ID, CORRELATION_ID]);
+  });
+
+  it('sends no such header for a call that belongs to no chain', async () => {
+    const seen = chains();
+
+    await httpGateway(config()).charge(request());
+
+    expect(seen).toEqual([null]);
   });
 });

@@ -1,6 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { gatewayConfig, type GatewayConfig } from '@config/configuration';
+import { CORRELATION_HEADER } from '@infra/correlation/correlation-id';
+import { LOGGER, type Logger } from '@shared/logger/logger';
+import { CORRELATION, type Correlation } from '@shared/messaging/correlation';
 
 import { PaymentGatewayError } from './payment-gateway.error';
 import {
@@ -32,16 +35,24 @@ const isPspChargeResponse = (body: unknown): body is PspChargeResponse =>
  * keeps failing is not called for a while (resilient-call.ts, docs/adr/0020). What is given
  * up here is thrown as retryable and comes again with the command (charge-payment.service.ts,
  * docs/adr/0013). The idempotency key is what makes a second call of a charge safe.
+ *
+ * Every call names the chain it belongs to (`x-correlation-id`), so the provider's own log
+ * of a charge is found with the order that caused it (docs/adr/0023).
  */
 @Injectable()
 export class HttpPaymentGateway implements PaymentGateway {
-  private readonly logger = new Logger(HttpPaymentGateway.name);
+  private readonly log: Logger;
 
   /** One for the provider: a charge and a void fail for the same reasons. */
   private readonly calls: ResilientCall;
 
-  constructor(@Inject(gatewayConfig.KEY) private readonly config: GatewayConfig) {
-    this.calls = createResilientCall(config, this.logger);
+  constructor(
+    @Inject(gatewayConfig.KEY) private readonly config: GatewayConfig,
+    @Inject(LOGGER) logger: Logger,
+    @Inject(CORRELATION) private readonly correlation: Pick<Correlation, 'current'>,
+  ) {
+    this.log = logger.child({ context: HttpPaymentGateway.name });
+    this.calls = createResilientCall(config, this.log);
   }
 
   charge(request: ChargeRequest): Promise<ChargeResult> {
@@ -83,16 +94,20 @@ export class HttpPaymentGateway implements PaymentGateway {
     { headers = {}, body = {} }: { headers?: Record<string, string>; body?: unknown } = {},
   ): Promise<Response> {
     const startedAt = performance.now();
-    const elapsed = () => String(Math.round(performance.now() - startedAt));
-    const call = `psp ${operation} call=${String(attempt.number)}`;
+    const call = () => ({
+      operation,
+      call: attempt.number,
+      durationMs: Math.round(performance.now() - startedAt),
+    });
     let response: Response;
     try {
       response = await this.send(path, headers, body, attempt.signal);
     } catch (err: unknown) {
-      this.logger.warn(`${call} status=none durationMs=${elapsed()}`);
+      // no answer: unreachable, or cut off by the timeout
+      this.log.warn({ ...call(), err }, 'psp call');
       throw err;
     }
-    this.logger.log(`${call} status=${String(response.status)} durationMs=${elapsed()}`);
+    this.log.info({ ...call(), status: response.status }, 'psp call');
 
     // 5xx and 429 are transient; any other non-2xx means our request is wrong. The body is
     // not read there: release it, or the connection stays taken until garbage collection.
@@ -115,10 +130,15 @@ export class HttpPaymentGateway implements PaymentGateway {
     body: unknown,
     signal: AbortSignal,
   ): Promise<Response> {
+    const correlationId = this.correlation.current();
     try {
       return await fetch(new URL(path, this.config.pspBaseUrl), {
         method: 'POST',
-        headers: { 'content-type': 'application/json', ...headers },
+        headers: {
+          'content-type': 'application/json',
+          ...(correlationId === undefined ? {} : { [CORRELATION_HEADER]: correlationId }),
+          ...headers,
+        },
         body: JSON.stringify(body),
         signal,
       });

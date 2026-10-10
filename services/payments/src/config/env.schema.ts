@@ -6,6 +6,11 @@ export const envSchema = z.object({
   // no default: a deploy that forgets it must not boot as development (ops/config-env.md §1)
   NODE_ENV: z.enum(['development', 'test', 'production']),
 
+  /** The lowest level that is written (ops/logging.md §2). */
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  /** Lines for a human (pino-pretty) instead of JSON: a terminal in development, never a deploy. */
+  LOG_PRETTY: booleanString.default(false),
+
   /** The application role: it reads and writes rows and cannot run DDL. */
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
@@ -102,6 +107,10 @@ export function validateEnv(raw: Record<string, unknown>): Env {
     throw new Error(`Invalid environment:\n${issues}`);
   }
   const env = parsed.data;
+  if (env.NODE_ENV === 'production' && env.LOG_PRETTY) {
+    // what collects the logs reads JSON, and pino-pretty is not in the image
+    throw new Error('Invalid environment: LOG_PRETTY must be off in production');
+  }
   // Boot-time safety check (ops/config-env.md §3): the fake gateway reports a charge with no
   // money moved, and the api would mark the order PAID.
   if (env.NODE_ENV === 'production' && env.PAYMENT_GATEWAY === 'fake') {

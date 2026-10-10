@@ -19,10 +19,10 @@ outbox: yes                     # table `outbox` + a relay in this process (ADR 
 broker: rabbitmq                # in: queue `payments.commands`; out: exchange `events`
 queue: none                     # no BullMQ, no Redis
 processes: worker               # one process: a broker consumer, the relay of the outbox, the cleanups of the outbox and the inbox; no HTTP
-dlq: alert                      # a command given up → `payments.commands.dlq` + Logger.error (Step 4: metric)
+dlq: alert                      # a command given up → `payments.commands.dlq` + an `error` line (4.5: metric)
 cron: none                      # the cleanups of the outbox and of the inbox are timers of the process (`*_CLEANUP_INTERVAL_MS`)
 validation: zod                 # messages through `parseMessage()` of @oms/contracts; env through zod
-logs: stdout                    # Nest built-in Logger; pino in Step 4
+logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023); LOG_LEVEL, LOG_PRETTY
 testing: vitest                 # projects unit + e2e; the e2e suite stops at the service boundary
 ```
 
@@ -146,6 +146,15 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
   `test/helpers/broker.ts` reads a dead-letter queue (`take`), puts a message back (`put`),
   closes the service's connection from the broker's side (`killConnection`) and plays a
   consumer that dies with its message (`crashOn`).
+- **One logger, and a correlation id nobody passes** (ADR 0023; a copy of the api's:
+  `@shared/logger/logger`, `infrastructure/logger/`, `infrastructure/correlation/`, the port
+  `CORRELATION`). `RabbitSubscribers` runs every delivery in the chain of its message and
+  writes its line (`message delivered`); `retry-or-park.ts` opens the chain again. A class
+  injects `LOGGER`: fields first, a message that never changes, ids and codes only, never
+  `Logger` of Nest (lint). A class built by hand takes `silentLogger`; the e2e app logs to
+  memory (`app.logs()`). The gateway names the chain to the
+  provider on every call (`x-correlation-id`); a gateway built by hand is given
+  `{ current: () => undefined }`. The relay publishes each row in the chain of its envelope.
 - **The service is held to its rows of the map of parties** (ADR 0021;
   `payments.contract.spec.ts`): what the queue is bound to, a released message of each
   command through the consumer, and every answer the adapter writes. A new command or a new
@@ -170,6 +179,9 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
   the command: the use case writes the inbox row in its own last transaction (`docs/conventions-backlog.md` §10).
 - Five migrations, no migration checker and no mutation run yet (`docs/architecture.md` →
   Known gaps).
+- `ChargePaymentService` gets its logger as a property (`@Inject(LOGGER)` on a field), not
+  through the constructor: it has six dependencies (`code-style.md` §2), and the use cases of
+  the api get theirs the same way, from `@UseCase()` (`docs/conventions-backlog.md` §25).
 - `Actor` is the system actor only; `role-scope`, guards and HTTP rules do not apply.
 - The call to the provider is retried in the adapter although it is made from a queue
   (`transport/integrations.md` §3: retry in exactly one layer), and a circuit breaker stands

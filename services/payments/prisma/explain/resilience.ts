@@ -11,10 +11,10 @@
 // send the command to its wait queue. No database, in spite of the folder: the script lives
 // with the other `db:explain:*` ones.
 // Needs `pnpm infra:up` (fake-psp). Run: pnpm db:explain:resilience   (docs/perf/3.11-resilience.md)
-import { Logger, type LoggerService } from '@nestjs/common';
-
 import type { GatewayConfig } from '@config/configuration';
 import { validateEnv } from '@config/env.schema';
+import type { Logger } from '@shared/logger/logger';
+import { silentLogger } from '@shared/logger/silent-logger';
 
 import { HttpPaymentGateway } from '@modules/payments/infrastructure/http-payment-gateway.adapter';
 import type { PaymentGateway } from '@modules/payments/ports/payment-gateway.port';
@@ -86,14 +86,13 @@ const callsAtProvider = async (): Promise<number> =>
 
 // The gateway logs every call; only "the circuit opened" is of interest here.
 let opened = 0;
-const logger: LoggerService = {
-  log: () => undefined,
-  warn: () => undefined,
-  error: (message: unknown) => {
-    if (String(message).startsWith('psp circuit opened')) opened += 1;
+const logger: Logger = {
+  ...silentLogger,
+  error: (_fields, message) => {
+    if (message === 'psp circuit opened') opened += 1;
   },
+  child: () => logger,
 };
-Logger.overrideLogger(logger);
 
 interface Result {
   charged: number;
@@ -199,7 +198,10 @@ async function main(): Promise<void> {
         await admin('/admin/config', { ...behaviour, declineRate: 0, throttleRate: 0 });
         opened = 0;
         // a gateway of its own: the breaker starts closed
-        const result = await run(new HttpPaymentGateway(config), `${name}/${gatewayName}`);
+        const result = await run(
+          new HttpPaymentGateway(config, logger, { current: () => undefined }),
+          `${name}/${gatewayName}`,
+        );
         print(
           row([
             gatewayName,

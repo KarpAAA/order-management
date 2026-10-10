@@ -14,6 +14,7 @@ import {
 } from 'cockatiel';
 
 import type { GatewayConfig } from '@config/configuration';
+import type { Logger } from '@shared/logger/logger';
 
 import { PaymentGatewayError } from './payment-gateway.error';
 
@@ -26,12 +27,6 @@ export interface CallAttempt {
 export interface ResilientCall {
   /** Resolves with what `call` returned, or throws a `PaymentGatewayError`. */
   execute<T>(call: (attempt: CallAttempt) => Promise<T>): Promise<T>;
-}
-
-interface CallLogger {
-  log(message: string): void;
-  warn(message: string): void;
-  error(message: string): void;
 }
 
 type RetryContext = IRetryBackoffContext<unknown>;
@@ -73,7 +68,7 @@ function pauses(exponential: IBackoffFactory<unknown>): IBackoffFactory<RetryCon
   return { next: (context) => step(exponential.next(context), context) };
 }
 
-function retries(config: GatewayConfig, logger: CallLogger): RetryPolicy {
+function retries(config: GatewayConfig, logger: Logger): RetryPolicy {
   const policy = retry(
     // a pause the provider asks for that is longer than ours is not sat out in the process
     handleWhen((err) => isTransient(err) && (err.retryAfterMs ?? 0) <= config.pspRetryMaxDelayMs),
@@ -89,14 +84,19 @@ function retries(config: GatewayConfig, logger: CallLogger): RetryPolicy {
   );
   policy.onRetry(({ attempt, delay, ...reason }) => {
     logger.warn(
-      `psp call failed, retry ${String(attempt)} of ${String(config.pspMaxRetries)} ` +
-        `in ${String(Math.round(delay))} ms: ${messageOf(reason)}`,
+      {
+        retry: attempt,
+        maxRetries: config.pspMaxRetries,
+        delayMs: Math.round(delay),
+        reason: messageOf(reason),
+      },
+      'psp call failed, called again after a pause',
     );
   });
   return policy;
 }
 
-function breaker(config: GatewayConfig, logger: CallLogger): CircuitBreakerPolicy {
+function breaker(config: GatewayConfig, logger: Logger): CircuitBreakerPolicy {
   const policy = circuitBreaker(handleWhen(isTransient), {
     halfOpenAfter: config.pspBreakerHalfOpenMs,
     breaker: new SamplingBreaker({
@@ -109,14 +109,15 @@ function breaker(config: GatewayConfig, logger: CallLogger): CircuitBreakerPolic
   });
   policy.onBreak((reason) => {
     logger.error(
-      `psp circuit opened for ${String(config.pspBreakerHalfOpenMs)} ms: ${messageOf(reason)}`,
+      { openForMs: config.pspBreakerHalfOpenMs, reason: messageOf(reason) },
+      'psp circuit opened',
     );
   });
   policy.onHalfOpen(() => {
-    logger.warn('psp circuit half-open: one call decides');
+    logger.warn({}, 'psp circuit half-open: one call decides');
   });
   policy.onReset(() => {
-    logger.log('psp circuit closed');
+    logger.info({}, 'psp circuit closed');
   });
   return policy;
 }
@@ -135,7 +136,7 @@ function breaker(config: GatewayConfig, logger: CallLogger): CircuitBreakerPolic
  * wait queue (docs/adr/0013): the retry here is for milliseconds, that one for an outage.
  * One instance per provider, shared by all its operations: the state is the provider's.
  */
-export function createResilientCall(config: GatewayConfig, logger: CallLogger): ResilientCall {
+export function createResilientCall(config: GatewayConfig, logger: Logger): ResilientCall {
   const policy = wrap(retries(config, logger), breaker(config, logger));
 
   return {
