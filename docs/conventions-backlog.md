@@ -1294,3 +1294,69 @@ caller-given id and no work that outlives its trace, otherwise both are written.
 pass `logRecordProcessors` to the SDK. `ops/logging.md` §4: in a deploy an agent reads
 stdout, never a transport in the process; a process on the host may send OTLP, behind a
 setting that is off in a container. Ids are never labels of the log store.
+
+## 28. The metrics list assumes one application, HTTP, and a use case that counts
+
+Step 4.5–4.6 · 2026-10-10 · Status: open
+
+**Conventions say:** `ops/observability.md` §1: a `Metrics` interface over `prom-client`; a
+fixed list of metrics "wired in infrastructure"; "MAY: business metrics from a use case via
+the injected `Metrics`"; `/metrics` "served by every process". §2: alert rules in
+`ops/alerts.yml`, a list of six. `principles.md` #12: anything that starts on its own lives
+in a transport module.
+
+**What we did:** the interface, the list and the port as written, with five differences.
+
+1. The registry is the application's own, not the global `register` of the library.
+2. `/metrics` is a bare `node:http` server, started by the module of the frame every
+   entrypoint imports.
+3. The entry of the broker has metrics of its own (`broker_message_duration_seconds`,
+   `broker_messages_retried_total`, `broker_messages_parked_total`), and a queue of the
+   broker is measured by the broker.
+4. A business metric is counted from a domain event after the commit, through a registry the
+   module fills (`EventMeters`), not from a use case.
+5. The value of a label that comes from outside (the decline code of a provider) is mapped
+   to a closed set before it is a label.
+
+And the alert is one rule on an SLI that is a recording rule with a test, not six rules.
+
+**Why:** (1) the e2e suite runs the api and the worker as two applications in one process;
+a global registry would add them up, and the second registration of a name throws. (2) a
+worker has no Nest HTTP application, and in the api the endpoint must stay out of the
+pipeline (auth, the log of requests, its own histogram): a server outside Nest is the same
+code for both. A transport module would be one more module in every entrypoint for a server
+every process has. (3) the list has `queue_job_*` for BullMQ only. (4) a counter in a use
+case counts a write that is rolled back, and three of four use cases would carry the name
+of a metric. (5) the rule against unbounded labels names ids; a string somebody else writes
+is unbounded too, and looks like a code. The alert: `place` answers before the payment is
+asked for, so "5xx rate" and "p95 of the route" both stay green with the provider down.
+
+**Assessment:** all five are general. (1) and (2) hold for any project with more than one
+process and a test suite. (4) is the better default wherever a module has domain events;
+the use case is the fallback for a module without them. (5) is a sharper form of a rule the
+conventions already have. The alert list of §2 is right for a synchronous service and
+misses the asynchronous one: a symptom there is a business outcome, not an HTTP status.
+
+**Example:**
+
+```ts
+// orders/infrastructure/order-events.meter.ts
+meters.register(OrderPaymentFailed, (event) => {
+  paymentFailed.inc({ cause: paymentFailureCause(event.reason) }); // closed set
+});
+
+// infrastructure/events/domain-event.publisher.ts
+const count = this.meters.of(event);
+if (count) await afterCommit(count);
+```
+
+**Proposed change:** `ops/observability.md` §1: the implementation owns a `Registry`
+(never the global one); `/metrics` is a plain HTTP server on `METRICS_PORT`, the same in
+every process, and is the one exception to #12 named in `principles.md`; add the three
+broker metrics beside `queue_job_*`; a business metric is counted from a domain event after
+the commit where the module has events, from the use case otherwise; a label fed by an
+outside value goes through a function with a closed return type. Add: a gauge that is a
+fact of a store is collected at the scrape, by one process, and shows no value when its read
+fails. §2: for work that ends asynchronously the first alert is on the outcome counters
+(`good / (good + bad)`), as a recording rule with a rule test; the list of six is for what
+is answered in the request.

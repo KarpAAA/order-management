@@ -524,6 +524,59 @@ instrumentations and the waterfall in Tempo were checked by hand (ADR 0025 → K
 | TRC-030 | A job runs as a span of the trace in its data (`traceparent`); a scheduler tick begins a trace.                         | `unit`               |
 | TRC-040 | A send to the mail server is a span `smtp send` that names the server and how it ended, never the address.              | `notifications unit` |
 
+## MET: metrics (Step 4.5)
+
+Every process counts what its entries do and serves it to Prometheus
+(`docs/adr/0027-metrics-prometheus.md`). The port `METRICS` and its implementation are copies
+in the four services: MET-001…005 and MET-013, MET-016 run in each of them. An e2e test reads
+the registry of the application (`test/helpers/metrics.ts`), as its scrape would. The scrape
+itself, the exporters and the dashboards were checked by hand (ADR 0027).
+
+| ID      | Requirement                                                                                                                                                   | Level               |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| MET-001 | A metric counts under the labels it declared and no other, names its process on every series, and is one metric however often it is asked for.                | `<service> unit`    |
+| MET-002 | A histogram keeps a duration in the buckets of the configuration, or in its own.                                                                              | `<service> unit`    |
+| MET-003 | A collected gauge is asked when the metrics are read, every collector of it; one that fails shows no value (never 0), and the read goes through.              | `<service> unit`    |
+| MET-004 | An observation made inside a recorded trace keeps `trace_id` and `span_id` as an exemplar; outside a trace, or in one that is not recorded, it keeps none.    | `<service> unit`    |
+| MET-005 | `GET /metrics` answers with OpenMetrics; any other path or method is a 404.                                                                                   | `<service> unit`    |
+| MET-010 | An HTTP request is observed once, when it is answered: method, the route as its pattern, status, in seconds; a request no route matched is `unmatched`.       | `unit`              |
+| MET-011 | A use case is observed by its name and outcome: `ok`, the code of the `DomainError`, or `error`. One built by hand counts nothing.                            | `unit`              |
+| MET-012 | A job is observed by queue, name and outcome; a run that went through sets the time of its last success, one that failed does not; a job given up is counted. | `unit`              |
+| MET-013 | A delivery is observed by its queue and outcome; a failed one that comes again is counted as retried, one given up as parked.                                 | `<service> unit`    |
+| MET-016 | The pool of a process is read when the metrics are read: held, free, and queries that wait; before the client connects it has no sample.                      | `<service> unit`    |
+| MET-020 | Every event of an order is counted once, after the commit: nothing while the transaction is open, nothing for a write that is rolled back.                    | `unit`              |
+| MET-021 | A failed payment and an attempt that never reached a charge are counted by their cause.                                                                       | `unit`              |
+| MET-022 | The cause is a closed set: whatever a provider writes as its reason is `declined`, and never a new value of the label.                                        | `unit`              |
+| MET-030 | The api observes a request under the pattern of its route.                                                                                                    | `api`               |
+| MET-031 | An order is counted as placed by the process that placed it and as paid by the one that paid it.                                                              | `api`               |
+| MET-032 | The use cases are observed in the process that ran them.                                                                                                      | `api`               |
+| MET-033 | The worker observes every delivery by its queue, and counts what the relay published.                                                                         | `api`               |
+| MET-034 | A payment the provider never answered is counted as `provider_unavailable`, a refused card as `declined`; the reason of the provider is on no series.         | `api`               |
+| MET-035 | The worker alone reports the backlog of the outbox and the depth of every BullMQ queue; every process reports its own pool.                                   | `api`               |
+| MET-036 | A message the worker gives up is counted as parked, under its queue.                                                                                          | `api`               |
+| MET-037 | No label of any process carries an id (of a tenant, an order, a user); a request no route matched is one series; `/metrics` is not on the port of the API.    | `api`               |
+| MET-040 | payments observes every call to the provider by operation and status, `no_answer` when none came; a charge id is on no series.                                | `payments adapter`  |
+| MET-041 | The state of the circuit is a gauge: closed from the start, open, half-open, closed again; an operation that was not called is counted.                       | `payments adapter`  |
+| MET-050 | payments observes the delivery of a command, reports its outbox and its pool, and carries no id on a label.                                                   | `payments api`      |
+| MET-051 | inventory does the same.                                                                                                                                      | `inventory api`     |
+| MET-052 | notifications observes the delivery of an event and counts its mail as sent, or as given up; no id and no address is on a label.                              | `notifications api` |
+
+## SLO: the objectives of `place` and their alert (Step 4.6)
+
+Two indicators as recording rules of Prometheus, tested with promtool
+(`docs/adr/0028-slo-and-alert.md`; `devtools/observability/rules/slo.test.yaml`,
+`pnpm test:rules`). The alert of Grafana that reads them, and its mail, were checked by hand
+with the provider stopped (ADR 0028).
+
+| ID      | Requirement                                                                                                          | Level   |
+| ------- | -------------------------------------------------------------------------------------------------------------------- | ------- |
+| SLO-001 | Every attempt is paid: the ratio is 1 and the error budget untouched, whichever process counted.                     | `rules` |
+| SLO-002 | The provider is away: the ratio is 0, and the budget of the window is spent many times over.                         | `rules` |
+| SLO-003 | Declined cards alone do not lower the ratio.                                                                         | `rules` |
+| SLO-004 | No attempt ended in the window: the ratio has no value.                                                              | `rules` |
+| SLO-005 | One attempt in a hundred fails on a timeout: the ratio is the objective, and the budget is spent to the end exactly. | `rules` |
+| SLO-006 | The latency is the 95th percentile of `POST …/place` alone.                                                          | `rules` |
+
 ## SYS: the system as a whole (Step 3.13)
 
 The four services from their images, in the compose project `oms-system`, with their

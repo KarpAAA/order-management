@@ -223,18 +223,20 @@ Other scripts: `pnpm build`, `pnpm lint`, `pnpm format`, `pnpm typecheck`, `pnpm
 
 ## URLs
 
-| What                          | URL                                                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| API                           | http://localhost:3000/v1                                                                                     |
-| Swagger UI                    | http://localhost:3000/docs                                                                                   |
-| OpenAPI JSON                  | http://localhost:3000/docs-json                                                                              |
-| bull-board (queues, dev only) | http://localhost:3000/admin/queues                                                                           |
-| RabbitMQ management           | http://localhost:15672 (guest / guest)                                                                       |
-| Mailpit (the mails sent)      | http://localhost:8025                                                                                        |
-| Grafana                       | http://localhost:3001 (no login; `admin` / `admin` to sign in). OTLP: `localhost:4317` (gRPC), `4318` (HTTP) |
-| fake-psp                      | http://localhost:4010 (`GET /charges`, `POST /charges/{id}/void`, `POST /admin/config`, `POST /admin/reset`) |
-| PgBouncer console             | `psql postgresql://stats:stats@localhost:6432/pgbouncer -c "SHOW POOLS"`                                     |
-| Replication state             | `psql postgresql://oms:oms@localhost:5432/oms -c "TABLE pg_stat_replication"`                                |
+| What                          | URL                                                                                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| API                           | http://localhost:3000/v1                                                                                                                   |
+| Swagger UI                    | http://localhost:3000/docs                                                                                                                 |
+| OpenAPI JSON                  | http://localhost:3000/docs-json                                                                                                            |
+| bull-board (queues, dev only) | http://localhost:3000/admin/queues                                                                                                         |
+| RabbitMQ management           | http://localhost:15672 (guest / guest)                                                                                                     |
+| Mailpit (the mails sent)      | http://localhost:8025                                                                                                                      |
+| Grafana                       | http://localhost:3001 (no login; `admin` / `admin` to sign in). OTLP: `localhost:4317` (gRPC), `4318` (HTTP)                               |
+| Dashboards                    | http://localhost:3001/dashboards → folder OMS: `OMS · System`, `OMS · SLO`; the alert: Alerting → Alert rules. Traffic: `pnpm demo:orders` |
+| Metrics of a process          | `curl localhost:9464/metrics` (api), 9465 (worker), 9466 (payments), 9467 (inventory), 9468 (notifications)                                |
+| fake-psp                      | http://localhost:4010 (`GET /charges`, `POST /charges/{id}/void`, `POST /admin/config`, `POST /admin/reset`)                               |
+| PgBouncer console             | `psql postgresql://stats:stats@localhost:6432/pgbouncer -c "SHOW POOLS"`                                                                   |
+| Replication state             | `psql postgresql://oms:oms@localhost:5432/oms -c "TABLE pg_stat_replication"`                                                              |
 
 ## Seeded data
 

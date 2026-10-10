@@ -19,7 +19,7 @@ outbox: yes                     # table `outbox` + a relay in this process (ADR 
 broker: rabbitmq                # in: queue `payments.commands`; out: exchange `events`
 queue: none                     # no BullMQ, no Redis
 processes: worker               # one process: a broker consumer, the relay of the outbox, the cleanups of the outbox and the inbox; no HTTP
-dlq: alert                      # a command given up → `payments.commands.dlq` + an `error` line (4.5: metric)
+dlq: alert                      # a command given up → `payments.commands.dlq` + an `error` line + `broker_messages_parked_total` (ADR 0027)
 cron: none                      # the cleanups of the outbox and of the inbox are timers of the process (`*_CLEANUP_INTERVAL_MS`)
 validation: zod                 # messages through `parseMessage()` of @oms/contracts; env through zod
 logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023), traceId of the active span, to Loki by agent or OTLP (ADR 0026); LOG_LEVEL, LOG_PRETTY
@@ -174,6 +174,14 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/payments/D
   `logRecordProcessors` is always passed to `NodeSDK`. Loki knows the process as `oms-payments`.
   The broker library logs through `LibraryLogger` (`infrastructure/messaging/`): its report
   of a handler that threw is `debug`, the line of the delivery is `retry-or-park.ts`'s.
+- **The process counts, and Prometheus reads** (ADR 0027; copies of the api's:
+  `@shared/observability/metrics`, `infrastructure/observability/`, `broker.meters.ts`,
+  `pool.metrics.ts`). `GET /metrics` on `METRICS_PORT` (9466 unless said, 9464 in a
+  container, 0 in the tests): every delivery by queue and outcome, messages retried and
+  parked, the backlog of the outbox, the pool, the runtime. `process` is `worker` on every series. The gateway observes every call to the provider (`outbound_call_duration_seconds`, by operation and HTTP status, `no_answer` when none came) and `resilient-call.ts` keeps the state of the circuit as a gauge (`circuit_breaker_state`: 0 closed, 1 half-open, 2 open): what explains the alert of ADR 0028. A gateway built by hand counts nothing.
+  A label never carries an id; a class built by hand takes `silentMetrics`; the e2e suite
+  reads `scrape(service)` (`test/helpers/metrics.ts`). No `@UseCase()` here, so no
+  `use_case_duration_seconds`: the duration of a handler is that of its delivery.
 
 ## Deviations from the conventions templates
 

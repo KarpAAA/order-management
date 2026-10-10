@@ -20,7 +20,7 @@ broker: rabbitmq                # in: queue `notifications.order-events` on the 
 mail: smtp                      # nodemailer behind the port `Mailer`; dev and tests: Mailpit
 queue: none                     # no BullMQ, no Redis
 processes: worker               # one process: a broker consumer, the dispatcher, the cleanups of the notifications and the inbox; no HTTP
-dlq: alert                      # an event given up → `notifications.order-events.dlq` + an `error` line; a mail given up → `FAILED` + an `error` line (4.5: metric)
+dlq: alert                      # an event given up → `notifications.order-events.dlq` + an `error` line + `broker_messages_parked_total`; a mail given up → `FAILED` + an `error` line + `notifications_dispatched_total{outcome="given_up"}` (ADR 0027)
 cron: none                      # the dispatcher and the cleanups are timers of the process
 validation: zod                 # messages through `parseMessage()` of @oms/contracts; env through zod
 pii-encryption: no              # `recipient_email` is kept in clear for NOTIFICATIONS_RETENTION_DAYS
@@ -141,6 +141,14 @@ later` (warn), `notification given up…` (error). Never the address, and never 
   an entry class may not import `infrastructure/`). `TriedNotification` carries
   `traceContext` for that, and it is never a field of the line. The broker library logs
   through `LibraryLogger`, as in the api.
+- **The process counts, and Prometheus reads** (ADR 0027; copies of the api's:
+  `@shared/observability/metrics`, `infrastructure/observability/`, `broker.meters.ts`,
+  `pool.metrics.ts`). `GET /metrics` on `METRICS_PORT` (9468 unless said, 9464 in a
+  container, 0 in the tests): every delivery by queue and outcome, messages retried and
+  parked, the pool, the runtime. `process` is `worker` on every series. The dispatcher counts every try by how it ended (`notifications_dispatched_total`: `sent`, `postponed`, `given_up`).
+  A label never carries an id; a class built by hand takes `silentMetrics`; the e2e suite
+  reads `scrape(service)` (`test/helpers/metrics.ts`). No `@UseCase()` here, so no
+  `use_case_duration_seconds`: the duration of a handler is that of its delivery.
 
 ## Deviations from the conventions templates
 
