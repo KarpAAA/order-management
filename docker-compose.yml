@@ -111,7 +111,7 @@ services:
   # api and worker go through it, in the `app` profile and under `pnpm dev` on the host alike;
   # the owner (migrations, seed, datagen) connects to postgres directly.
   pgbouncer:
-    image: edoburu/pgbouncer:v1.25.2-p0
+    image: edoburu/pgbouncer:v1.26.0-p0
     volumes:
       - ./devtools/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
       - ./devtools/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
