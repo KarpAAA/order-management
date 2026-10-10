@@ -464,6 +464,39 @@ second service: the level `contracts unit` is the Vitest run of `packages/contra
 | CTR-021 | A consumer handles the released message of every contract it reads: it does not refuse it, and calls one use case.                                                                                                                       | `<service> unit`            |
 | CTR-030 | A service writes, through its real adapters, exactly the contracts the map says it writes; each is accepted by `parseMessage()` after JSON and addressed to the exchange the map names.                                                  | `<service> unit`            |
 
+## LOG: structured logs and the correlation id (Step 4.1)
+
+One logger per service, JSON lines, and a correlation id that is read from CLS and never
+passed (`docs/adr/0023-structured-logs-and-correlation-id.md`). The logger and the
+correlation context are copies in the four services: LOG-001…011 run in each of them
+(`<service> unit`), the rest where the rule lives. An e2e app logs to memory
+(`test/helpers/log-capture.ts`), and a test reads the lines as their collector would.
+
+| ID      | Requirement                                                                                                                                                                                    | Level                                     |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| LOG-001 | A log line is one JSON object: `level` by name, `time`, `service` (and `process` in the api), the fields, and `msg`.                                                                           | `<service> unit`                          |
+| LOG-002 | A line written inside a chain carries its `correlationId`, a child logger included; a line outside a chain has no such field.                                                                  | `<service> unit`                          |
+| LOG-003 | The message of a line is the same every time: the values are fields.                                                                                                                           | `unit`                                    |
+| LOG-004 | Nothing below `LOG_LEVEL` is written.                                                                                                                                                          | `<service> unit`                          |
+| LOG-005 | An error is logged under `err` with its type, message, stack, and the `code` and `details` of ours.                                                                                            | `<service> unit`                          |
+| LOG-006 | A secret or an address (`authorization`, `cookie`, `password`, `token`, `secret`, `apiKey`, `email`, …) is never written, as a field, as a field of a field, or one below.                     | `<service> unit`                          |
+| LOG-010 | Only a UUID is continued as a correlation id; anything else (a word, a line break, a repeated header) is not.                                                                                  | `<service> unit`                          |
+| LOG-011 | Work run as a part of a chain reads its id, two chains under way at once stay apart, a nested chain keeps what the scope around it holds (a transaction), and the chain is left with the work. | `<service> unit`                          |
+| LOG-012 | What settles a failed message logs under the correlation id of that message, though the handler has left its scope; a message that names none gets a chain of its own.                         | `<service> unit`                          |
+| LOG-013 | A job runs under the `correlationId` of its data, or under a new id when it has none (a scheduler tick), and its run is logged: queue, job, attempt, duration, outcome.                        | `unit`                                    |
+| LOG-020 | A use case logs one line: its name, the actor, the duration, and `ok`, the code of the `DomainError`, or `error`. Never the command, never the error itself.                                   | `unit`                                    |
+| LOG-021 | An HTTP request is logged once, when it is answered: method, the route as its pattern, status, duration, the actor; inside the chain of the request.                                           | `unit`                                    |
+| LOG-030 | The answer to a request names the chain the caller named (`x-correlation-id`).                                                                                                                 | `api`                                     |
+| LOG-031 | Every command of the saga and every event of the order carries the correlation id of the request that placed it, also after the answers of inventory and payments.                             | `api`                                     |
+| LOG-032 | The api logs the request and its use case under that id.                                                                                                                                       | `api`                                     |
+| LOG-033 | The worker logs every delivery and every use case of the saga under that id.                                                                                                                   | `api`                                     |
+| LOG-034 | A request without the header, or with one that is not a UUID, starts a chain of its own: its id is on the answer and in the command.                                                           | `api`                                     |
+| LOG-035 | A refused request is logged at `warn` with its code, under the id the caller was given; the token of a caller is on no line.                                                                   | `api`                                     |
+| LOG-040 | payments names the chain of the command to the provider on every call (`x-correlation-id`), and sends no such header outside a chain.                                                          | `payments adapter`                        |
+| LOG-041 | A notification keeps the correlation id of the event that asked for it.                                                                                                                        | `notifications unit`, `notifications api` |
+| LOG-042 | A pass of the dispatcher tells its caller what it tried and why a try failed: ids, counts, the reply code of the server. Never the address, never the text of the server.                      | `notifications unit`                      |
+| LOG-043 | notifications logs the delivery of an event and its mail under the id of the event; a mail given up is an `error` with the code of the server. The address of the recipient is on no line.     | `notifications api`                       |
+
 ## SYS: the system as a whole (Step 3.13)
 
 The four services from their images, in the compose project `oms-system`, with their

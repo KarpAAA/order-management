@@ -1086,3 +1086,121 @@ per end-to-end outcome, never a rule of one service); MUST wait by polling with 
 never by sleeping; MUST save the logs of the stack on every run; SHOULD run on the main
 branch and nightly. `ops/observability.md`: a health endpoint per process is what "the stack
 is ready" should be asked of.
+
+## 23. The logger rules assume HTTP: a message, a job and a timer have no entry line and no chain
+
+Step 4.1 · 2026-10-10 · Status: open
+
+**Conventions say:** `ops/logging.md` §1: "`correlationId` is added by the logger from CLS.
+HTTP: CLS middleware reads `x-correlation-id` or generates one; queue producer stores it in
+job `opts`; consumer restores it into CLS; adapters forward it as a header." §3: every HTTP
+request is logged once "via `pino-http` or one global interceptor", every consumer job and
+every outbound call too, with no word on who writes those lines.
+
+**What we did:** four things the text does not reach. (1) A broker consumer: the class that
+starts the subscriptions (`RabbitSubscribers`) runs every delivery in a CLS scope with the
+id of the message and writes its line; the error handler, which runs after the handler and
+outside its scope, opens the chain again from the message. (2) The request line is written
+by the `setup` of the CLS middleware on `finish`, not by an interceptor: a request a guard
+refuses never reaches an interceptor. (3) The id of a job goes into its **data**: BullMQ's
+`JobsOptions` has no free field. (4) Work that outlives its scope (a mail sent by a timer)
+keeps the id in its row, and the timer logs inside that chain. Only a UUID is accepted from
+a caller.
+
+**Why:** four of the five processes serve no HTTP, and the fifth is the smallest part of the
+path of an order.
+
+**Assessment:** good; the entry is the one place that knows both the id and the outcome, and
+a consumer stays free of both. The row for the timer is the part that is easy to forget: the
+line everybody looks for (the mail) was the one outside every chain.
+
+**Example:**
+
+```ts
+// infrastructure/messaging/rabbit-subscribers.ts: the entry of every message
+await this.correlation.run(correlationOf(raw, message), () =>
+  this.deliver(subscription, message, raw),
+);
+
+// notifications: the dispatcher tells about a mail in the chain its row kept
+this.correlation.run(notification.correlationId ?? newId(), () =>
+  this.log.info(fields, 'mail sent'),
+);
+```
+
+**Proposed change:** `ops/logging.md` §1: say "every entry opens or continues the chain" and
+list them: HTTP middleware, the subscriber of a broker (id from the message, before its
+contract is checked), a job (`data.correlationId`, not `opts`), a timer (the id kept in the
+row it works on, or none). Require the caller's id to be a UUID. §3: the request line is
+written where a refused request is still seen (middleware), and the line of a delivery by
+the subscriber, not by each consumer. `transport/queues.md`: the same for a `@Processor`.
+
+## 24. `redact` "at any depth" is not something pino does
+
+Step 4.1 · 2026-10-10 · Status: open
+
+**Conventions say:** `ops/logging.md` §1: "MUST: `redact` configured for `authorization`,
+`cookie`, `password`, `token`, `secret`, `apiKey` at any depth."
+
+**What we did:** pino's `redact` takes paths, and `*` stands for one level. Each key is
+listed at three depths (`x`, `*.x`, `*.*.x`), which covers what is logged here: a field, a
+field of `err` or `headers`, and one below (`err.details.email`). `email` was added to the
+list. A test logs each key at each depth.
+
+**Why:** there is no setting that means "wherever it is", and a serializer that walks every
+logged object on every line costs what pino is chosen to avoid.
+
+**Assessment:** acceptable as a net, and the text should stop promising more. What keeps a
+secret out is §5 (never a body, a payload or a header), not the redaction. One case no path
+catches at all: an address inside a **string** (the reply of a mail server names the
+recipient); there the code logs the reply code and not the text.
+
+**Example:**
+
+```ts
+// infrastructure/logger/redaction.ts
+export const REDACTED_PATHS = SENSITIVE_KEYS.flatMap((key) => [key, `*.${key}`, `*.*.${key}`]);
+```
+
+**Proposed change:** `ops/logging.md` §1: "`redact` for these keys at the depths a logged
+object has (a field, a field of a field, one below), proven by a test"; add `email` and
+`set-cookie`. §5: add "the message of a vendor's error, when it may quote what was sent".
+
+## 25. A logger is the seventh dependency: the limit of six has no word for it
+
+Step 4.1 · 2026-10-10 · Status: open
+
+**Conventions say:** `quality/code-style.md` §2: at most six constructor dependencies; more
+means the class is split. `ops/logging.md` §1: the logger is injected by token.
+
+**What we did:** three answers, by case. The use cases of the api get the logger as a
+property set by the injector (`@UseCase()`), and log nothing by hand. `ChargePaymentService`
+of payments, which has no such decorator and six dependencies, declares the same property
+itself. The three broker consumers of orders needed tenant, correlation, inbox and logger
+beside their use cases: the four became one collaborator (`ConsumerScope`). And the use case
+of the notification dispatcher stopped logging: it returns what it tried, and its caller
+logs.
+
+**Why:** a logger is not something a class works with, and counting it against the limit
+pushes real collaborators out.
+
+**Assessment:** the last answer is the best one and should be the default: a use case that
+returns its outcome needs no logger. Property injection is honest only because the
+decorator hides it in one place; written by hand in a class it is a way around a rule.
+
+**Example:**
+
+```ts
+// application: no logger, the outcome is the return value
+return { outcome: 'given-up', notification: triedOf(notification), failure };
+
+// the entry logs it, in the right chain
+else this.log.error(fields, 'notification given up, its mail was not sent');
+```
+
+**Proposed change:** `ops/logging.md` §4: "a use case does not log by hand: what its caller
+should tell is its return value; the automatic line comes from `@UseCase()`".
+`quality/code-style.md` §2: say whether the logger counts (proposal: it does not, when it is
+set by the `@UseCase()` decorator; a class that injects it itself counts it).
+`eslint.config.mjs` of the template: forbid `Logger` and `ConsoleLogger` of `@nestjs/common`
+outside the test helpers.

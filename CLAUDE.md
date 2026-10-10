@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.13 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 4: observability**, 4.1 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Four services: `services/api` (this file), `services/payments`, `services/inventory` and
 `services/notifications` (their own decisions: `services/payments/CLAUDE.md`,
 `services/inventory/CLAUDE.md`, `services/notifications/CLAUDE.md`). They share
@@ -42,13 +42,13 @@ outbox: yes                     # table `outbox` + a relay in the worker (ADR 00
 broker: rabbitmq                # between services only (ADR 0012): commands → exchange `commands`, events → `events`
 queue: bullmq
 processes: api+worker
-dlq: alert                      # dead job → Logger.error in OrdersConsumer; a broker message given up → `<queue>.dlq` + Logger.error (Step 4: metric)
+dlq: alert                      # dead job → an `error` line of OrdersConsumer; a broker message given up → `<queue>.dlq` + an `error` line (4.5: metric)
 cron: bullmq                    # job schedulers on the owner's queue: maintain-order-event-partitions (orders), cleanup-outbox (outbox), cleanup-inbox (inbox), cleanup-idempotency-keys (idempotency)
 idempotency-key: required       # on POST /orders and POST /orders/{id}/place only (ADR 0018); a row in the transaction of the write
 validation: class-validator
 swagger-prod: off
 async-push: poll
-logs: stdout                    # Nest built-in Logger in Step 0; pino in Step 4
+logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023); LOG_LEVEL, LOG_PRETTY
 traces: none
 metrics-endpoint: none          # Step 4
 tracker: none
@@ -286,7 +286,7 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
     without one;
   - never `Nack(true)` and never a retry loop in a consumer: throw. `UnprocessableMessageError`
     = parked at once; anything else = `maxAttempts` deliveries, then parked. A parked message
-    is a `Logger.error` and is put back by hand (management UI → Move messages);
+    is an `error` in the log and is put back by hand (management UI → Move messages);
   - the second argument of a handler is the delivery (`{ attempt, last }`,
     `@shared/messaging/delivery`), not the raw amqp message;
   - the arguments of an existing queue cannot be changed (`PRECONDITION_FAILED` at boot): a
@@ -374,6 +374,38 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
     uses the unscoped `PrismaService`;
   - `api.http()` in the e2e suite sends a fresh key with every request; a test about the
     key sets or unsets the header.
+- **One logger, and a correlation id nobody passes** (ADR 0023; `@shared/logger/logger`,
+  `infrastructure/logger/`, `common/messaging/correlation-context.ts`). A class injects
+  `LOGGER` and writes `log.info({ orderId }, 'order placed')`; pino writes a JSON line with
+  the `correlationId` of the work under way, read from CLS. Consequences:
+  - the fields first, then a message that is the same every time: no value inside the
+    message, never `Logger` of Nest or `console` (lint). An error goes under `err`;
+  - never a body, a payload, a header, an email or a token: ids, codes and counts. The
+    redaction of pino is a net for eleven keys at three depths, not the rule;
+  - `error` means somebody has to look; a 4xx, a retry and a message that was skipped are
+    `warn` at most;
+  - an entry opens the chain and writes its line: `httpEntry` (the `setup` of the CLS
+    middleware: `x-correlation-id` when it is a UUID, the same header on the answer),
+    `RabbitSubscribers` (the id of the message), `JobScope` (a job), `OutboxRelay` (a row).
+    A new kind of entry does the same; a consumer, a job class and a use case never do;
+  - what runs after a handler and outside its scope (`retry-or-park.ts`, a listener of an
+    event emitter) has no chain: it opens one again (`correlation.run()`), or is bound to the
+    scope (`AsyncResource.bind`);
+  - `correlation.run()` and `runInWorkspace()` inherit the scope around them (nestjs-cls 7),
+    a transaction included; `continue()` changes the chain of the scope it is called in;
+  - a use case logs nothing by hand: `@UseCase()` writes its line (name, actor, duration,
+    `ok` | the code of the `DomainError` | `error`), and the error itself is logged once, by
+    the exception filter or by `retry-or-park`;
+  - a job enqueued from a request or a message puts `correlationId` into its **data**
+    (`JobScope` reads it). Today the queues carry scheduler ticks only: each run is a chain
+    of its own;
+  - a class built by hand (a test, a script) takes `silentLogger` or a `RecordingLogger`
+    (`@shared/logger/`); an e2e app logs to memory, and `api.logs()` / `worker.logs()` give
+    the lines (`test/helpers/log-capture.ts`, `test/observability/`);
+  - the process name of a line (`api`, `worker`) comes from `ProcessNameModule.is()` in the
+    entrypoint module;
+  - the logger and the entry of the broker are copied in the three other services: a fix in
+    one is made in the others.
 - **The system as a whole is tested by four scenarios, not by a fifth suite of rules**
   (ADR 0022; `devtools/system`, `docker-compose.system.yml`, `pnpm test:system`). All four
   services from their images, and a test that knows what a client and an operator know: the
@@ -465,9 +497,10 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
 
 ## Deviations from the conventions templates
 
-- `eslint.config.mjs` is the template plus four additions (3: `@oms/contracts` is a layer of
+- `eslint.config.mjs` is the template plus five additions (3: `@oms/contracts` is a layer of
   its own, importable from `infrastructure/`, a module's adapters and its consumers only;
-  4: `@RabbitSubscribe` is an entry decorator). The first two: the generated Prisma client,
+  4: `@RabbitSubscribe` is an entry decorator; 5: `Logger` of `@nestjs/common` is not
+  imported). The first two: the generated Prisma client,
   `prisma/` and root tool files are outside the layer map; `test/factories`, `test/doubles`
   and `test/helpers` may import module internals. Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
@@ -535,6 +568,16 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
   of the saga and the three ports a step sends through, as one collaborator. Six constructor
   dependencies are the limit (`code-style.md` §2), and every use case of the saga needs these
   four.
+- `ConsumerScope` (`orders/infrastructure/`) is the tenant, the correlation, the inbox and
+  the logger as one collaborator of the three broker consumers, for the same limit of six.
+  It is in `infrastructure/` because a transport module may not import `interface/` (lint).
+- The logger of a use case is a property the injector sets (`@UseCase()`), not a constructor
+  parameter (`ops/logging.md` §1: injected by token): the decorator has no constructor of
+  its own, and the logger does not count against the six (`docs/conventions-backlog.md` §25).
+- The line of an HTTP request is written by the `setup` of the CLS middleware
+  (`ops/logging.md` §3: `pino-http` or an interceptor), and a broker delivery, a job and a
+  row of the outbox are entries the conventions do not name: `docs/conventions-backlog.md` §23.
+  `redact` covers three depths, not any (§24).
 - `POST …/orders/{id}/cancel` has two success statuses, 204 and 202
   (`http/controller.md`: one status per route): `docs/conventions-backlog.md` §16.
 - `OrderSaga` does not extend `AggregateRoot`: it records no events, and its version is
