@@ -291,7 +291,7 @@
   - Відкладено: correlation id в заголовках Kafka (з 3.8).
   - Подивитись: усі логи одного запиту в усіх сервісах за одним id.
 
-- [ ] **4.2 Grafana-стек**
+- [x] **4.2 Grafana-стек**
   - Закласти: `grafana/otel-lgtm` у docker compose — Grafana, Loki, Tempo, Prometheus і OTel Collector в одному контейнері.
   - Подивитись: Grafana UI і джерела даних.
 
@@ -303,7 +303,7 @@
   - Подивитись: один трейс від place через сагу, payments і inventory до notifications — waterfall у Tempo. Де саме йде час.
 
 - [ ] **4.4 Логи ↔ трейси**
-  - Закласти: traceId у кожному лозі, зв'язка Loki → Tempo в Grafana.
+  - Закласти: доставка логів у Loki (у контейнерах агент читає stdout, під `pnpm dev` pino шле OTLP; ADR 0024), traceId у кожному лозі, зв'язка Loki → Tempo в Grafana.
   - Подивитись: знайшов помилку в логах — один клік, і перед тобою трейс цього запиту.
 
 - [ ] **4.5 Метрики**

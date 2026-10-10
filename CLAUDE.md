@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 4: observability**, 4.1 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 4: observability**, 4.2 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Four services: `services/api` (this file), `services/payments`, `services/inventory` and
 `services/notifications` (their own decisions: `services/payments/CLAUDE.md`,
 `services/inventory/CLAUDE.md`, `services/notifications/CLAUDE.md`). They share
@@ -67,7 +67,7 @@ Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces: `services/*`, `packages/*`, `d
 ## Commands (CMD-friendly, from the repo root)
 
 ```
-pnpm infra:up          # postgres, postgres-replica, pgbouncer, postgres-payments, postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, fake-psp (healthy)
+pnpm infra:up          # postgres, postgres-replica, pgbouncer, postgres-payments, postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, lgtm (Grafana on 3001, OTLP on 4317 / 4318), fake-psp (healthy)
 pnpm db:migrate        # prisma migrate dev (api)
 pnpm db:migrate:payments     # prisma migrate dev (payments, its own Postgres on 5434)
 pnpm db:migrate:inventory    # prisma migrate dev (inventory, its own Postgres on 5435)
@@ -406,6 +406,17 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
     entrypoint module;
   - the logger and the entry of the broker are copied in the three other services: a fix in
     one is made in the others.
+- **The observability stack is one container of the dev infrastructure** (ADR 0024; `lgtm`
+  in `docker-compose.yml`: Grafana, Loki, Tempo, Prometheus and an OpenTelemetry Collector).
+  No process sends to it yet. Consequences:
+  - a service sends OTLP to the Collector (`localhost:4318` under `pnpm dev`, `lgtm:4318` in
+    a container) and never writes to Loki, Tempo or Prometheus itself;
+  - Grafana is on 3001 of the host: 3000 is the api;
+  - its configuration is inside the image: a change is a file mounted over
+    `/otel-lgtm/<name>.yaml`, and a dashboard made in the UI lives in the volume only;
+  - the stack of the system tests starts without it (a profile nobody asks for in
+    `docker-compose.system.yml`): a service must run with no Collector;
+  - the logs are collected in 4.4, not here; metrics are pulled from `/metrics` (4.5).
 - **The system as a whole is tested by four scenarios, not by a fifth suite of rules**
   (ADR 0022; `devtools/system`, `docker-compose.system.yml`, `pnpm test:system`). All four
   services from their images, and a test that knows what a client and an operator know: the

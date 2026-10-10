@@ -66,7 +66,10 @@ pnpm dev
 ```
 
 - `pnpm infra:up`: Postgres, its read replica, PgBouncer, the Postgres of payments, of
-  inventory and of notifications, Redis, RabbitMQ, Mailpit and fake-psp, waits until healthy. The replica's first start copies the whole primary.
+  inventory and of notifications, Redis, RabbitMQ, Mailpit, the observability stack (`lgtm`) and fake-psp, waits until healthy. The replica's first start copies the whole primary.
+- Grafana with Loki, Tempo and Prometheus behind it runs as one container (`lgtm`, ADR 0024)
+  on port 3001. Its data sources are there and empty: no service sends to it yet (traces
+  4.3, logs 4.4, metrics 4.5). What it keeps is in the volume `oms_lgtm-data`.
 - Two database roles (ADR 0006): `pnpm db:*` connect as the owner `oms`
   (`DATABASE_ADMIN_URL`); api and worker connect as `oms_app` (`DATABASE_URL`), which sees only
   the rows of the current workspace (Row-Level Security). A fresh Postgres volume gets the
@@ -220,6 +223,7 @@ Other scripts: `pnpm build`, `pnpm lint`, `pnpm format`, `pnpm typecheck`, `pnpm
 | bull-board (queues, dev only) | http://localhost:3000/admin/queues                                                                           |
 | RabbitMQ management           | http://localhost:15672 (guest / guest)                                                                       |
 | Mailpit (the mails sent)      | http://localhost:8025                                                                                        |
+| Grafana                       | http://localhost:3001 (no login; `admin` / `admin` to sign in). OTLP: `localhost:4317` (gRPC), `4318` (HTTP) |
 | fake-psp                      | http://localhost:4010 (`GET /charges`, `POST /charges/{id}/void`, `POST /admin/config`, `POST /admin/reset`) |
 | PgBouncer console             | `psql postgresql://stats:stats@localhost:6432/pgbouncer -c "SHOW POOLS"`                                     |
 | Replication state             | `psql postgresql://oms:oms@localhost:5432/oms -c "TABLE pg_stat_replication"`                                |
