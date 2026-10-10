@@ -6,6 +6,9 @@ import type { LoggerService } from '@nestjs/common';
 
 type Level = 'debug' | 'info' | 'warn' | 'error';
 
+/** What a stack looks like: a line that says where, after the first. */
+const STACK = /\n\s+at .+:\d+:\d+/;
+
 /**
  * What Nest and the libraries that take a Nest logger (the broker connection) write through:
  * `app.useLogger()` in the entrypoints. Their lines keep their text as the message, with the
@@ -31,7 +34,11 @@ export class NestLoggerAdapter implements LoggerService {
     this.write('debug', message, params);
   }
 
-  /** `(message, stack?, context?)`: the last string names the context, one before it is a stack. */
+  /**
+   * `(message, stack?, context?)`: the last string names the context, one before it is a
+   * stack. A library may give the stack alone (`error(message, err.stack)`): what looks like
+   * a stack is one, wherever it stands.
+   */
   error(message: unknown, ...params: unknown[]): void {
     this.write('error', message, params);
   }
@@ -42,8 +49,10 @@ export class NestLoggerAdapter implements LoggerService {
 
   private write(level: Level, message: unknown, params: unknown[]): void {
     const strings = params.filter((param): param is string => typeof param === 'string');
-    const context = strings.at(-1);
-    const stack = level === 'error' && strings.length > 1 ? strings[0] : undefined;
+    const trace = strings.find((param) => STACK.test(param));
+    const names = strings.filter((param) => param !== trace);
+    const context = names.at(-1);
+    const stack = trace ?? (level === 'error' && names.length > 1 ? names[0] : undefined);
     const fields = {
       ...(context === undefined ? {} : { context }),
       ...(message instanceof Error ? { err: message } : {}),

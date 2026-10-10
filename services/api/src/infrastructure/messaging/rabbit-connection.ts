@@ -5,7 +5,7 @@ import type { RabbitConfig } from '@config/configuration';
 import type { Logger } from '@shared/logger/logger';
 import { DELAYED_EXCHANGE } from '@shared/messaging/delayed';
 
-import { NestLoggerAdapter } from '../logger/nest-logger.adapter';
+import { LibraryLogger } from './library-logger';
 
 /** The api process and the worker process each open one under this name. */
 export const CONNECTION_NAME = 'api';
@@ -36,7 +36,7 @@ export async function connectRabbit(config: RabbitConfig, logger: Logger): Promi
     // no request/reply between the services: commands are answered by events
     enableDirectReplyTo: false,
     // the library asks for a Nest logger: its lines go through ours
-    logger: new NestLoggerAdapter(logger.child({ context: 'RabbitMQ' })),
+    logger: new LibraryLogger(logger.child({ context: 'RabbitMQ' })),
   });
   await connection.init();
   return connection;
