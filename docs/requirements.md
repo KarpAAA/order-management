@@ -497,6 +497,28 @@ correlation context are copies in the four services: LOG-001…011 run in each o
 | LOG-042 | A pass of the dispatcher tells its caller what it tried and why a try failed: ids, counts, the reply code of the server. Never the address, never the text of the server.                      | `notifications unit`                      |
 | LOG-043 | notifications logs the delivery of an event and its mail under the id of the event; a mail given up is an `error` with the code of the server. The address of the recipient is on no line.     | `notifications api`                       |
 
+## TRC: traces (Step 4.3)
+
+One trace from the request that places an order to its mail, through every row that waits
+for a timer (`docs/adr/0025-traces-opentelemetry.md`). The carrier of a trace is a copy in
+the four services: TRC-001…004 run in each of them. What is tested is our code: the
+instrumentations and the waterfall in Tempo were checked by hand (ADR 0025 → Known gaps).
+
+| ID      | Requirement                                                                                                             | Level                |
+| ------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| TRC-001 | Outside a trace nothing is captured: a row written there carries no trace.                                              | `<service> unit`     |
+| TRC-002 | Work run in a captured context is a child of the span that captured it, though no trace was under way when it began.    | `<service> unit`     |
+| TRC-003 | A link is not continued: the work is not traced and hands no context on; the link still names the span it was taken in. | `unit`               |
+| TRC-004 | A carrier is read back from JSON; anything that is not one is no trace.                                                 | `<service> unit`     |
+| TRC-010 | A row of the outbox is published in the trace of the request that wrote it.                                             | `unit`               |
+| TRC-011 | A row written outside a trace is published outside one.                                                                 | `unit`               |
+| TRC-012 | A delayed message keeps its trace as a link and is published outside any.                                               | `unit`               |
+| TRC-013 | The publisher names a linked trace in the header `x-trace-link`, and sends no such header otherwise.                    | `unit`               |
+| TRC-020 | A use case is a span named after it, with the kind of its actor and its outcome; never an id of the actor.              | `unit`               |
+| TRC-021 | A `DomainError` is an outcome of the span; anything else marks it as failed.                                            | `unit`               |
+| TRC-030 | A job runs as a span of the trace in its data (`traceparent`); a scheduler tick begins a trace.                         | `unit`               |
+| TRC-040 | A send to the mail server is a span `smtp send` that names the server and how it ended, never the address.              | `notifications unit` |
+
 ## SYS: the system as a whole (Step 3.13)
 
 The four services from their images, in the compose project `oms-system`, with their

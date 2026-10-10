@@ -68,8 +68,10 @@ pnpm dev
 - `pnpm infra:up`: Postgres, its read replica, PgBouncer, the Postgres of payments, of
   inventory and of notifications, Redis, RabbitMQ, Mailpit, the observability stack (`lgtm`) and fake-psp, waits until healthy. The replica's first start copies the whole primary.
 - Grafana with Loki, Tempo and Prometheus behind it runs as one container (`lgtm`, ADR 0024)
-  on port 3001. Its data sources are there and empty: no service sends to it yet (traces
-  4.3, logs 4.4, metrics 4.5). What it keeps is in the volume `oms_lgtm-data`.
+  on port 3001. Every process sends its traces there (ADR 0025): Explore → Tempo → Search
+  shows one trace per placed order, from the request to the mail, across `oms-api`,
+  `oms-worker`, `oms-inventory`, `oms-payments` and `oms-notifications`. Logs (4.4) and
+  metrics (4.5) are not sent yet. What it keeps is in the volume `oms_lgtm-data`.
 - Two database roles (ADR 0006): `pnpm db:*` connect as the owner `oms`
   (`DATABASE_ADMIN_URL`); api and worker connect as `oms_app` (`DATABASE_URL`), which sees only
   the rows of the current workspace (Row-Level Security). A fresh Postgres volume gets the

@@ -121,6 +121,14 @@ later` (warn), `notification given up…` (error). Never the address, and never 
   `notifications.contract.spec.ts`): what the queue is bound to, and a released message of
   each event through the consumer. A new event to tell about is a row in
   `packages/contracts/src/parties.ts` first.
+- **The mail of a notification is a span of the trace of its event** (ADR 0025; copies of
+  the api's: `src/instrumentation.ts`, loaded with `node --require` and never imported, and
+  `infrastructure/tracing/trace-context.ts`). The repository writes the trace the insert is
+  in (`notifications.trace_context`, beside `correlation_id`); the notification holds it as
+  an opaque value and never sets it; the dispatcher hands it to the mailer with the mail, and
+  `SmtpMailerAdapter` opens `smtp send` in it: the server and the reply code, never the
+  address. `domain/` and `application/` import no OpenTelemetry. No
+  `OTEL_EXPORTER_OTLP_ENDPOINT`, no SDK.
 
 ## Deviations from the conventions templates
 

@@ -106,6 +106,12 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/inventory/
   `inventory.contract.spec.ts`): what the queue is bound to, a released message of each
   command through the consumer, and every answer the adapter writes. A new command or a new
   answer is a row in `packages/contracts/src/parties.ts` first.
+- **The trace of a reservation is the trace of the order** (ADR 0025; copies of the api's:
+  `src/instrumentation.ts`, loaded with `node --require` and never imported, and
+  `infrastructure/tracing/trace-context.ts`, without the link of a delayed message). The
+  instrumentation of amqplib continues the trace of the command; `Outbox.append()` keeps it
+  in `outbox.trace_context` and the relay publishes the answer in it. `pg` traces only
+  inside a trace. No `OTEL_EXPORTER_OTLP_ENDPOINT`, no SDK.
 
 ## Deviations from the conventions templates
 

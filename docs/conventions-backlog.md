@@ -1204,3 +1204,47 @@ should tell is its return value; the automatic line comes from `@UseCase()`".
 set by the `@UseCase()` decorator; a class that injects it itself counts it).
 `eslint.config.mjs` of the template: forbid `Logger` and `ConsoleLogger` of `@nestjs/common`
 outside the test helpers.
+
+## 26. A trace ends where work waits in a table: the outbox, a delayed message, a mail
+
+Step 4.3 · 2026-10-12 · Status: open
+
+**Conventions say:** `ops/observability.md` §3: auto-instrumentation for `http`, `pg`,
+`ioredis`, `bullmq` through `getNodeAutoInstrumentations`; the context "propagates through
+queues" in the `opts` of a job, by the BullMQ instrumentation; `correlationId = traceId`.
+`transactions.md` §5 describes the outbox and says nothing of a trace.
+
+**What we did:** four things the rule does not cover. A row of the outbox keeps the
+`traceparent` of the span that wrote it (`outbox.trace_context`), and the relay publishes in
+that context: without it every hop through the broker begins a trace. A message that is due
+much later (a timeout) keeps it as a link, and its consumer begins a trace that points
+back. A table that is an outbox towards a vendor (`notifications`) keeps it the same way.
+And the instrumentations are listed one by one, the context of a job is a field of its
+data beside `correlationId`, and the two ids stay two.
+
+**Why:** the outbox exists to let go of the request; the instrumentations follow a call,
+not a row. `getNodeAutoInstrumentations` is forty packages for five libraries. The
+correlation id may come from the caller and follows a delayed message; a trace id does
+neither.
+
+**Assessment:** the row carrying the context is right for any project with an outbox, and
+the conventions should say so where they describe it. The link for delayed work is a
+judgement (ten minutes here); the rule can name the choice. Listing the instrumentations is
+better than the meta package. `correlationId = traceId` is still open: 4.4 decides.
+
+**Example:**
+
+```ts
+// the write, inside the transaction of the use case
+await tx.outboxMessage.create({ data: { …, traceContext: captureTraceContext() } });
+
+// the relay, minutes or milliseconds later, in a timer of another process
+await runInTraceContext(record.traceContext, () => this.publisher.publish(record));
+```
+
+**Proposed change:** `application/transactions.md` §5: the outbox row has a nullable
+`trace_context`, written by `append()` and restored by the relay; delayed work stores a
+link. `ops/observability.md` §3: list the instrumentations a project needs instead of the
+meta package; say that a context crosses a queue in whatever the project already uses for
+the correlation id; add `requireParentSpan` for clients that poll; name `src/instrumentation.ts`
+as a process root in the lint template.

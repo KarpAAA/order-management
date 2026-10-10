@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 4: observability**, 4.2 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 4: observability**, 4.3 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Four services: `services/api` (this file), `services/payments`, `services/inventory` and
 `services/notifications` (their own decisions: `services/payments/CLAUDE.md`,
 `services/inventory/CLAUDE.md`, `services/notifications/CLAUDE.md`). They share
@@ -49,7 +49,7 @@ validation: class-validator
 swagger-prod: off
 async-push: poll
 logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023); LOG_LEVEL, LOG_PRETTY
-traces: none
+traces: otlp                    # the SDK is a preload (`node --require ./dist/instrumentation.js`); OTEL_EXPORTER_OTLP_ENDPOINT unset = off (ADR 0025)
 metrics-endpoint: none          # Step 4
 tracker: none
 merge: merge-commit
@@ -408,7 +408,7 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
     one is made in the others.
 - **The observability stack is one container of the dev infrastructure** (ADR 0024; `lgtm`
   in `docker-compose.yml`: Grafana, Loki, Tempo, Prometheus and an OpenTelemetry Collector).
-  No process sends to it yet. Consequences:
+  Traces are sent since 4.3. Consequences:
   - a service sends OTLP to the Collector (`localhost:4318` under `pnpm dev`, `lgtm:4318` in
     a container) and never writes to Loki, Tempo or Prometheus itself;
   - Grafana is on 3001 of the host: 3000 is the api;
@@ -417,6 +417,38 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
   - the stack of the system tests starts without it (a profile nobody asks for in
     `docker-compose.system.yml`): a service must run with no Collector;
   - the logs are collected in 4.4, not here; metrics are pulled from `/metrics` (4.5).
+- **A trace is one for an order, and a row that waits carries it** (ADR 0025;
+  `src/instrumentation.ts`, `common/tracing/trace-context.ts`). The SDK and the
+  instrumentations of `http`, `pg`, `ioredis` and `amqplib` are a preload; our code only
+  keeps the context where a timer takes the work over. Consequences:
+  - `src/instrumentation.ts` is loaded with `node --require`, before any entrypoint, and is
+    never imported: imported later it patches nothing and nothing fails. A new way to start
+    a process (a script, a Dockerfile, a compose `command`) names it. It imports
+    OpenTelemetry and `trace-context.ts` only;
+  - `OTEL_EXPORTER_OTLP_ENDPOINT` unset or empty = no SDK: the tests and the stacks of the
+    system and contract tests run so. Never make a service wait for the Collector;
+  - `Outbox.append()` stores the `traceparent` of the active span in `outbox.trace_context`
+    and the relay publishes the row in it. A new table whose rows are worked off later
+    (by a timer, a job, another process) keeps the trace the same way:
+    `captureTraceContext()` at the write, `runInTraceContext()` at the work;
+  - `appendDelayed()` stores a link, not a parent: the relay publishes such a row with
+    tracing suppressed and the header `x-trace-link`, and the consumer span begins a trace
+    that points back. Do not make a timeout a child: the trace of an order would last as
+    long as its timeout;
+  - `pg` and `ioredis` trace only inside a trace (`requireParentSpan`): the relay and
+    BullMQ poll. A span that is missing under a timer has no parent: open one, do not
+    switch the option off;
+  - a manual span comes from `inSpan()` and exists in two places: `@UseCase()` and
+    `JobScope`. A use case never opens one by hand. The manual spans of the saga steps are
+    deferred (second pass);
+  - a span carries ids, codes and counts, as a log line does: never a body, an address or
+    an id of a user. A `DomainError` is the `outcome` of a span, not its failure;
+  - a job enqueued from a request puts `traceparent` into its data, beside
+    `correlationId` (`captureTraceContext()`); `JobScope` reads both;
+  - a unit test that looks at spans takes `recordingTracer()`
+    (`common/tracing/__test__/recording-tracer.ts`): the provider is global to the file;
+  - the carrier and the preload are copied in the three other services, without the link:
+    a fix in one is made in the others.
 - **The system as a whole is tested by four scenarios, not by a fifth suite of rules**
   (ADR 0022; `devtools/system`, `docker-compose.system.yml`, `pnpm test:system`). All four
   services from their images, and a test that knows what a client and an operator know: the
@@ -508,10 +540,10 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
 
 ## Deviations from the conventions templates
 
-- `eslint.config.mjs` is the template plus five additions (3: `@oms/contracts` is a layer of
+- `eslint.config.mjs` is the template plus six additions (3: `@oms/contracts` is a layer of
   its own, importable from `infrastructure/`, a module's adapters and its consumers only;
   4: `@RabbitSubscribe` is an entry decorator; 5: `Logger` of `@nestjs/common` is not
-  imported). The first two: the generated Prisma client,
+  imported; 6: `src/instrumentation.ts` is a root of the process, like an entrypoint). The first two: the generated Prisma client,
   `prisma/` and root tool files are outside the layer map; `test/factories`, `test/doubles`
   and `test/helpers` may import module internals. Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
@@ -589,6 +621,11 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
   (`ops/logging.md` §3: `pino-http` or an interceptor), and a broker delivery, a job and a
   row of the outbox are entries the conventions do not name: `docs/conventions-backlog.md` §23.
   `redact` covers three depths, not any (§24).
+- The traces differ from `ops/observability.md` §3 in four ways: the instrumentations are
+  listed one by one (not `getNodeAutoInstrumentations`), the context of a job is in its data
+  (not in its `opts` through a BullMQ instrumentation), a trace id is not the correlation
+  id, and a row of the outbox, a delayed message and a notification carry the context, which
+  the conventions do not foresee (`docs/conventions-backlog.md` §26).
 - `POST …/orders/{id}/cancel` has two success statuses, 204 and 202
   (`http/controller.md`: one status per route): `docs/conventions-backlog.md` §16.
 - `OrderSaga` does not extend `AggregateRoot`: it records no events, and its version is

@@ -295,7 +295,7 @@
   - Закласти: `grafana/otel-lgtm` у docker compose — Grafana, Loki, Tempo, Prometheus і OTel Collector в одному контейнері.
   - Подивитись: Grafana UI і джерела даних.
 
-- [ ] **4.3 Трейси (OpenTelemetry)**
+- [x] **4.3 Трейси (OpenTelemetry)**
   - Закласти (ядро):
     - автоінструментація: HTTP, NestJS, Postgres, Redis, RabbitMQ
     - передача контексту через заголовки повідомлень і дані BullMQ-job-ів
