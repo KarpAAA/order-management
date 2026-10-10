@@ -19,7 +19,7 @@ import { silentLogger } from '@shared/logger/silent-logger';
 import { HttpPaymentGateway } from '@modules/payments/infrastructure/http-payment-gateway.adapter';
 import type { PaymentGateway } from '@modules/payments/ports/payment-gateway.port';
 
-const PSP_URL = process.env.PSP_BASE_URL ?? 'http://localhost:4010';
+const PSP_URL = process.env.PSP_BASE_URL ?? 'http://127.0.0.1:4010';
 /** Operations that arrive per second, and for how long. */
 const ARRIVALS_PER_SECOND = 10;
 const SECONDS = 15;

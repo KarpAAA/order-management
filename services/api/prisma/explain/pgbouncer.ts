@@ -26,9 +26,9 @@ try {
 const urls = {
   owner: process.env.DATABASE_ADMIN_URL,
   // the application role past the pooler: DATABASE_URL itself points at PgBouncer
-  direct: process.env.DATABASE_DIRECT_URL ?? 'postgresql://oms_app:oms_app@localhost:5432/oms',
-  pooled: process.env.PGBOUNCER_URL ?? 'postgresql://oms_app:oms_app@localhost:6432/oms',
-  stats: process.env.PGBOUNCER_STATS_URL ?? 'postgresql://stats:stats@localhost:6432/pgbouncer',
+  direct: process.env.DATABASE_DIRECT_URL ?? 'postgresql://oms_app:oms_app@127.0.0.1:5432/oms',
+  pooled: process.env.PGBOUNCER_URL ?? 'postgresql://oms_app:oms_app@127.0.0.1:6432/oms',
+  stats: process.env.PGBOUNCER_STATS_URL ?? 'postgresql://stats:stats@127.0.0.1:6432/pgbouncer',
 };
 
 const print = (line: string) => process.stdout.write(`${line}\n`);
