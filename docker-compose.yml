@@ -1,6 +1,6 @@
 # Local environment. Infra (postgres, postgres-replica, pgbouncer, postgres-payments,
-# postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, fake-psp) starts by
-# default; `docker compose --profile app up --build` adds the services: api + worker from ONE
+# postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, lgtm, fake-psp) starts
+# by default; `docker compose --profile app up --build` adds the services: api + worker from ONE
 # image, payments, inventory and notifications each from its own.
 name: oms
 
@@ -172,6 +172,26 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # The observability stack of the dev environment: Grafana, Loki (logs), Tempo (traces),
+  # Prometheus (metrics), Pyroscope and an OpenTelemetry Collector in one container
+  # (docs/adr/0024-observability-stack.md). Grafana: http://localhost:3001 (admin / admin).
+  # The Collector takes OTLP on 4317 (gRPC) and 4318 (HTTP) and hands each signal to its store.
+  lgtm:
+    image: grafana/otel-lgtm:0.36.0
+    ports:
+      - '3001:3000' # Grafana; 3000 on the host is the api
+      - '4317:4317'
+      - '4318:4318'
+    volumes:
+      # everything the five keep: logs, traces, metrics, and the dashboards of Grafana
+      - lgtm-data:/data
+    healthcheck:
+      # the check of the image (every component answers), asked more often than its 30 s
+      test: ['CMD', '/otel-lgtm/docker/healthcheck.sh']
+      interval: 5s
+      timeout: 5s
+      retries: 30
 
   fake-psp:
     build:
@@ -377,3 +397,4 @@ volumes:
   postgres-replica-data:
   redis-data:
   rabbitmq-data:
+  lgtm-data:

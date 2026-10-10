@@ -33,6 +33,11 @@ services:
     ports: !override
       - '${SYSTEM_PSP_PORT:-4110}:4010'
 
+  # Not part of this stack: a profile nobody asks for keeps it from starting. The suite has
+  # three windows and Grafana is not one of them (ADR 0022), and nothing sends to it.
+  lgtm:
+    profiles: [observability]
+
   # Fixed-id data (README → Seeded data): the users, the workspace and the products the
   # scenarios use. The same step as in docker-compose.contract.yml.
   seed:
