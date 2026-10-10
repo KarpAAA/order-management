@@ -425,7 +425,14 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
     caller and follows a delayed message, a timeout of the saga begins another trace. Never
     make one stand for the other;
   - a line outside a span has no `traceId` (a tick of the relay or of a scheduler). Do not
-    open a span to give a line an id;
+    open a span to give a line an id. A line about a row that kept a trace is written in
+    that trace (`TRACE_SCOPE` in notifications, `runInTraceContext()` here);
+  - the broker library logs through `LibraryLogger` (`infrastructure/messaging/`), which
+    writes its report of a handler that threw at `debug`: the line of that delivery is the
+    one of `retry-or-park.ts`. Do not hand the library a plain `NestLoggerAdapter`;
+  - `pnpm db:reset` leaves RabbitMQ as it was: the delayed messages of orders that are gone
+    are parked with an `error` (`ORDER_SAGA_NOT_FOUND`). Purge `api.saga-timeouts.dlq` after
+    a reset, it is not a defect;
   - in a container the agent `alloy` reads stdout and pushes to Loki; under `pnpm dev` the
     process sends its lines over OTLP (`OTEL_LOGS_EXPORTER=otlp` in `.env`). The setting is
     `none` in every container of a compose file: with both, each line is stored twice;

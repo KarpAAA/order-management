@@ -498,6 +498,9 @@ correlation context are copies in the four services: LOG-001…011 run in each o
 | LOG-043 | notifications logs the delivery of an event and its mail under the id of the event; a mail given up is an `error` with the code of the server. The address of the recipient is on no line.     | `notifications api`                       |
 | LOG-050 | A line written inside a span carries its `traceId` and `spanId`, beside the correlation id, a child logger included (Step 4.4, `docs/adr/0026-logs-to-loki-and-trace-id.md`).                  | `<service> unit`                          |
 | LOG-051 | A line written outside a trace, or with no SDK in the process, has neither field.                                                                                                              | `<service> unit`                          |
+| LOG-052 | What a library logs through the Nest logger keeps its stack as `stack`: a stack given alone is never the `context` of the line.                                                                | `<service> unit`                          |
+| LOG-053 | A handler that threw is not an error line of the broker library: the delivery has its own (`warn` when it comes again, `error` when parked).                                                   | `<service> unit`                          |
+| LOG-054 | A line about a mail is written in the trace its notification kept, though no span is under way; a notification with no trace gives its line none.                                              | `notifications unit`                      |
 
 ## TRC: traces (Step 4.3)
 

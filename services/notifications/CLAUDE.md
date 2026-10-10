@@ -135,6 +135,12 @@ later` (warn), `notification given up…` (error). Never the address, and never 
   reads stdout; under `pnpm dev` the process sends its lines over OTLP
   (`OTEL_LOGS_EXPORTER=otlp`, `none` in a container: both would store each line twice).
   `logRecordProcessors` is always passed to `NodeSDK`. Loki knows the process as `oms-notifications`.
+  The dispatcher writes the line of a mail after the span of the send has ended:
+  `DispatchNotificationsJob` runs it in the trace the notification kept, through the port
+  `TRACE_SCOPE` (`shared/tracing/trace-scope.ts` → `infrastructure/tracing/kept-trace-scope.ts`;
+  an entry class may not import `infrastructure/`). `TriedNotification` carries
+  `traceContext` for that, and it is never a field of the line. The broker library logs
+  through `LibraryLogger`, as in the api.
 
 ## Deviations from the conventions templates
 

@@ -118,6 +118,8 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/inventory/
   reads stdout; under `pnpm dev` the process sends its lines over OTLP
   (`OTEL_LOGS_EXPORTER=otlp`, `none` in a container: both would store each line twice).
   `logRecordProcessors` is always passed to `NodeSDK`. Loki knows the process as `oms-inventory`.
+  The broker library logs through `LibraryLogger` (`infrastructure/messaging/`): its report
+  of a handler that threw is `debug`, the line of the delivery is `retry-or-park.ts`'s.
 
 ## Deviations from the conventions templates
 

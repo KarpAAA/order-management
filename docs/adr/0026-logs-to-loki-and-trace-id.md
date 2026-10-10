@@ -40,6 +40,17 @@ two ways, because a process is run in two ways: as a container, and under `pnpm 
   Everything with many values is structured metadata, unindexed and still a filter:
   `trace_id`, `span_id`, `correlationId`, `context`. The agent uses the names a line sent
   over OTLP gets, so one query reads both. The level is `detected_level` in both.
+- **A line about work a timer did is written in the trace its row kept.** The dispatcher
+  of notifications tells of a mail after the span of the send has ended: its job runs the
+  line through the port `TRACE_SCOPE` (`shared/tracing/trace-scope.ts`, over the carrier of
+  ADR 0025), as it runs it in the chain of the event. `mail sent` and `notification given
+up` are found from the trace of their order.
+- **The broker library does not write an error for a handler that threw.** It reports one
+  before it asks what to do with the message; that delivery has its line already
+  (`retry-or-park.ts`: a `warn`, or an `error` when parked). `LibraryLogger`
+  (`infrastructure/messaging/`) writes the report at `debug`. And the adapter of the Nest
+  logger takes a stack given alone for a stack: it used to become the `context` of the line,
+  which is a field Loki keeps beside every line.
 - **Grafana is not provisioned.** The data sources of the image already join the two:
   Loki → Tempo on `trace_id`, Tempo → Loki with `{service_name="…"} | trace_id="…"`. We
   took its names instead of mounting a file of our own over its configuration.
@@ -101,11 +112,13 @@ returns the lines of a service for that trace.
 - **The line differs between the two ways.** Through the agent it is the JSON the process
   wrote (`| json` reads its fields); over OTLP it is the message, with the fields beside it.
   The ids, `context`, `service_name` and the level have the same names in both.
-- **A line written outside a span has no trace**: a tick of the relay or of a scheduler,
-  and the lines of the dispatcher of notifications (`mail sent`, `notification given up`),
-  written by its timer after the span of the send has ended. They carry the correlation id.
-  The dispatcher line is the one worth fixing: an entry class may not import
-  `infrastructure/tracing/` (lint), so it needs the trace of the notification handed to it.
+- **A line written outside a span has no trace**: a tick of the relay or of a scheduler.
+  It belongs to no request. A line of a mail has the trace and the span of the event that
+  asked for it, not of the send.
+- **A reset of the dev database leaves the broker as it was**: the delayed messages of
+  orders that no longer exist are delivered, refused (`ORDER_SAGA_NOT_FOUND`) and parked,
+  each with an `error` line. Found while this was checked (40 in `api.saga-timeouts.dlq`,
+  purged by hand). `pnpm db:reset` does not touch RabbitMQ.
 - **`fake-psp` has no SDK**: its lines are collected and carry the correlation id only.
 - **The click in Grafana was not automated**: the data on both sides and the two queries of
   the links were checked through the API; nothing in a test opens Explore.
