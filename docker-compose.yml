@@ -230,6 +230,8 @@ services:
       DATABASE_ADMIN_URL: ''
       REDIS_URL: redis://redis:6379
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
+      LOG_PRETTY: 'false'
     ports:
       - '3000:3000'
     depends_on: &app-deps
@@ -282,6 +284,8 @@ services:
       DATABASE_ADMIN_URL: ''
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       PSP_BASE_URL: http://fake-psp:4010
+      # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
+      LOG_PRETTY: 'false'
     depends_on:
       migrate-payments:
         condition: service_completed_successfully
@@ -318,6 +322,8 @@ services:
       # env_file is the dev environment; the process itself gets no owner URL
       DATABASE_ADMIN_URL: ''
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
+      LOG_PRETTY: 'false'
     depends_on:
       migrate-inventory:
         condition: service_completed_successfully
@@ -353,6 +359,8 @@ services:
       DATABASE_ADMIN_URL: ''
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       SMTP_HOST: mailpit
+      # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
+      LOG_PRETTY: 'false'
     depends_on:
       migrate-notifications:
         condition: service_completed_successfully
