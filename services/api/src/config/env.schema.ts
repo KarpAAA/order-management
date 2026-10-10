@@ -29,6 +29,12 @@ export const envSchema = z.object({
     .union([z.literal(''), z.url({ protocol: /^https?$/ })])
     .optional()
     .transform((v) => (v === '' ? undefined : v)),
+  /**
+   * `otlp`: the log lines go to the Collector as well as to stdout (docs/adr/0026). For a
+   * process on a developer's machine only: in a container an agent reads stdout, and both
+   * would store every line twice. Read by `src/instrumentation.ts`, as the endpoint is.
+   */
+  OTEL_LOGS_EXPORTER: z.enum(['otlp', 'none']).default('none'),
 
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   /**
