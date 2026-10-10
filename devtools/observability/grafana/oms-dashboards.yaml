@@ -1,0 +1,15 @@
+# The dashboards of the project, read by Grafana from files (docs/adr/0027): mounted beside
+# the provider file of the image, which keeps its own three. A change made in the UI is not
+# kept: change the JSON here.
+apiVersion: 1
+
+providers:
+  - name: OMS
+    type: file
+    folder: OMS
+    allowUiUpdates: false
+    # a change of a file is picked up while Grafana runs
+    updateIntervalSeconds: 10
+    options:
+      path: /otel-lgtm/oms-dashboards
+      foldersFromFilesStructure: false

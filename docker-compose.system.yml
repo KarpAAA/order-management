@@ -43,6 +43,10 @@ services:
   alloy:
     profiles: !override [observability]
 
+  # and no exporter: there is no Prometheus to ask it
+  postgres-exporter:
+    profiles: [observability]
+
   # Fixed-id data (README → Seeded data): the users, the workspace and the products the
   # scenarios use. The same step as in docker-compose.contract.yml.
   seed:

@@ -1,0 +1,54 @@
+# The service level indicators of `place`, as recording rules (docs/adr/0028). Prometheus
+# evaluates them; the dashboard and the alert of Grafana read the recorded series. They are
+# rules of Prometheus and not of Grafana so that they can be tested: slo.test.yaml,
+# `pnpm test:rules`.
+groups:
+  - name: oms-slo
+    interval: 15s
+    rules:
+      # Payment attempts that ended with the order paid, per second.
+      - record: sli:place_attempts_good:rate5m
+        expr: sum(rate(orders_paid_total[5m]))
+
+      # Attempts the system failed: the provider was away or refused our request, or the
+      # answer came too late. A card that was declined is not here: that is the system
+      # working. `or vector(0)`: the counter has no series until the first failure.
+      - record: sli:place_attempts_bad:rate5m
+        expr: sum(rate(orders_payment_failed_total{cause!="declined"}[5m])) or vector(0)
+
+      # SLI 1: the share of placed orders whose payment the system brought to an end.
+      # Not from the HTTP status of `place`: that request is answered before the payment is
+      # asked for, and succeeds with the provider down. No attempt ended in the window: no
+      # value, which is not a breach.
+      - record: sli:place_success:ratio_rate5m
+        expr: |
+          sli:place_attempts_good:rate5m
+          /
+          ((sli:place_attempts_good:rate5m + sli:place_attempts_bad:rate5m) > 0)
+
+      # The same over the window of the objective, for the error budget.
+      - record: sli:place_success:ratio_30d
+        expr: |
+          sum(increase(orders_paid_total[30d]))
+          /
+          ((
+            sum(increase(orders_paid_total[30d]))
+            + (sum(increase(orders_payment_failed_total{cause!="declined"}[30d])) or vector(0))
+          ) > 0)
+
+      # The share of the error budget that is left: 1 = untouched, 0 = spent, below 0 =
+      # the objective of 99 % is broken for the window.
+      - record: slo:place_success:error_budget_remaining
+        expr: 1 - ((1 - sli:place_success:ratio_30d) / (1 - 0.99))
+
+      # SLI 2: the 95th percentile of the time `place` takes to answer, in seconds.
+      - record: sli:place_latency:p95_5m
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(http_request_duration_seconds_bucket{
+                method="POST", route="/v1/workspaces/:workspaceId/orders/:orderId/place"
+              }[5m])
+            )
+          )

@@ -1,0 +1,111 @@
+# The configuration of the Prometheus inside `lgtm`, mounted over /otel-lgtm/prometheus.yaml
+# (docs/adr/0027). The first part is the file of the image (grafana/otel-lgtm 0.36.0), kept as
+# it is: an upgrade of the image is a look at its file again. Ours begins at `rule_files`.
+---
+global:
+  scrape_native_histograms: true
+  # ours: the image has no scrape of its own and leaves the default of a minute
+  scrape_interval: 15s
+  evaluation_interval: 15s
+otlp:
+  keep_identifying_resource_attributes: true
+  # Recommended attributes to be promoted to labels.
+  promote_resource_attributes:
+    - service.instance.id
+    - service.name
+    - service.namespace
+    - service.version
+    - cloud.availability_zone
+    - cloud.region
+    - container.name
+    - deployment.environment # backward compatibility
+    - deployment.environment.name
+    - k8s.cluster.name
+    - k8s.container.name
+    - k8s.cronjob.name
+    - k8s.daemonset.name
+    - k8s.deployment.name
+    - k8s.job.name
+    - k8s.namespace.name
+    - k8s.node.name
+    - k8s.pod.name
+    - k8s.replicaset.name
+    - k8s.statefulset.name
+    - host.name
+    - postgresql.database.name
+    - postgresql.schema.name
+    - postgresql.table.name
+    - postgresql.index.name
+    - database # used by otelcol/receiver/mongodb
+    - kafka.cluster.alias
+storage:
+  tsdb:
+    # A 10min time window is enough because it can easily absorb retries and network delays.
+    out_of_order_time_window: 10m
+
+# The SLIs as recording rules (docs/adr/0028): tested with promtool (`pnpm test:rules`).
+rule_files:
+  - /otel-lgtm/oms-rules/slo.yaml
+
+scrape_configs:
+  # Every process of the four services serves GET /metrics on a port of its own.
+  # Two ways to run them, and both are listed: under `pnpm dev` they are processes of the
+  # host, in the `app` profile they are containers. The targets of the way that is not
+  # running are down (`up == 0`), which is true and harmless. `service` is ours; `process`
+  # comes from the process itself.
+  - job_name: oms
+    static_configs:
+      - targets: ['host.docker.internal:9464', 'host.docker.internal:9465']
+        labels: { service: api, deployment: dev }
+      - targets: ['host.docker.internal:9466']
+        labels: { service: payments, deployment: dev }
+      - targets: ['host.docker.internal:9467']
+        labels: { service: inventory, deployment: dev }
+      - targets: ['host.docker.internal:9468']
+        labels: { service: notifications, deployment: dev }
+      - targets: ['api:9464', 'worker:9464']
+        labels: { service: api, deployment: compose }
+      - targets: ['payments:9464']
+        labels: { service: payments, deployment: compose }
+      - targets: ['inventory:9464']
+        labels: { service: inventory, deployment: compose }
+      - targets: ['notifications:9464']
+        labels: { service: notifications, deployment: compose }
+
+  # The broker measures itself (the plugin rabbitmq_prometheus). The detailed endpoint, two
+  # families: messages per queue (ready, unacknowledged) and consumers per queue. That is
+  # where the depth of a work queue, of its wait queue and of its dead-letter queue is.
+  - job_name: rabbitmq
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics, queue_consumer_count]
+    static_configs:
+      - targets: ['rabbitmq:15692']
+
+  # One exporter for the five Postgres servers: Prometheus names the server in the request
+  # (`/probe?target=…`), the exporter connects with the login of that `auth_module`
+  # (devtools/observability/postgres-exporter.yml).
+  - job_name: postgres
+    metrics_path: /probe
+    static_configs:
+      - targets: ['postgres:5432/oms']
+        labels: { auth_module: oms, database: api }
+      - targets: ['postgres-replica:5432/oms']
+        labels: { auth_module: oms, database: api-replica }
+      - targets: ['postgres-payments:5432/payments']
+        labels: { auth_module: payments, database: payments }
+      - targets: ['postgres-inventory:5432/inventory']
+        labels: { auth_module: inventory, database: inventory }
+      - targets: ['postgres-notifications:5432/notifications']
+        labels: { auth_module: notifications, database: notifications }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [auth_module]
+        target_label: __param_auth_module
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: postgres-exporter:9187
+      - regex: auth_module
+        action: labeldrop

@@ -1,0 +1,66 @@
+# The one alert of the project, and where it is sent (docs/adr/0028). Read by Grafana from
+# this file: a rule made in the UI lives in the volume only.
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: oms-slo
+    folder: OMS
+    interval: 30s
+    rules:
+      # A symptom, not a cause: orders are placed and their payment does not come to an end.
+      # What is wrong (the provider, payments, the broker) is on the dashboard it links to.
+      - uid: oms-place-success-low
+        title: PlaceSuccessRatioLow
+        condition: breach
+        data:
+          # the SLI is recorded by Prometheus (devtools/observability/rules/slo.yaml)
+          - refId: ratio
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              refId: ratio
+              expr: sli:place_success:ratio_rate5m
+              instant: true
+          - refId: breach
+            datasourceUid: __expr__
+            model:
+              refId: breach
+              type: threshold
+              expression: ratio
+              conditions:
+                - evaluator: { type: lt, params: [0.99] }
+        # below the objective for a minute: one failed payment among few is not an outage
+        for: 1m
+        # no attempt ended in the window: nothing was promised and broken
+        noDataState: OK
+        execErrState: Error
+        labels:
+          severity: page
+        annotations:
+          summary: Placed orders are not being paid
+          description: >-
+            Less than 99 % of the payment attempts of the last five minutes came to an end
+            (the objective of `place`, docs/adr/0028). Declined cards are not counted.
+          dashboard: http://localhost:3001/d/oms-slo
+
+contactPoints:
+  - orgId: 1
+    name: oms-on-call
+    receivers:
+      - uid: oms-on-call-mail
+        type: email
+        settings:
+          # Mailpit of the dev stack takes it: http://localhost:8025
+          addresses: on-call@oms.example
+          singleEmail: true
+        disableResolveMessage: false
+
+policies:
+  - orgId: 1
+    receiver: oms-on-call
+    group_by: [alertname]
+    # a dev stack: told at once, and told again soon when it is over
+    group_wait: 0s
+    group_interval: 30s
+    repeat_interval: 4h
