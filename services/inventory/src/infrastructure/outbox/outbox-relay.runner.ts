@@ -1,13 +1,11 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { outboxConfig, type OutboxConfig } from '@config/configuration';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { OutboxRelay } from './outbox-relay';
 
 import type { OnApplicationBootstrap, OnModuleDestroy } from '@nestjs/common';
-
-const describe = (error: unknown): string =>
-  error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 
 /**
  * Keeps the relay going for as long as the process lives: pass after pass while there is a
@@ -20,7 +18,7 @@ const describe = (error: unknown): string =>
  */
 @Injectable()
 export class OutboxRelayRunner implements OnApplicationBootstrap, OnModuleDestroy {
-  private readonly logger = new Logger(OutboxRelayRunner.name);
+  private readonly log: Logger;
   private running: Promise<void> | undefined;
   private stopped = false;
   private stuck = false;
@@ -29,11 +27,14 @@ export class OutboxRelayRunner implements OnApplicationBootstrap, OnModuleDestro
   constructor(
     private readonly relay: OutboxRelay,
     @Inject(outboxConfig.KEY) private readonly config: OutboxConfig,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: OutboxRelayRunner.name });
+  }
 
   onApplicationBootstrap(): void {
     if (!this.config.relayEnabled) {
-      this.logger.warn('outbox relay is off: OUTBOX_RELAY_ENABLED=false');
+      this.log.warn({}, 'outbox relay is off: OUTBOX_RELAY_ENABLED=false');
       return;
     }
     this.running = this.run();
@@ -68,13 +69,13 @@ export class OutboxRelayRunner implements OnApplicationBootstrap, OnModuleDestro
   private report(error: unknown): void {
     if (this.stuck) return;
     this.stuck = true;
-    this.logger.error(`outbox relay stuck, messages wait in the table: ${describe(error)}`);
+    this.log.error({ err: error }, 'outbox relay stuck, messages wait in the table');
   }
 
   private recovered(): void {
     if (!this.stuck) return;
     this.stuck = false;
-    this.logger.log('outbox relay publishes again');
+    this.log.info({}, 'outbox relay publishes again');
   }
 
   /** Until the next pass is due, or until the process stops. */

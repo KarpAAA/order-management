@@ -19,10 +19,10 @@ outbox: yes                     # table `outbox` + a relay in this process (ADR 
 broker: rabbitmq                # in: queue `inventory.commands`; out: exchange `events`
 queue: none                     # no BullMQ, no Redis
 processes: worker               # one process: a broker consumer, the relay of the outbox, the cleanups of the outbox and the inbox; no HTTP
-dlq: alert                      # a command given up → `inventory.commands.dlq` + Logger.error (Step 4: metric)
+dlq: alert                      # a command given up → `inventory.commands.dlq` + an `error` line (4.5: metric)
 cron: none                      # the cleanups are timers of the process (`*_CLEANUP_INTERVAL_MS`)
 validation: zod                 # messages through `parseMessage()` of @oms/contracts; env through zod
-logs: stdout                    # Nest built-in Logger; pino in Step 4
+logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023); LOG_LEVEL, LOG_PRETTY
 testing: vitest                 # projects unit + e2e; the e2e suite stops at the service boundary
 ```
 
@@ -95,6 +95,13 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/inventory/
   at a time (`RABBITMQ_PREFETCH=1`), which is what makes `handled()` a proof; the concurrency
   suite starts four processes instead. Stock a test starts from is written as the owner
   (`givenStock()` in `test/helpers/commands.ts`).
+- **One logger, and a correlation id nobody passes** (ADR 0023; a copy of the api's:
+  `@shared/logger/logger`, `infrastructure/logger/`, `infrastructure/correlation/`, the port
+  `CORRELATION`). `RabbitSubscribers` runs every delivery in the chain of its message and
+  writes its line (`message delivered`); `retry-or-park.ts` opens the chain again. A class
+  injects `LOGGER`: fields first, a message that never changes, ids and codes only, never
+  `Logger` of Nest (lint). A class built by hand takes `silentLogger`; the e2e app logs to
+  memory (`app.logs()`). The relay publishes each row in the chain of its envelope.
 - **The service is held to its rows of the map of parties** (ADR 0021;
   `inventory.contract.spec.ts`): what the queue is bound to, a released message of each
   command through the consumer, and every answer the adapter writes. A new command or a new

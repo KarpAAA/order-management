@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { outboxConfig, type OutboxConfig } from '@config/configuration';
 import { Clock } from '@shared/domain/clock';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { OutboxCleanup } from './outbox-cleanup';
 
@@ -18,7 +19,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 @Injectable()
 export class OutboxCleanupRunner implements OnApplicationBootstrap, OnModuleDestroy {
-  private readonly logger = new Logger(OutboxCleanupRunner.name);
+  private readonly log: Logger;
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<void> = Promise.resolve();
 
@@ -26,7 +27,10 @@ export class OutboxCleanupRunner implements OnApplicationBootstrap, OnModuleDest
     private readonly cleanup: OutboxCleanup,
     private readonly clock: Clock,
     @Inject(outboxConfig.KEY) private readonly config: OutboxConfig,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: OutboxCleanupRunner.name });
+  }
 
   onApplicationBootstrap(): void {
     this.running = this.run();
@@ -48,11 +52,9 @@ export class OutboxCleanupRunner implements OnApplicationBootstrap, OnModuleDest
     try {
       const cutoff = new Date(this.clock.now().getTime() - this.config.retentionDays * DAY_MS);
       const deleted = await this.cleanup.deletePublishedBefore(cutoff);
-      if (deleted > 0) this.logger.log(`outbox cleanup: deleted=${String(deleted)}`);
+      if (deleted > 0) this.log.info({ deleted }, 'outbox cleanup done');
     } catch (err: unknown) {
-      this.logger.error(
-        `outbox cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.log.error({ err }, 'outbox cleanup failed');
     }
   }
 }

@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { recordingOutbox } from '@infra/outbox/__test__/recording-outbox';
 import type { OutboxEntry } from '@infra/outbox/outbox';
+import { silentLogger } from '@shared/logger/silent-logger';
 import type { Inbox } from '@shared/messaging/inbox';
 
 import { fixedClock } from './application/__test__/fixtures';
@@ -62,6 +63,7 @@ describe('inventory as a consumer', () => {
       { execute } as unknown as ReserveStockService,
       { execute } as unknown as ReleaseStockService,
       { execute } as unknown as AdjustStockService,
+      silentLogger,
     );
 
     await expect(consumer.onCommand(releasedSample(contract))).resolves.toBeUndefined();
