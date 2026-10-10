@@ -3,8 +3,10 @@ import { Global, Module } from '@nestjs/common';
 import { loggingConfig, type LoggingConfig } from '@config/configuration';
 import { LOGGER } from '@shared/logger/logger';
 import { CORRELATION } from '@shared/messaging/correlation';
+import { TRACE_SCOPE } from '@shared/tracing/trace-scope';
 
 import { CorrelationContext } from '../correlation/correlation-context';
+import { KeptTraceScope } from '../tracing/kept-trace-scope';
 
 import { NestLoggerAdapter } from './nest-logger.adapter';
 import { createPinoLogger, logDestination } from './pino.logger';
@@ -26,6 +28,8 @@ const SERVICE = 'notifications';
   providers: [
     CorrelationContext,
     { provide: CORRELATION, useExisting: CorrelationContext },
+    // the other id of a line: the trace a row kept, for what is logged about it later
+    { provide: TRACE_SCOPE, useClass: KeptTraceScope },
     NestLoggerAdapter,
     {
       provide: LOG_DESTINATION,
@@ -48,6 +52,6 @@ const SERVICE = 'notifications';
         }),
     },
   ],
-  exports: [LOGGER, LOG_DESTINATION, CORRELATION, NestLoggerAdapter],
+  exports: [LOGGER, LOG_DESTINATION, CORRELATION, TRACE_SCOPE, NestLoggerAdapter],
 })
 export class LoggerModule {}

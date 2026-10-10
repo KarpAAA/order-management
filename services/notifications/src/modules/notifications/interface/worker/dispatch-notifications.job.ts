@@ -5,6 +5,7 @@ import { systemActor } from '@shared/auth/actor';
 import { newId } from '@shared/domain/id';
 import { LOGGER, type Logger } from '@shared/logger/logger';
 import { CORRELATION, type Correlation } from '@shared/messaging/correlation';
+import { TRACE_SCOPE, type TraceScope } from '@shared/tracing/trace-scope';
 
 import { DispatchNotificationService } from '../../application/dispatch-notification.service';
 
@@ -25,8 +26,10 @@ const ACTOR = systemActor('dispatcher:notifications');
  *
  * The loop has no chain of its own. What it tells about a mail is told in the chain of the
  * event that asked for the notification, kept in its row (docs/adr/0023): the id of the
- * order's request finds the mail too. Never the address, and never the text of the server,
- * which names it: the row has both (`last_error`).
+ * order's request finds the mail too. The same for the trace (docs/adr/0026): the span of
+ * the send has ended when the line is written, so the line is written in the trace the row
+ * kept. Never the address, and never the text of the server, which names it: the row has
+ * both (`last_error`).
  */
 @Injectable()
 export class DispatchNotificationsJob implements OnApplicationBootstrap, OnModuleDestroy {
@@ -40,6 +43,7 @@ export class DispatchNotificationsJob implements OnApplicationBootstrap, OnModul
     private readonly dispatch: DispatchNotificationService,
     @Inject(notificationsConfig.KEY) private readonly config: NotificationsConfig,
     @Inject(CORRELATION) private readonly correlation: Correlation,
+    @Inject(TRACE_SCOPE) private readonly trace: TraceScope,
     @Inject(LOGGER) logger: Logger,
   ) {
     this.log = logger.child({ context: DispatchNotificationsJob.name });
@@ -80,16 +84,18 @@ export class DispatchNotificationsJob implements OnApplicationBootstrap, OnModul
     }
   }
 
-  /** The line of one mail, in the chain of the event that asked for it. */
+  /** The line of one mail, in the chain and in the trace of the event that asked for it. */
   private tell({ outcome, notification, failure }: Dispatched): void {
     if (notification === undefined) return;
-    const { id: notificationId, correlationId, ...about } = notification;
-    this.correlation.run(correlationId ?? newId(), () => {
-      const fields = { notificationId, ...about, ...failure };
-      if (outcome === 'sent') this.log.info(fields, 'mail sent');
-      else if (outcome === 'postponed')
-        this.log.warn(fields, 'mail not sent, the next try is due later');
-      else this.log.error(fields, 'notification given up, its mail was not sent');
+    const { id: notificationId, correlationId, traceContext, ...about } = notification;
+    this.trace.run(traceContext, () => {
+      this.correlation.run(correlationId ?? newId(), () => {
+        const fields = { notificationId, ...about, ...failure };
+        if (outcome === 'sent') this.log.info(fields, 'mail sent');
+        else if (outcome === 'postponed')
+          this.log.warn(fields, 'mail not sent, the next try is due later');
+        else this.log.error(fields, 'notification given up, its mail was not sent');
+      });
     });
   }
 

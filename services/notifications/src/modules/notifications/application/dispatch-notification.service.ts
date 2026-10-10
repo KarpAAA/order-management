@@ -102,4 +102,5 @@ const triedOf = (notification: Notification): TriedNotification => ({
   attempt: notification.attempt,
   sendAttempts: notification.sendAttempts,
   correlationId: notification.correlationId,
+  traceContext: notification.traceContext,
 });

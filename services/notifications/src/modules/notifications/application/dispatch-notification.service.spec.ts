@@ -235,6 +235,7 @@ describe('DispatchNotificationService', () => {
           attempt: 1,
           sendAttempts: 1,
           correlationId: CORRELATION_ID,
+          traceContext: notification.traceContext,
         },
       });
       expect(JSON.stringify(dispatched)).not.toContain(RECIPIENT.email);

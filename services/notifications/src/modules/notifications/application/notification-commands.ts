@@ -23,7 +23,11 @@ export type DispatchOutcome =
   /** The try failed and no other follows. */
   | 'given-up';
 
-/** The notification a pass tried: ids and counts, never the address or the text. */
+/**
+ * The notification a pass tried: ids and counts, never the address or the text.
+ * `correlationId` and `traceContext` are where its line belongs, not what the line says:
+ * the chain and the trace of the event that asked for it.
+ */
 export interface TriedNotification {
   id: string;
   orderId: string;
@@ -31,6 +35,7 @@ export interface TriedNotification {
   attempt: number;
   sendAttempts: number;
   correlationId: string | null;
+  traceContext: Readonly<Record<string, string>> | null;
 }
 
 /**
