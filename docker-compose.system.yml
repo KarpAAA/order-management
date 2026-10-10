@@ -39,6 +39,10 @@ services:
   lgtm:
     profiles: [observability]
 
+  # and no agent for the logs: there is no Loki to push to
+  alloy:
+    profiles: !override [observability]
+
   # Fixed-id data (README → Seeded data): the users, the workspace and the products the
   # scenarios use. The same step as in docker-compose.contract.yml.
   seed:

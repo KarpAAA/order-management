@@ -1,7 +1,8 @@
 # Local environment. Infra (postgres, postgres-replica, pgbouncer, postgres-payments,
 # postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, lgtm, fake-psp) starts
 # by default; `docker compose --profile app up --build` adds the services: api + worker from ONE
-# image, payments, inventory and notifications each from its own.
+# image, payments, inventory and notifications each from its own, and `alloy`, the agent that
+# takes their log lines to Loki.
 name: oms
 
 services:
@@ -193,6 +194,19 @@ services:
       timeout: 5s
       retries: 30
 
+  # The agent of the logs (docs/adr/0026): reads the stdout of the containers of the services
+  # through the Docker socket and pushes the lines to Loki inside `lgtm`, again and again
+  # until it answers. Nobody depends on it: a service writes to stdout and runs the same
+  # without it.
+  alloy:
+    profiles: [app]
+    image: grafana/alloy:v1.20.1
+    volumes:
+      - ./devtools/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # how far each container was read: a restart of the agent sends no line twice
+      - alloy-data:/var/lib/alloy/data
+
   fake-psp:
     build:
       context: .
@@ -254,6 +268,8 @@ services:
       LOG_PRETTY: 'false'
       # the Collector of the `lgtm` container; not a dependency: a service runs without it
       OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      # traces only: the log lines are read from stdout by `alloy`, and both would store each twice
+      OTEL_LOGS_EXPORTER: none
     ports:
       - '3000:3000'
     depends_on: &app-deps
@@ -310,6 +326,8 @@ services:
       LOG_PRETTY: 'false'
       # the Collector of the `lgtm` container; not a dependency: a service runs without it
       OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      # traces only: the log lines are read from stdout by `alloy`, and both would store each twice
+      OTEL_LOGS_EXPORTER: none
     depends_on:
       migrate-payments:
         condition: service_completed_successfully
@@ -350,6 +368,8 @@ services:
       LOG_PRETTY: 'false'
       # the Collector of the `lgtm` container; not a dependency: a service runs without it
       OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      # traces only: the log lines are read from stdout by `alloy`, and both would store each twice
+      OTEL_LOGS_EXPORTER: none
     depends_on:
       migrate-inventory:
         condition: service_completed_successfully
@@ -389,6 +409,8 @@ services:
       LOG_PRETTY: 'false'
       # the Collector of the `lgtm` container; not a dependency: a service runs without it
       OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      # traces only: the log lines are read from stdout by `alloy`, and both would store each twice
+      OTEL_LOGS_EXPORTER: none
     depends_on:
       migrate-notifications:
         condition: service_completed_successfully
@@ -406,3 +428,4 @@ volumes:
   redis-data:
   rabbitmq-data:
   lgtm-data:
+  alloy-data:
