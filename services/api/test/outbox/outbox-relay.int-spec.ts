@@ -125,6 +125,8 @@ describe('a pass of the relay (OBX-002, OBX-003)', () => {
         exchange: 'events',
         routingKey: 'orders.order-paid',
         payload: { messageId: id, name: 'orders.order-paid' },
+        // written outside a trace: the row kept none (docs/adr/0025)
+        traceContext: null,
       },
     ]);
   });
