@@ -70,8 +70,14 @@ pnpm dev
 - Grafana with Loki, Tempo and Prometheus behind it runs as one container (`lgtm`, ADR 0024)
   on port 3001. Every process sends its traces there (ADR 0025): Explore → Tempo → Search
   shows one trace per placed order, from the request to the mail, across `oms-api`,
-  `oms-worker`, `oms-inventory`, `oms-payments` and `oms-notifications`. Logs (4.4) and
-  metrics (4.5) are not sent yet. What it keeps is in the volume `oms_lgtm-data`.
+  `oms-worker`, `oms-inventory`, `oms-payments` and `oms-notifications`. The log lines are
+  there too (ADR 0026): Explore → Loki → `{service_name=~"oms-.+"} | detected_level="error"`,
+  open a line, and the button beside its `trace_id` shows the trace of that request; from a
+  span, "Logs for this span" goes back. `| correlationId="<x-correlation-id>"` finds
+  everything an order caused. Under `pnpm dev` a process sends its lines itself
+  (`OTEL_LOGS_EXPORTER=otlp` in its `.env`); in the `app` profile the agent `alloy` reads the
+  stdout of the containers. Metrics (4.5) are not sent yet. What it keeps is in the volume
+  `oms_lgtm-data`.
 - Two database roles (ADR 0006): `pnpm db:*` connect as the owner `oms`
   (`DATABASE_ADMIN_URL`); api and worker connect as `oms_app` (`DATABASE_URL`), which sees only
   the rows of the current workspace (Row-Level Security). A fresh Postgres volume gets the

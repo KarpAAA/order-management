@@ -496,6 +496,8 @@ correlation context are copies in the four services: LOG-001…011 run in each o
 | LOG-041 | A notification keeps the correlation id of the event that asked for it.                                                                                                                        | `notifications unit`, `notifications api` |
 | LOG-042 | A pass of the dispatcher tells its caller what it tried and why a try failed: ids, counts, the reply code of the server. Never the address, never the text of the server.                      | `notifications unit`                      |
 | LOG-043 | notifications logs the delivery of an event and its mail under the id of the event; a mail given up is an `error` with the code of the server. The address of the recipient is on no line.     | `notifications api`                       |
+| LOG-050 | A line written inside a span carries its `traceId` and `spanId`, beside the correlation id, a child logger included (Step 4.4, `docs/adr/0026-logs-to-loki-and-trace-id.md`).                  | `<service> unit`                          |
+| LOG-051 | A line written outside a trace, or with no SDK in the process, has neither field.                                                                                                              | `<service> unit`                          |
 
 ## TRC: traces (Step 4.3)
 

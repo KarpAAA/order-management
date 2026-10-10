@@ -114,8 +114,8 @@ message (ADR 0012); **BullMQ** for jobs inside one service; **PostgreSQL** datab
   `http request`, `message delivered`, `job run`; a use case of the api writes `use case`.
 - The dev infrastructure has one container for what the services will tell about
   themselves (`lgtm`, ADR 0024): an OpenTelemetry Collector that takes OTLP and hands logs to
-  Loki, traces to Tempo and metrics to Prometheus, and Grafana over the three. Logs come
-  with 4.4, metrics with 4.5.
+  Loki, traces to Tempo and metrics to Prometheus, and Grafana over the three. Metrics
+  come with 4.5.
 - Every process sends its traces to that Collector (ADR 0025): the OpenTelemetry SDK is a
   preload (`src/instrumentation.ts`, `node --require`), with the instrumentations of `http`,
   `pg`, `ioredis`, `amqplib` and `fetch`. Where work waits in a table for a timer, the row
@@ -123,6 +123,13 @@ message (ADR 0012); **BullMQ** for jobs inside one service; **PostgreSQL** datab
   and `notifications.trace_context` (the mail is a span of the event). A delayed message of
   the saga keeps it as a link and begins a trace of its own. A use case of the api and a
   send to the mail server are the two manual spans.
+- The log lines are in Loki, each with the `traceId` and `spanId` of the span it was
+  written in (ADR 0026): the logger reads the active span as it reads the correlation id.
+  They get there in two ways. A container writes to stdout and an agent (`alloy`, profile
+  `app`) reads it through the Docker socket and pushes to Loki; a process under `pnpm dev`
+  sends its lines to the Collector itself (`OTEL_LOGS_EXPORTER=otlp`). Loki has one label,
+  `service_name`, the `service.name` of the traces; the ids are structured metadata. Grafana
+  joins a line to its trace by `trace_id`, and a span to its lines by both.
 
 ## 3. Modules and allowed dependencies
 
@@ -515,7 +522,7 @@ message is an error in the log; it is put back through the management UI ("Move 
 | Every event of an order is a mail                                        | No preferences, no unsubscribe, one language; the recipient is always who created the order                                                                                                                                                                                         | open: not in the roadmap                                                            |
 | notifications has no migration checker and no mutation run               | One migration, applied on an empty database by its e2e suite                                                                                                                                                                                                                        | open: a checker like the one of the api                                             |
 | No rate limiting                                                         | A noisy tenant is not limited; brute force on `/auth/login` is not throttled                                                                                                                                                                                                        | deferred: roadmap 2.10, second pass                                                 |
-| Logs are written, not collected                                          | JSON lines with a correlation id on stdout of five processes (ADR 0023): found with `grep`, not searched: Loki is there (ADR 0024) and no log is sent to it. A line has no `traceId` yet (traces: ADR 0025), and no `correlationId` in error bodies, only in the header             | 4.4 (Loki; ADR 0024)                                                                |
+| Some log lines have no trace; an error body has no `correlationId`       | The id of a refused request is in the header `x-correlation-id` only. A line of a timer outside a span (the relay, a scheduler tick, `mail sent` of the notifications dispatcher) and every line of `fake-psp` carry the correlation id and no `traceId` (ADR 0026)                 | open: the dispatcher line first (ADR 0026 → Known gaps)                             |
 | No health checks, no graceful shutdown                                   | Compose/k8s cannot tell "started" from "ready"; in-flight jobs are cut on stop                                                                                                                                                                                                      | Step 5                                                                              |
 | `Location` on two 201s points nowhere                                    | `POST /auth/register` and `POST /workspaces/{id}/members` return a `Location` without a GET route behind it                                                                                                                                                                         | open: a GET route or another URL, decided with the API                              |
 | A repeated creating `POST` is a 409, not the first answer                | `POST /orders` and `place` replay their answer for an `Idempotency-Key` (ADR 0018). A workspace, a member or a product sent twice is refused by its unique key: nothing is duplicated, but the client has to read what it created                                                   | open: the key on those routes too, once their transactions can be wrapped           |

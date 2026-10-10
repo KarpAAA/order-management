@@ -1248,3 +1248,49 @@ link. `ops/observability.md` §3: list the instrumentations a project needs inst
 meta package; say that a context crosses a queue in whatever the project already uses for
 the correlation id; add `requireParentSpan` for clients that poll; name `src/instrumentation.ts`
 as a process root in the lint template.
+
+## 27. Two ids on a log line, and two ways for the line to be collected
+
+Step 4.4 · 2026-10-10 · Status: open
+
+**Conventions say:** `ops/observability.md` §3: "`traceId` is written into every log line
+by the logger when a span is active. With OTel present, `correlationId = traceId`".
+`ops/logging.md` §4: logs go to stdout and "a pino transport" may ship them (Loki, Datadog).
+
+**What we did:** a line carries `correlationId`, `traceId` and `spanId`, three fields. The
+logger reads the active span itself, in the `mixin` that reads the correlation id. A
+container is collected by an agent that reads its stdout; a process on a developer's
+machine sends its lines through the OpenTelemetry SDK it already has, switched by one
+setting that is off in every container. In the store one label names the process, with the
+name the traces use; the ids are unindexed fields.
+
+**Why:** the two ids are not the same thing here. A caller may choose the correlation id,
+and it follows work that is due later; a trace that did would last as long as a timeout.
+And a process is run in two ways: `logs: stdout` describes a deploy, where something else
+reads the stream, and says nothing of a process that is not a container.
+
+**Assessment:** `correlationId = traceId` holds for a project where every chain is one
+trace and no caller names it; the rule should say when it stops holding instead of stating
+it. The agent for containers is what the rule means and should say outright: a transport
+inside the process makes the service depend on its log store. The second way is a
+convenience of development and worth a sentence, with its danger (every line twice).
+
+**Example:**
+
+```ts
+mixin: () => {
+  const id = correlationId();
+  const span = trace.getActiveSpan()?.spanContext();
+  return {
+    ...(id === undefined ? {} : { correlationId: id }),
+    ...(span && isSpanContextValid(span) ? { traceId: span.traceId, spanId: span.spanId } : {}),
+  };
+},
+```
+
+**Proposed change:** `ops/observability.md` §3: the logger writes `traceId` and `spanId`
+from the active span; `correlationId` equals the trace id only when the project has no
+caller-given id and no work that outlives its trace, otherwise both are written. Always
+pass `logRecordProcessors` to the SDK. `ops/logging.md` §4: in a deploy an agent reads
+stdout, never a transport in the process; a process on the host may send OTLP, behind a
+setting that is off in a container. Ids are never labels of the log store.

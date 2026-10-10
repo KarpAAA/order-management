@@ -22,7 +22,7 @@ processes: worker               # one process: a broker consumer, the relay of t
 dlq: alert                      # a command given up → `inventory.commands.dlq` + an `error` line (4.5: metric)
 cron: none                      # the cleanups are timers of the process (`*_CLEANUP_INTERVAL_MS`)
 validation: zod                 # messages through `parseMessage()` of @oms/contracts; env through zod
-logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023); LOG_LEVEL, LOG_PRETTY
+logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023), traceId of the active span, to Loki by agent or OTLP (ADR 0026); LOG_LEVEL, LOG_PRETTY
 testing: vitest                 # projects unit + e2e; the e2e suite stops at the service boundary
 ```
 
@@ -112,6 +112,12 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/inventory/
   instrumentation of amqplib continues the trace of the command; `Outbox.append()` keeps it
   in `outbox.trace_context` and the relay publishes the answer in it. `pg` traces only
   inside a trace. No `OTEL_EXPORTER_OTLP_ENDPOINT`, no SDK.
+- **A log line carries its trace** (ADR 0026; copies of the api's): the `mixin` of
+  `infrastructure/logger/pino.logger.ts` adds `traceId` and `spanId` of the active span,
+  beside the correlation id, and both stay two fields. In a container the agent `alloy`
+  reads stdout; under `pnpm dev` the process sends its lines over OTLP
+  (`OTEL_LOGS_EXPORTER=otlp`, `none` in a container: both would store each line twice).
+  `logRecordProcessors` is always passed to `NodeSDK`. Loki knows the process as `oms-inventory`.
 
 ## Deviations from the conventions templates
 

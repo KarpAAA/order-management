@@ -24,7 +24,7 @@ dlq: alert                      # an event given up → `notifications.order-eve
 cron: none                      # the dispatcher and the cleanups are timers of the process
 validation: zod                 # messages through `parseMessage()` of @oms/contracts; env through zod
 pii-encryption: no              # `recipient_email` is kept in clear for NOTIFICATIONS_RETENTION_DAYS
-logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023); LOG_LEVEL, LOG_PRETTY
+logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023), traceId of the active span, to Loki by agent or OTLP (ADR 0026); LOG_LEVEL, LOG_PRETTY
 testing: vitest                 # projects unit + e2e; the e2e suite stops at the service boundary
 ```
 
@@ -129,6 +129,12 @@ later` (warn), `notification given up…` (error). Never the address, and never 
   `SmtpMailerAdapter` opens `smtp send` in it: the server and the reply code, never the
   address. `domain/` and `application/` import no OpenTelemetry. No
   `OTEL_EXPORTER_OTLP_ENDPOINT`, no SDK.
+- **A log line carries its trace** (ADR 0026; copies of the api's): the `mixin` of
+  `infrastructure/logger/pino.logger.ts` adds `traceId` and `spanId` of the active span,
+  beside the correlation id, and both stay two fields. In a container the agent `alloy`
+  reads stdout; under `pnpm dev` the process sends its lines over OTLP
+  (`OTEL_LOGS_EXPORTER=otlp`, `none` in a container: both would store each line twice).
+  `logRecordProcessors` is always passed to `NodeSDK`. Loki knows the process as `oms-notifications`.
 
 ## Deviations from the conventions templates
 

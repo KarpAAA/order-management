@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 4: observability**, 4.3 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 4: observability**, 4.4 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Four services: `services/api` (this file), `services/payments`, `services/inventory` and
 `services/notifications` (their own decisions: `services/payments/CLAUDE.md`,
 `services/inventory/CLAUDE.md`, `services/notifications/CLAUDE.md`). They share
@@ -48,7 +48,7 @@ idempotency-key: required       # on POST /orders and POST /orders/{id}/place on
 validation: class-validator
 swagger-prod: off
 async-push: poll
-logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023); LOG_LEVEL, LOG_PRETTY
+logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023), traceId + spanId of the active span; to Loki by the agent `alloy` in a container, by OTLP under `pnpm dev` (OTEL_LOGS_EXPORTER, ADR 0026); LOG_LEVEL, LOG_PRETTY
 traces: otlp                    # the SDK is a preload (`node --require ./dist/instrumentation.js`); OTEL_EXPORTER_OTLP_ENDPOINT unset = off (ADR 0025)
 metrics-endpoint: none          # Step 4
 tracker: none
@@ -95,7 +95,7 @@ pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contr
 pnpm test:system       # the four services from their images in compose project oms-system, four scenarios through the HTTP API (devtools/system; SYSTEM_KEEP_STACK=1 leaves it up, pnpm system:down removes it)
 pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
 pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
-docker compose --profile app up --build   # migrate + api + worker from one image; payments, inventory and notifications each from its own, with its migrate step
+docker compose --profile app up --build   # migrate + api + worker from one image; payments, inventory and notifications each from its own, with its migrate step; alloy (the agent that takes their log lines to Loki)
 ```
 
 Root `lint`, `typecheck`, `test`, `test:e2e` and `dev` build `@oms/contracts` first; run through
@@ -416,7 +416,32 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
     `/otel-lgtm/<name>.yaml`, and a dashboard made in the UI lives in the volume only;
   - the stack of the system tests starts without it (a profile nobody asks for in
     `docker-compose.system.yml`): a service must run with no Collector;
-  - the logs are collected in 4.4, not here; metrics are pulled from `/metrics` (4.5).
+  - metrics are pulled from `/metrics` (4.5).
+- **A log line carries its trace, and reaches Loki in two ways** (ADR 0026;
+  `infrastructure/logger/pino.logger.ts`, `src/instrumentation.ts`, `devtools/alloy/config.alloy`).
+  The `mixin` of the logger adds `traceId` and `spanId` of the active span, beside the
+  correlation id. Consequences:
+  - `correlationId` and `traceId` are two fields on purpose: the first may come from the
+    caller and follows a delayed message, a timeout of the saga begins another trace. Never
+    make one stand for the other;
+  - a line outside a span has no `traceId` (a tick of the relay or of a scheduler). Do not
+    open a span to give a line an id;
+  - in a container the agent `alloy` reads stdout and pushes to Loki; under `pnpm dev` the
+    process sends its lines over OTLP (`OTEL_LOGS_EXPORTER=otlp` in `.env`). The setting is
+    `none` in every container of a compose file: with both, each line is stored twice;
+  - `logRecordProcessors` is always passed to `NodeSDK`, empty when off: left out, the SDK
+    reads `OTEL_LOGS_EXPORTER` itself and its default sends;
+  - the instrumentation of pino only forwards the line (`disableLogCorrelation`): the ids
+    are written by our logger, so a container, a test and a host process write the same line;
+  - Loki has one label, `service_name` = `service.name` of the traces = `oms-<compose
+service>`. An id is never a label: `trace_id`, `span_id`, `correlationId` and `context`
+    are structured metadata, under the same names in both ways;
+  - a new service of the `app` profile is a name in the `keep` rule of `config.alloy`;
+  - Grafana is not provisioned: the data sources of the image join Loki and Tempo by
+    `trace_id` and `service_name`, and we use its names;
+  - `alloy` has a profile nobody asks for in `docker-compose.system.yml`, as `lgtm` has;
+  - the mixin, the exporter and the setting are copied in the three other services: a fix
+    in one is made in the others.
 - **A trace is one for an order, and a row that waits carries it** (ADR 0025;
   `src/instrumentation.ts`, `common/tracing/trace-context.ts`). The SDK and the
   instrumentations of `http`, `pg`, `ioredis` and `amqplib` are a preload; our code only
