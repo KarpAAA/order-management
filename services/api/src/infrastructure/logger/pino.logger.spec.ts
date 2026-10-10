@@ -1,5 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { trace } from '@opentelemetry/api';
+import { beforeAll, describe, expect, it } from 'vitest';
 
+import { recordingTracer } from '@common/tracing/__test__/recording-tracer';
 import type { LoggingConfig } from '@config/configuration';
 
 import { createPinoLogger } from './pino.logger';
@@ -33,6 +35,11 @@ function logger(
 }
 
 describe('the pino logger (ops/logging.md §1)', () => {
+  // what the SDK registers in a process (src/instrumentation.ts), in the memory of the test
+  beforeAll(() => {
+    recordingTracer();
+  });
+
   it('LOG-001 writes one JSON line: the level by name, the time, who wrote it, the fields, the message', () => {
     const { log, written } = logger();
 
@@ -62,6 +69,36 @@ describe('the pino logger (ops/logging.md §1)', () => {
 
     expect(written.map((line) => line.correlationId)).toEqual([undefined, 'c-1', 'c-1']);
     expect(written[0]).not.toHaveProperty('correlationId');
+  });
+
+  it('LOG-050 adds the trace and the span under way to every line, beside the correlation id', () => {
+    const { log, written } = logger({}, () => 'c-1');
+
+    const span = trace.getTracer('test').startActiveSpan('request', (active) => {
+      log.info({}, 'inside');
+      log.child({ context: 'Relay' }).warn({}, 'inside, from a child');
+      active.end();
+      return active.spanContext();
+    });
+
+    expect(written).toHaveLength(2);
+    for (const line of written) {
+      expect(line).toMatchObject({
+        correlationId: 'c-1',
+        traceId: span.traceId,
+        spanId: span.spanId,
+      });
+    }
+  });
+
+  it('LOG-051 writes no trace on a line outside one', () => {
+    const { log, written } = logger({}, () => 'c-1');
+
+    log.info({}, 'a tick of a timer');
+
+    expect(written[0]).toMatchObject({ correlationId: 'c-1' });
+    expect(written[0]).not.toHaveProperty('traceId');
+    expect(written[0]).not.toHaveProperty('spanId');
   });
 
   it('writes the bindings of a child on each of its lines', () => {

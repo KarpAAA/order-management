@@ -1,3 +1,4 @@
+import { isSpanContextValid, trace } from '@opentelemetry/api';
 import { pino } from 'pino';
 
 import type { LoggingConfig } from '@config/configuration';
@@ -37,9 +38,16 @@ export function createPinoLogger(options: PinoLoggerOptions): Logger {
       formatters: { level: (label) => ({ level: label }) },
       timestamp: pino.stdTimeFunctions.isoTime,
       // from CLS, on every line: application code never passes it (ops/logging.md §1)
+      // and the span under way (docs/adr/0026): the id a line and its trace are joined by
       mixin: () => {
         const id = correlationId();
-        return id === undefined ? {} : { correlationId: id };
+        const span = trace.getActiveSpan()?.spanContext();
+        return {
+          ...(id === undefined ? {} : { correlationId: id }),
+          ...(span && isSpanContextValid(span)
+            ? { traceId: span.traceId, spanId: span.spanId }
+            : {}),
+        };
       },
       redact: { paths: REDACTED_PATHS, censor: REDACTED },
     },
