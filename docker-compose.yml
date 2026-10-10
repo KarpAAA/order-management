@@ -162,7 +162,7 @@ services:
   # The mail server of the dev stack: takes every mail notifications-service sends over SMTP
   # and delivers none. What it took: http://localhost:8025. Nothing is kept across restarts.
   mailpit:
-    image: axllent/mailpit:v1.27
+    image: axllent/mailpit:v1.31
     environment:
       MP_DISABLE_VERSION_CHECK: 'true'
     ports:
