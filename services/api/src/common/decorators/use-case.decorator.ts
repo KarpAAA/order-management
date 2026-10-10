@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 
+import { failSpan, inSpan } from '@common/tracing/trace-context';
 import { actorRef, type Actor } from '@shared/auth/actor';
 import { DomainError } from '@shared/errors/domain-error';
 import { runInUnitOfWork } from '@shared/events/unit-of-work';
@@ -27,7 +28,11 @@ interface Logged {
  * It also writes the line of the use case (ops/logging.md §3): which one, for whom, how long,
  * and how it ended: `ok`, the code of the `DomainError` business answered with, or `error`.
  * The error itself is logged once, by the entry that receives it (the exception filter, the
- * error handler of the broker): not here. Step 4.3 adds the trace span.
+ * error handler of the broker): not here.
+ *
+ * And it is the span of the use case in a trace (ops/observability.md §3): its name, the
+ * kind of its actor and the same outcome. A refusal of the business is an outcome, not an
+ * error of the span: only what is not a `DomainError` shows red.
  */
 export function UseCase(): ClassDecorator {
   return (target) => {
@@ -36,7 +41,24 @@ export function UseCase(): ClassDecorator {
     const prototype = (target as unknown as UseCaseClass).prototype;
     const execute = prototype.execute;
     if (!execute) throw new Error(`@UseCase() ${target.name} must declare execute()`);
-    prototype.execute = async function (this: Logged, ...args: never[]) {
+    prototype.execute = function (this: Logged, ...args: never[]) {
+      return inSpan(target.name, (span) => {
+        const actor = (args as readonly unknown[]).find(isActor);
+        if (actor) span.setAttribute('actor.kind', actor.kind);
+        return logged.call(this, args).then(
+          (result) => {
+            span.setAttribute('outcome', 'ok');
+            return result;
+          },
+          (err: unknown) => {
+            span.setAttribute('outcome', err instanceof DomainError ? err.code : 'error');
+            if (!(err instanceof DomainError)) failSpan(span, err);
+            throw err;
+          },
+        );
+      });
+    };
+    const logged = async function (this: Logged, args: never[]) {
       const log = this[LOG];
       const startedAt = performance.now();
       const line = (outcome: string) => ({

@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 import { RecordingLogger } from '@shared/logger/__test__/recording-logger';
 
+import { activeTraceId, recordingTracer } from '../tracing/__test__/recording-tracer';
+
 import { CorrelationContext } from './correlation-context';
 import { correlationIdFrom } from './correlation-header';
 import { JobScope } from './job-scope';
@@ -146,5 +148,24 @@ describe('JobScope (LOG-013)', () => {
     expect(logger.at('warn')).toMatchObject([
       { message: 'job run', fields: { outcome: 'failed', err: error } },
     ]);
+  });
+
+  it('TRC-030 runs a job as a span of the trace its producer put in the data', async () => {
+    const tracing = recordingTracer();
+    tracing.reset();
+    const traceId = '0af7651916cd43dd8448eb211c80319c';
+    const { jobs } = scope();
+
+    const seen = await jobs.run(job({ traceparent: `00-${traceId}-b7ad6b7169203331-01` }), () =>
+      Promise.resolve(activeTraceId()),
+    );
+    await jobs.run(job({}), () => Promise.resolve());
+
+    const [fromProducer, tick] = tracing.spans();
+    expect(seen).toBe(traceId);
+    expect(fromProducer?.spanContext().traceId).toBe(traceId);
+    // a scheduler tick has no trace: its span begins one
+    expect(tick?.parentSpanContext).toBeUndefined();
+    expect(tick?.spanContext().traceId).not.toBe(traceId);
   });
 });

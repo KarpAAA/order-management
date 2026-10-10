@@ -11,6 +11,11 @@ export interface OutgoingMail {
    * is what a reader's mail client, or a provider that looks, can recognize a repetition by.
    */
   messageId: string;
+  /**
+   * The trace the mail belongs to, as the row of its notification kept it: the send is a span
+   * of that trace. Opaque to the caller (docs/adr/0025).
+   */
+  traceContext?: Readonly<Record<string, string>>;
 }
 
 /**

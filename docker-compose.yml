@@ -240,7 +240,7 @@ services:
       context: .
       dockerfile: services/api/Dockerfile
     image: oms-api:local
-    command: ['node', 'dist/entrypoints/main.api.js']
+    command: ['node', '--require', './dist/instrumentation.js', 'dist/entrypoints/main.api.js']
     env_file: services/api/.env.example
     environment:
       &app-env # through the pooler; the migrate step above goes to postgres directly, as the owner
@@ -252,6 +252,8 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
       LOG_PRETTY: 'false'
+      # the Collector of the `lgtm` container; not a dependency: a service runs without it
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
     ports:
       - '3000:3000'
     depends_on: &app-deps
@@ -267,7 +269,7 @@ services:
   worker:
     profiles: [app]
     image: oms-api:local
-    command: ['node', 'dist/entrypoints/main.worker.js']
+    command: ['node', '--require', './dist/instrumentation.js', 'dist/entrypoints/main.worker.js']
     env_file: services/api/.env.example
     environment: *app-env
     depends_on:
@@ -306,6 +308,8 @@ services:
       PSP_BASE_URL: http://fake-psp:4010
       # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
       LOG_PRETTY: 'false'
+      # the Collector of the `lgtm` container; not a dependency: a service runs without it
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
     depends_on:
       migrate-payments:
         condition: service_completed_successfully
@@ -344,6 +348,8 @@ services:
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
       LOG_PRETTY: 'false'
+      # the Collector of the `lgtm` container; not a dependency: a service runs without it
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
     depends_on:
       migrate-inventory:
         condition: service_completed_successfully
@@ -381,6 +387,8 @@ services:
       SMTP_HOST: mailpit
       # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
       LOG_PRETTY: 'false'
+      # the Collector of the `lgtm` container; not a dependency: a service runs without it
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
     depends_on:
       migrate-notifications:
         condition: service_completed_successfully

@@ -34,7 +34,8 @@ services:
       - '${SYSTEM_PSP_PORT:-4110}:4010'
 
   # Not part of this stack: a profile nobody asks for keeps it from starting. The suite has
-  # three windows and Grafana is not one of them (ADR 0022), and nothing sends to it.
+  # three windows and Grafana is not one of them (ADR 0022), and nothing sends to it: every
+  # service below runs with no Collector named, so its tracing does not start (ADR 0025).
   lgtm:
     profiles: [observability]
 
@@ -67,11 +68,23 @@ services:
   api:
     ports: !override
       - '${SYSTEM_API_PORT:-3100}:3000'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
     depends_on:
       seed:
         condition: service_completed_successfully
 
+  worker:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
+
+  notifications:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
+
   inventory:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
     depends_on:
       seed-inventory:
         condition: service_completed_successfully
@@ -83,5 +96,6 @@ services:
   # ORDER_SAGA_CHARGE_TIMEOUT_MS of the api (150 s), as services/payments/.env.example asks.
   payments:
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
       PSP_TIMEOUT_MS: 10000
       PSP_CALL_BUDGET_MS: 12000

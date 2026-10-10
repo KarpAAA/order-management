@@ -20,6 +20,15 @@ export const envSchema = z.object({
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   /** Lines for a human (pino-pretty) instead of JSON: a terminal in development, never a deploy. */
   LOG_PRETTY: booleanString.default(false),
+  /**
+   * The OpenTelemetry Collector, OTLP over HTTP (docs/adr/0024, 0025). Unset or empty: no
+   * trace is sent. Read by `src/instrumentation.ts` before this schema is: it is here so
+   * that a value that is not a URL stops the boot instead of sending nowhere.
+   */
+  OTEL_EXPORTER_OTLP_ENDPOINT: z
+    .union([z.literal(''), z.url({ protocol: /^https?$/ })])
+    .optional()
+    .transform((v) => (v === '' ? undefined : v)),
 
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   /**

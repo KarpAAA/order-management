@@ -33,6 +33,9 @@ services:
 
   api:
     ports: !reset []
+    # this stack has no Collector: the tracing of the api does not start (ADR 0025)
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
     depends_on:
       seed:
         condition: service_completed_successfully

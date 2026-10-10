@@ -1,8 +1,40 @@
+import { context, SpanStatusCode, trace } from '@opentelemetry/api';
+import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks';
+import {
+  BasicTracerProvider,
+  InMemorySpanExporter,
+  SimpleSpanProcessor,
+} from '@opentelemetry/sdk-trace-base';
 import { describe, expect, it } from 'vitest';
+
+import type { MailConfig } from '@config/configuration';
 
 import { MailDeliveryError } from '../ports/mailer.port';
 
-import { toMailDeliveryError } from './smtp-mailer.adapter';
+import { SmtpMailerAdapter, toMailDeliveryError } from './smtp-mailer.adapter';
+
+describe('SmtpMailerAdapter: a send is a span (docs/adr/0025)', () => {
+  it('TRC-040 names the server and how it ended, never the address', async () => {
+    const exporter = new InMemorySpanExporter();
+    context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+    trace.setGlobalTracerProvider(
+      new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] }),
+    );
+    // nobody listens there: the connection is refused at once
+    const config = { host: '127.0.0.1', port: 1, secure: false, from: 'oms@example.test' };
+    const mailer = new SmtpMailerAdapter({ ...config, timeoutMs: 2000 } as MailConfig);
+
+    await expect(
+      mailer.send({ to: 'user@example.test', subject: 's', text: 't', messageId: '<m@oms>' }),
+    ).rejects.toBeInstanceOf(MailDeliveryError);
+
+    const [span] = exporter.getFinishedSpans();
+    expect(span?.name).toBe('smtp send');
+    expect(span?.attributes).toEqual({ 'server.address': '127.0.0.1' });
+    expect(span?.status.code).toBe(SpanStatusCode.ERROR);
+    expect(JSON.stringify(span?.attributes)).not.toContain('user@example.test');
+  });
+});
 
 /** An error as nodemailer throws it for an SMTP reply. */
 const reply = (responseCode: number, message: string): Error =>

@@ -76,6 +76,7 @@ export class DispatchNotificationService {
         subject: notification.subject,
         text: notification.body,
         messageId: `<${notification.id}@notifications.oms>`,
+        ...(notification.traceContext ? { traceContext: notification.traceContext } : {}),
       });
     } catch (err: unknown) {
       // the server answered, and the answer was no; anything else may pass

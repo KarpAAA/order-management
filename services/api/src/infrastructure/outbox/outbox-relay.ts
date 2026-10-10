@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 
 import { CorrelationContext } from '@common/messaging/correlation-context';
 import { correlationIdFrom } from '@common/messaging/correlation-header';
+import { runInTraceContext, traceCarrierFrom } from '@common/tracing/trace-context';
 import { outboxConfig, type OutboxConfig } from '@config/configuration';
 import { PrismaService } from '@infra/database/prisma.service';
 import { Clock } from '@shared/domain/clock';
@@ -49,7 +50,8 @@ const correlationOf = (payload: unknown): string => {
  * The unscoped client, on purpose: the rows belong to no tenant (docs/adr/0014).
  *
  * The relay has no chain of its own: each row is published under the correlation id of its
- * message, so the line of a publish is found with the request that caused it.
+ * message, so the line of a publish is found with the request that caused it. The same goes
+ * for its trace: a row is published in the trace it was written in (docs/adr/0025).
  */
 @Injectable()
 export class OutboxRelay {
@@ -75,7 +77,8 @@ export class OutboxRelay {
         if (!lock?.locked) return { skipped: true, published: 0, more: false };
 
         const batch = await tx.$queryRaw<OutboxRecord[]>`
-          SELECT id, exchange, routing_key AS "routingKey", payload
+          SELECT id, exchange, routing_key AS "routingKey", payload,
+                 trace_context AS "traceContext"
             FROM outbox
            WHERE published_at IS NULL
            ORDER BY id
@@ -85,8 +88,12 @@ export class OutboxRelay {
         const published: string[] = [];
         let failure: unknown;
         for (const record of batch) {
-          failure = await this.correlation.run(correlationOf(record.payload), () =>
-            this.publish(record),
+          // read back from JSON: whatever is not a carrier is no trace
+          const traceContext = traceCarrierFrom(record.traceContext);
+          failure = await runInTraceContext(traceContext, () =>
+            this.correlation.run(correlationOf(record.payload), () =>
+              this.publish({ ...record, traceContext }),
+            ),
           );
           if (failure !== undefined) break;
           published.push(record.id);

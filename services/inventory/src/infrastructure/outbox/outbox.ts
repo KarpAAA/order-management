@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { TransactionHost } from '@nestjs-cls/transactional';
 
 import type { DbTransactionAdapter } from '@infra/database/transactional.adapter';
+import { captureTraceContext } from '@infra/tracing/trace-context';
 
 /** What every contract of `@oms/contracts` has; the rest of the envelope is stored as it is. */
 export interface OutboxEnvelope {
@@ -24,12 +25,16 @@ export interface OutboxEntry {
  *
  * The id of the row is the `messageId` of the envelope, chosen here and never again: a message
  * the relay publishes twice is the same message to whoever reads it.
+ *
+ * The row keeps the trace it was written in (docs/adr/0025): the relay publishes it from a
+ * timer, and the message continues the trace of the command that caused it.
  */
 @Injectable()
 export class Outbox {
   constructor(private readonly txHost: TransactionHost<DbTransactionAdapter>) {}
 
   async append({ exchange, message }: OutboxEntry): Promise<void> {
+    const traceContext = captureTraceContext();
     if (!this.txHost.isTransactionActive()) {
       // outside a transaction the row would be one more write next to the change, not part of it
       throw new Error(`Outbox.append(${message.name}) must be called inside a transaction`);
@@ -41,6 +46,7 @@ export class Outbox {
         routingKey: message.name,
         payload: { ...message },
         occurredAt: new Date(message.occurredAt),
+        ...(traceContext ? { traceContext: { ...traceContext } } : {}),
       },
     });
   }
