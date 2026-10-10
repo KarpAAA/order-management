@@ -1,6 +1,7 @@
 import { ValidationPipe, VersioningType } from '@nestjs/common';
 import helmet from 'helmet';
 
+import { CORRELATION_HEADER } from '@common/messaging/correlation-header';
 import { setupSwagger } from '@common/swagger/setup-swagger';
 import { validationExceptionFactory } from '@common/validation/validation-exception.factory';
 import { appConfig, type AppConfig } from '@config/configuration';
@@ -21,7 +22,8 @@ export function configureApi(app: NestExpressApplication): void {
   const config = app.get<AppConfig>(appConfig.KEY);
 
   app.use(helmet({ contentSecurityPolicy: false })); // JSON API; CSP would only break Swagger UI
-  app.enableCors({ origin: config.corsOrigins });
+  // a browser client may read the id its request was given (docs/adr/0023)
+  app.enableCors({ origin: config.corsOrigins, exposedHeaders: [CORRELATION_HEADER] });
   // responses carry per-user data: no shared cache may keep them (http/api-conventions.md §6)
   app.use((_req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Cache-Control', 'no-store');

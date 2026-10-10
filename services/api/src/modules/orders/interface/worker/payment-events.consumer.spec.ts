@@ -1,16 +1,16 @@
-import { Logger } from '@nestjs/common';
 import {
   ChargePaymentV1,
   PaymentCancelledV1,
   PaymentFailedV1,
   PaymentSucceededV1,
 } from '@oms/contracts';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { CorrelationContext } from '@common/messaging/correlation-context';
 import type { TenantContext } from '@common/tenancy/tenant-context';
 import { ConcurrencyError, InvalidStateError, NotFoundError } from '@shared/errors/domain-error';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
+import { silentLogger } from '@shared/logger/silent-logger';
 import type { Inbox } from '@shared/messaging/inbox';
 
 import { PaymentEventsConsumer } from './payment-events.consumer';
@@ -72,9 +72,14 @@ function consumerWith({
   const continued: string[] = [];
   const inbox = new MemoryInbox();
   const consumer = new PaymentEventsConsumer(
-    { runInWorkspace } as unknown as TenantContext,
-    { continue: (id: string) => continued.push(id) } as unknown as CorrelationContext,
-    inbox,
+    {
+      tenant: { runInWorkspace } as unknown as TenantContext,
+      correlation: {
+        continue: (id: string) => continued.push(id),
+      } as unknown as CorrelationContext,
+      inbox,
+      logger: silentLogger,
+    },
     { execute: complete } as CompleteOrderPaymentService,
     { execute: fail } as FailOrderPaymentService,
   );
@@ -82,14 +87,6 @@ function consumerWith({
 }
 
 describe('PaymentEventsConsumer', () => {
-  beforeEach(() => {
-    vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it('PAY-004 completes the payment of a succeeded attempt, as the consumer system actor', async () => {
     const { consumer, complete, fail } = consumerWith();
 

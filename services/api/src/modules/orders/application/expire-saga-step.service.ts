@@ -1,4 +1,4 @@
-import { Inject, Logger } from '@nestjs/common';
+import { Inject } from '@nestjs/common';
 import { Transactional } from '@nestjs-cls/transactional';
 
 import { UseCase } from '@common/decorators/use-case.decorator';
@@ -6,6 +6,7 @@ import { actorRef } from '@shared/auth/actor';
 import type { Actor } from '@shared/auth/actor';
 import { Clock } from '@shared/domain/clock';
 import { EVENT_PUBLISHER, type EventPublisher } from '@shared/events/event-publisher';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { OrderEventType } from '../domain/order-status';
 import { ORDERS_REPOSITORY, type OrdersRepositoryPort } from '../ports/orders-repository.port';
@@ -32,7 +33,7 @@ export const INVENTORY_UNAVAILABLE = 'inventory_unavailable';
  */
 @UseCase()
 export class ExpireSagaStepService {
-  private readonly logger = new Logger(ExpireSagaStepService.name);
+  private readonly log: Logger;
 
   constructor(
     @Inject(ORDERS_REPOSITORY) private readonly orders: OrdersRepositoryPort,
@@ -40,7 +41,10 @@ export class ExpireSagaStepService {
     private readonly policy: OrdersPolicy,
     private readonly clock: Clock,
     @Inject(EVENT_PUBLISHER) private readonly events: EventPublisher,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: ExpireSagaStepService.name });
+  }
 
   @Transactional()
   async execute(cmd: ExpireSagaStepCommand, actor: Actor): Promise<void> {
@@ -69,14 +73,16 @@ export class ExpireSagaStepService {
         return;
       }
       case 'repeat-cancel-payment':
-        this.logger.error(
-          `order ${cmd.orderId}, attempt ${cmd.attempt}: payments has not said how the attempt ended; asked again`,
+        this.log.error(
+          { orderId: cmd.orderId, attempt: cmd.attempt },
+          'payments has not said how the attempt ended, asked again',
         );
         await this.sagas.cancelPayment(saga);
         return;
       case 'repeat-release-stock':
-        this.logger.error(
-          `order ${cmd.orderId}, attempt ${cmd.attempt}: inventory has not confirmed the release; asked again`,
+        this.log.error(
+          { orderId: cmd.orderId, attempt: cmd.attempt },
+          'inventory has not confirmed the release, asked again',
         );
         await this.sagas.releaseStock(saga);
         return;

@@ -6,34 +6,41 @@ import { ClsModule } from 'nestjs-cls';
 
 import { AppExceptionFilter } from '@common/filters/app-exception.filter';
 import { AuthGuard } from '@common/guards/auth.guard';
+import { httpEntry } from '@common/http/http-entry';
 import { LocationInterceptor } from '@common/interceptors/location.interceptor';
 import { ConfigModule } from '@config/config.module';
 import { Clock, SystemClock } from '@shared/domain/clock';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { DatabaseModule } from './database/database.module';
 import { createTransactionalAdapter } from './database/transactional.adapter';
 import { EventsModule } from './events/events.module';
 import { IdempotencyModule } from './idempotency/idempotency.module';
 import { InboxModule } from './inbox/inbox.module';
+import { LoggerModule } from './logger/logger.module';
 import { MessagingModule } from './messaging/messaging.module';
 import { OutboxModule } from './outbox/outbox.module';
 import { QueuesModule } from './queues/queues.module';
 import { ReadRoutingModule } from './read-routing/read-routing.module';
 
 /**
- * The frame every entrypoint imports: config, CLS + transactions, database, events, queue
- * and broker connections, the write side of the outbox, the inbox, the idempotency keys,
- * and the global HTTP pipeline (filter, auth guard, Location header, read routing).
- * The HTTP pieces are inert in the worker, which serves no HTTP.
+ * The frame every entrypoint imports: config, the logger, CLS + transactions, database,
+ * events, queue and broker connections, the write side of the outbox, the inbox, the
+ * idempotency keys, and the global HTTP pipeline (the entry of a request, filter, auth guard,
+ * Location header, read routing). The HTTP pieces are inert in the worker, which serves no HTTP.
  */
 @Global()
 @Module({
   imports: [
     ConfigModule,
     DatabaseModule,
-    ClsModule.forRoot({
+    LoggerModule,
+    ClsModule.forRootAsync({
       global: true,
-      middleware: { mount: true },
+      imports: [LoggerModule],
+      inject: [LOGGER],
+      // the scope of a request opens with its correlation id and its line in the log
+      useFactory: (logger: Logger) => ({ middleware: { mount: true, setup: httpEntry(logger) } }),
       plugins: [
         new ClsPluginTransactional({
           imports: [DatabaseModule],

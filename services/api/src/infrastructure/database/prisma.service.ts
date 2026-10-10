@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { PrismaPg } from '@prisma/adapter-pg';
 
 import { databaseConfig, type DatabaseConfig } from '@config/configuration';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { PrismaClient } from './generated/prisma/client';
 
@@ -17,7 +18,7 @@ import type { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
  */
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
-  constructor(@Inject(databaseConfig.KEY) config: DatabaseConfig) {
+  constructor(@Inject(databaseConfig.KEY) config: DatabaseConfig, @Inject(LOGGER) logger: Logger) {
     super({
       // No `statementNameGenerator`: the adapter then sends unnamed statements only, which is
       // what PgBouncer in transaction mode needs (docs/adr/0008-pgbouncer-transaction-mode.md).
@@ -29,9 +30,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     // Subscribed here, not in onModuleInit: the tenant-scoped client ($extends) inherits this
     // class's methods, so Nest runs onModuleInit on it too — and extended clients have no $on.
     if (config.logQueries) {
-      const logger = new Logger('Prisma');
+      // the statement with its placeholders: the parameters are never logged
+      const log = logger.child({ context: 'Prisma' });
       this.onQuery((e) => {
-        logger.debug(`${String(e.duration)} ms ${e.query}`);
+        log.debug({ durationMs: e.duration, query: e.query }, 'query');
       });
     }
   }

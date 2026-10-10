@@ -1,9 +1,9 @@
-import { Logger } from '@nestjs/common';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { CacheConfig } from '@config/configuration';
 import type { ReadSource } from '@infra/database/read-source';
 import type { RedisService } from '@infra/redis/redis.service';
+import { silentLogger } from '@shared/logger/silent-logger';
 
 import { RedisCache, withJitter } from './redis-cache';
 
@@ -37,7 +37,7 @@ function setup(opts: { down?: boolean } = {}) {
   } as unknown as RedisService;
   const calls: string[] = [];
   const source = { requirePrimary: () => calls.push('primary') } as unknown as ReadSource;
-  const cache = new RedisCache(redis, source, config);
+  const cache = new RedisCache(redis, source, config, silentLogger);
   const loader = (value: unknown) =>
     vi.fn(() => {
       calls.push('load');
@@ -51,10 +51,6 @@ const entry = <T>(load: () => Promise<T>, key = 'product:p-1') => ({
   key,
   ttlSeconds: 300,
   load,
-});
-
-beforeAll(() => {
-  vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
 });
 
 describe('RedisCache.getOrLoad (CCH-001, CCH-004)', () => {

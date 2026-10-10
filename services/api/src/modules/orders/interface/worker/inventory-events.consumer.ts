@@ -1,5 +1,5 @@
 import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import {
   exchanges,
   parseMessage,
@@ -8,17 +8,15 @@ import {
   StockReservedV1,
 } from '@oms/contracts';
 
-import { CorrelationContext } from '@common/messaging/correlation-context';
-import { TenantContext } from '@common/tenancy/tenant-context';
 import { systemActor } from '@shared/auth/actor';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
-import { INBOX, type Inbox } from '@shared/messaging/inbox';
 
 import { ConfirmStockReleaseService } from '../../application/confirm-stock-release.service';
 import { ConfirmStockReservationService } from '../../application/confirm-stock-reservation.service';
 import { RejectStockReservationService } from '../../application/reject-stock-reservation.service';
+import { ConsumerScope } from '../../infrastructure/consumer-scope';
 
-import { handleOnce, type MessageScope } from './handle-once';
+import { handleOnce } from './handle-once';
 
 import type { AnyMessage } from '@oms/contracts';
 
@@ -35,12 +33,8 @@ const INVENTORY_EVENTS_QUEUE = 'api.inventory-events';
  */
 @Injectable()
 export class InventoryEventsConsumer {
-  private readonly logger = new Logger(InventoryEventsConsumer.name);
-
   constructor(
-    private readonly tenant: TenantContext,
-    private readonly correlation: CorrelationContext,
-    @Inject(INBOX) private readonly inbox: Inbox,
+    private readonly scope: ConsumerScope,
     private readonly confirmReservation: ConfirmStockReservationService,
     private readonly rejectReservation: RejectStockReservationService,
     private readonly confirmRelease: ConfirmStockReleaseService,
@@ -59,7 +53,7 @@ export class InventoryEventsConsumer {
       throw new UnprocessableMessageError(`${parsed.reason}: ${parsed.detail}`);
     }
     const { message } = parsed;
-    await handleOnce(this.scope(), INVENTORY_EVENTS_QUEUE, message, () => this.advance(message));
+    await handleOnce(this.scope, INVENTORY_EVENTS_QUEUE, message, () => this.advance(message));
   }
 
   private async advance(message: AnyMessage): Promise<void> {
@@ -82,14 +76,5 @@ export class InventoryEventsConsumer {
       default:
         throw new UnprocessableMessageError(`${message.name} is not an event of this queue`);
     }
-  }
-
-  private scope(): MessageScope {
-    return {
-      tenant: this.tenant,
-      correlation: this.correlation,
-      inbox: this.inbox,
-      logger: this.logger,
-    };
   }
 }

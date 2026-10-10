@@ -7,6 +7,8 @@
 //  3. @oms/contracts (packages/contracts) is an element of its own: only what talks to the
 //     broker may import it: infrastructure/, a module's adapters and its consumers.
 //  4. @RabbitSubscribe is an entry decorator like @Processor: only in a *.consumer.ts.
+//  5. `Logger` and `ConsoleLogger` of @nestjs/common are not imported: a class injects LOGGER.
+//     The test helpers quiet Nest itself with a ConsoleLogger.
 // `.mjs`: a Nest package is CommonJS, and this config uses ESM imports and import.meta.
 // Requires: eslint@9, typescript-eslint, eslint-plugin-import, eslint-import-resolver-typescript,
 //           eslint-plugin-boundaries@5 (the element-types API below), eslint-config-prettier
@@ -190,6 +192,15 @@ export default tseslint.config(
             {
               group: ['../../modules/**', '../../../modules/**'],
               message: 'Cross-module imports use the @modules alias.',
+            },
+          ],
+          // project: addition 5
+          paths: [
+            {
+              name: '@nestjs/common',
+              importNames: ['Logger', 'ConsoleLogger'],
+              message:
+                'Inject LOGGER (@shared/logger/logger): one logger, structured (ops/logging.md §1).',
             },
           ],
         },

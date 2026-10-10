@@ -1,7 +1,7 @@
-import { Logger } from '@nestjs/common';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { OrderEventsConfig } from '@config/configuration';
+import { RecordingLogger } from '@shared/logger/__test__/recording-logger';
 
 import { MaintainOrderEventPartitionsJob } from './maintain-order-event-partitions.job';
 
@@ -17,27 +17,21 @@ const config = (overrides: Partial<OrderEventsConfig> = {}): OrderEventsConfig =
 function jobWith(
   execute: MaintainOrderEventPartitionsService['execute'],
   overrides: Partial<OrderEventsConfig> = {},
-): MaintainOrderEventPartitionsJob {
-  return new MaintainOrderEventPartitionsJob(
+) {
+  const logger = new RecordingLogger();
+  const job = new MaintainOrderEventPartitionsJob(
     { execute } as MaintainOrderEventPartitionsService,
     config(overrides),
+    logger,
   );
+  return { job, logger };
 }
 
 describe('MaintainOrderEventPartitionsJob.run (transport/cron.md)', () => {
-  beforeEach(() => {
-    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-    vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it('calls the use case with the configured window, as its own system actor', async () => {
     const execute = vi.fn().mockResolvedValue({ created: 1, dropped: 0 });
 
-    await jobWith(execute).run();
+    await jobWith(execute).job.run();
 
     expect(execute).toHaveBeenCalledWith(
       { monthsAhead: 3, retentionMonths: 6 },
@@ -45,33 +39,41 @@ describe('MaintainOrderEventPartitionsJob.run (transport/cron.md)', () => {
     );
   });
 
-  it('logs the start and the outcome with the counts', async () => {
-    const log = vi.spyOn(Logger.prototype, 'log');
+  it('logs the outcome with the counts, as fields', async () => {
+    const { job, logger } = jobWith(vi.fn().mockResolvedValue({ created: 2, dropped: 1 }));
 
-    await jobWith(vi.fn().mockResolvedValue({ created: 2, dropped: 1 })).run();
+    await job.run();
 
-    expect(log).toHaveBeenCalledWith('maintain-order-event-partitions started');
-    expect(log).toHaveBeenCalledWith(
-      expect.stringMatching(
-        /^maintain-order-event-partitions finished: created=2 dropped=1 durationMs=\d+$/,
-      ),
-    );
+    expect(logger.at('info')).toEqual([
+      {
+        level: 'info',
+        message: 'partitions maintained',
+        fields: {
+          context: 'MaintainOrderEventPartitionsJob',
+          job: 'maintain-order-event-partitions',
+          created: 2,
+          dropped: 1,
+        },
+      },
+    ]);
   });
 
-  it('does nothing when it is switched off', async () => {
+  it('does nothing when it is switched off, and says so', async () => {
     const execute = vi.fn();
+    const { job, logger } = jobWith(execute, { partitionsEnabled: false });
 
-    await jobWith(execute, { partitionsEnabled: false }).run();
+    await job.run();
 
     expect(execute).not.toHaveBeenCalled();
+    expect(logger.at('warn')).toHaveLength(1);
   });
 
-  it('logs a failure and rethrows it: the queue retries, nothing is swallowed', async () => {
+  it('lets a failure out: the queue retries, and the run is logged by the scope of the job', async () => {
     const error = new Error('no partition for 2026-11');
-    const alert = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    const { job, logger } = jobWith(vi.fn().mockRejectedValue(error));
 
-    await expect(jobWith(vi.fn().mockRejectedValue(error)).run()).rejects.toBe(error);
+    await expect(job.run()).rejects.toBe(error);
 
-    expect(alert).toHaveBeenCalledWith(expect.stringContaining('no partition for 2026-11'));
+    expect(logger.lines).toEqual([]);
   });
 });

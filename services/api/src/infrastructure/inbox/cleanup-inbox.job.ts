@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { inboxConfig, type InboxConfig } from '@config/configuration';
 import { Clock } from '@shared/domain/clock';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { InboxCleanup } from './inbox-cleanup';
 
@@ -21,31 +22,21 @@ export class CleanupInboxJob {
   // 03:45 UTC every day: idempotent, and a missed run only leaves the rows one more day
   static readonly SCHEDULE = '45 3 * * *';
 
-  private readonly logger = new Logger(CleanupInboxJob.name);
+  private readonly log: Logger;
 
   constructor(
     private readonly cleanup: InboxCleanup,
     private readonly clock: Clock,
     @Inject(inboxConfig.KEY) private readonly config: InboxConfig,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: CleanupInboxJob.name });
+  }
 
   async run(): Promise<void> {
-    const job = CleanupInboxJob.NAME;
-    const startedAt = performance.now();
-    this.logger.log(`${job} started`);
-    try {
-      const cutoff = new Date(this.clock.now().getTime() - this.config.retentionDays * DAY_MS);
-      const deleted = await this.cleanup.deleteProcessedBefore(cutoff);
-      this.logger.log(
-        `${job} finished: deleted=${String(deleted)} ` +
-          `durationMs=${String(Math.round(performance.now() - startedAt))}`,
-      );
-    } catch (err: unknown) {
-      this.logger.error(
-        `${job} failed after ${String(Math.round(performance.now() - startedAt))} ms: ` +
-          (err instanceof Error ? err.message : String(err)),
-      );
-      throw err; // the queue retries; the consumer alerts on a dead job
-    }
+    const cutoff = new Date(this.clock.now().getTime() - this.config.retentionDays * DAY_MS);
+    const deleted = await this.cleanup.deleteProcessedBefore(cutoff);
+    // the line of the run (how long, whether it failed) is written by JobScope
+    this.log.info({ job: CleanupInboxJob.NAME, deleted }, 'cleanup done');
   }
 }

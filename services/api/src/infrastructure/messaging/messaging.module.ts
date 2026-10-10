@@ -3,6 +3,7 @@ import { Global, Module } from '@nestjs/common';
 import { DiscoveryModule } from '@nestjs/core';
 
 import { rabbitConfig } from '@config/configuration';
+import { LOGGER } from '@shared/logger/logger';
 
 import { connectRabbit } from './rabbit-connection';
 import { RabbitSubscribers } from './rabbit-subscribers';
@@ -16,7 +17,7 @@ import { RabbitSubscribers } from './rabbit-subscribers';
 @Module({
   imports: [DiscoveryModule],
   providers: [
-    { provide: AmqpConnection, inject: [rabbitConfig.KEY], useFactory: connectRabbit },
+    { provide: AmqpConnection, inject: [rabbitConfig.KEY, LOGGER], useFactory: connectRabbit },
     RabbitSubscribers,
   ],
   exports: [AmqpConnection],

@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { orderEventsConfig, type OrderEventsConfig } from '@config/configuration';
 import { systemActor } from '@shared/auth/actor';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { MaintainOrderEventPartitionsService } from '../../application/maintain-order-event-partitions.service';
 
@@ -21,37 +22,28 @@ export class MaintainOrderEventPartitionsJob {
   // milliseconds; daily means one failed run costs nothing with months of partitions ahead
   static readonly SCHEDULE = '0 3 * * *';
 
-  private readonly logger = new Logger(MaintainOrderEventPartitionsJob.name);
+  private readonly log: Logger;
   private readonly actor = systemActor(`job:${MaintainOrderEventPartitionsJob.NAME}`);
 
   constructor(
     private readonly maintain: MaintainOrderEventPartitionsService,
     @Inject(orderEventsConfig.KEY) private readonly config: OrderEventsConfig,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: MaintainOrderEventPartitionsJob.name });
+  }
 
   async run(): Promise<void> {
     const job = MaintainOrderEventPartitionsJob.NAME;
     if (!this.config.partitionsEnabled) {
-      this.logger.warn(`${job} skipped: ORDER_EVENTS_PARTITIONS_ENABLED=false`);
+      this.log.warn({ job }, 'job skipped: ORDER_EVENTS_PARTITIONS_ENABLED is off');
       return;
     }
-    const startedAt = performance.now();
-    this.logger.log(`${job} started`);
-    try {
-      const { created, dropped } = await this.maintain.execute(
-        { monthsAhead: this.config.partitionsAhead, retentionMonths: this.config.retentionMonths },
-        this.actor,
-      );
-      this.logger.log(
-        `${job} finished: created=${String(created)} dropped=${String(dropped)} ` +
-          `durationMs=${String(Math.round(performance.now() - startedAt))}`,
-      );
-    } catch (err: unknown) {
-      this.logger.error(
-        `${job} failed after ${String(Math.round(performance.now() - startedAt))} ms: ` +
-          (err instanceof Error ? err.message : String(err)),
-      );
-      throw err; // the queue retries; the consumer alerts on a dead job
-    }
+    const { created, dropped } = await this.maintain.execute(
+      { monthsAhead: this.config.partitionsAhead, retentionMonths: this.config.retentionMonths },
+      this.actor,
+    );
+    // the line of the run (how long, whether it failed) is written by JobScope
+    this.log.info({ job, created, dropped }, 'partitions maintained');
   }
 }

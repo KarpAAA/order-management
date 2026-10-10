@@ -13,6 +13,7 @@ import { Client, Pool } from 'pg';
 
 import { RedisCache, type StampedeProtection } from '../../src/infrastructure/cache/redis-cache';
 import { RedisService } from '../../src/infrastructure/redis/redis.service';
+import { silentLogger } from '../../src/shared/logger/silent-logger';
 
 import type { ReadSource } from '../../src/infrastructure/database/read-source';
 
@@ -80,7 +81,7 @@ async function fromDatabase(
 const source = { requirePrimary: () => undefined } as unknown as ReadSource;
 
 const newCache = (redis: RedisService): RedisCache =>
-  new RedisCache(redis, source, { prefix: PREFIX, catalogTtlSeconds: TTL_SECONDS });
+  new RedisCache(redis, source, { prefix: PREFIX, catalogTtlSeconds: TTL_SECONDS }, silentLogger);
 
 async function latency(
   app: Client,

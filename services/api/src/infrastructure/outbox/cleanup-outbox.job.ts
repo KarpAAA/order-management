@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { outboxConfig, type OutboxConfig } from '@config/configuration';
 import { Clock } from '@shared/domain/clock';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { OutboxCleanup } from './outbox-cleanup';
 
@@ -21,31 +22,21 @@ export class CleanupOutboxJob {
   // 03:30 UTC every day: idempotent, and a missed run only leaves the rows one more day
   static readonly SCHEDULE = '30 3 * * *';
 
-  private readonly logger = new Logger(CleanupOutboxJob.name);
+  private readonly log: Logger;
 
   constructor(
     private readonly cleanup: OutboxCleanup,
     private readonly clock: Clock,
     @Inject(outboxConfig.KEY) private readonly config: OutboxConfig,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: CleanupOutboxJob.name });
+  }
 
   async run(): Promise<void> {
-    const job = CleanupOutboxJob.NAME;
-    const startedAt = performance.now();
-    this.logger.log(`${job} started`);
-    try {
-      const cutoff = new Date(this.clock.now().getTime() - this.config.retentionDays * DAY_MS);
-      const deleted = await this.cleanup.deletePublishedBefore(cutoff);
-      this.logger.log(
-        `${job} finished: deleted=${String(deleted)} ` +
-          `durationMs=${String(Math.round(performance.now() - startedAt))}`,
-      );
-    } catch (err: unknown) {
-      this.logger.error(
-        `${job} failed after ${String(Math.round(performance.now() - startedAt))} ms: ` +
-          (err instanceof Error ? err.message : String(err)),
-      );
-      throw err; // the queue retries; the consumer alerts on a dead job
-    }
+    const cutoff = new Date(this.clock.now().getTime() - this.config.retentionDays * DAY_MS);
+    const deleted = await this.cleanup.deletePublishedBefore(cutoff);
+    // the line of the run (how long, whether it failed) is written by JobScope
+    this.log.info({ job: CleanupOutboxJob.NAME, deleted }, 'cleanup done');
   }
 }

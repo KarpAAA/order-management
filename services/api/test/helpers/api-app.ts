@@ -7,10 +7,14 @@ import request from 'supertest';
 import { v7 as uuidv7 } from 'uuid';
 
 import { PrismaService } from '@infra/database/prisma.service';
+import { LOG_DESTINATION } from '@infra/logger/logger.module';
 
 import { ApiModule } from '../../src/entrypoints/api.module';
 import { configureApi } from '../../src/entrypoints/configure-api';
 
+import { captureLogs } from './log-capture';
+
+import type { LogLine } from './log-capture';
 import type { Type } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
@@ -30,14 +34,21 @@ export interface ApiApp {
   get<T>(token: Type<T> | string | symbol): T;
   /** Every route the app registered, as `GET /v1/workspaces/:workspaceId/orders`. */
   routes(): string[];
+  /** Every line the app has logged so far, oldest first. */
+  logs(): LogLine[];
   close(): Promise<void>;
 }
 
 const TRANSACTION_FRAME = /^\s*(BEGIN|COMMIT|ROLLBACK|SELECT set_config\()/i;
 
 export async function createApiApp(): Promise<ApiApp> {
+  const logs = captureLogs();
   const moduleRef = await Test.createTestingModule({ imports: [ApiModule] })
-    // quiet, not blind: every 4xx is a warn by design, and the suite provokes hundreds of them
+    // the log of the app goes to memory: every 4xx is a warn by design, and the suite
+    // provokes hundreds of them
+    .overrideProvider(LOG_DESTINATION)
+    .useValue(logs.destination)
+    // what Nest itself says, which the entrypoint hands to the same logger
     .setLogger(new ConsoleLogger({ logLevels: ['fatal', 'error'] }))
     .compile();
   const app = moduleRef.createNestApplication<NestExpressApplication>({ bodyParser: false });
@@ -58,6 +69,7 @@ export async function createApiApp(): Promise<ApiApp> {
     },
     get: (token) => app.get(token),
     routes: () => registeredRoutes(app),
+    logs: () => logs.lines(),
     close: () => app.close(),
   };
 }

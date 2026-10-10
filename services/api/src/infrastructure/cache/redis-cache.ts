@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { cacheConfig, type CacheConfig } from '@config/configuration';
 import { ReadSource } from '@infra/database/read-source';
 import { RedisService } from '@infra/redis/redis.service';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 /**
  * What stands between an empty key and the database when many callers miss at once:
@@ -63,7 +64,7 @@ const RELEASE_LOCK = `if redis.call('get', KEYS[1]) == ARGV[1] then return redis
  */
 @Injectable()
 export class RedisCache {
-  private readonly logger = new Logger(RedisCache.name);
+  private readonly log: Logger;
   private readonly inFlight = new Map<string, Promise<unknown>>();
   private readonly counters: CacheStats = { hits: 0, misses: 0, loads: 0, lockWaits: 0, errors: 0 };
 
@@ -71,7 +72,10 @@ export class RedisCache {
     private readonly redis: RedisService,
     private readonly source: ReadSource,
     @Inject(cacheConfig.KEY) private readonly config: CacheConfig,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: RedisCache.name });
+  }
 
   async getOrLoad<T>(entry: CacheEntry<T>): Promise<T> {
     if (entry.ttlSeconds <= 0) return entry.load();
@@ -201,7 +205,7 @@ export class RedisCache {
 
   private failed(what: string, error: unknown): void {
     this.counters.errors += 1;
-    this.logger.warn(`Cache ${what} failed, serving from the database: ${String(error)}`);
+    this.log.warn({ operation: what, err: error }, 'cache failed, serving from the database');
   }
 }
 

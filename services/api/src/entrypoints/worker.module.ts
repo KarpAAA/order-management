@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 
 import { IdempotencyWorkerModule } from '@infra/idempotency/idempotency.worker.module';
 import { InboxWorkerModule } from '@infra/inbox/inbox.worker.module';
+import { ProcessNameModule } from '@infra/logger/logger.module';
 import { OutboxWorkerModule } from '@infra/outbox/outbox.worker.module';
 import { SharedModule } from '@infra/shared.module';
 
@@ -13,6 +14,7 @@ import { OrdersWorkerModule } from '@modules/orders';
  */
 @Module({
   imports: [
+    ProcessNameModule.is('worker'),
     SharedModule,
     OrdersWorkerModule,
     OutboxWorkerModule,

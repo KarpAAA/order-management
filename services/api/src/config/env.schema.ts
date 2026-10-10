@@ -16,6 +16,11 @@ export const envSchema = z.object({
         .filter(Boolean),
     ),
 
+  /** The lowest level that is written (ops/logging.md §2). */
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  /** Lines for a human (pino-pretty) instead of JSON: a terminal in development, never a deploy. */
+  LOG_PRETTY: booleanString.default(false),
+
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   /**
    * Connections one process keeps open. Behind PgBouncer they are client connections: cheap,
@@ -166,6 +171,10 @@ export function validateEnv(raw: Record<string, unknown>): Env {
   // Boot-time safety checks (ops/config-env.md §3).
   if (env.NODE_ENV === 'production' && (env.SWAGGER_ENABLED || env.BULL_BOARD_ENABLED)) {
     throw new Error('Invalid environment: Swagger and bull-board must be disabled in production');
+  }
+  if (env.NODE_ENV === 'production' && env.LOG_PRETTY) {
+    // what collects the logs reads JSON, and pino-pretty is not in the image
+    throw new Error('Invalid environment: LOG_PRETTY must be off in production');
   }
   return env;
 }

@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RedisCache, type StampedeProtection } from '@infra/cache/redis-cache';
 import type { ReadSource } from '@infra/database/read-source';
 import { RedisService } from '@infra/redis/redis.service';
+import { silentLogger } from '@shared/logger/silent-logger';
 
 const PROCESSES = 4;
 const CALLERS = 200;
@@ -30,10 +31,9 @@ afterAll(() => {
 const processes = (): [RedisCache, ...RedisCache[]] =>
   connections
     .slice(0, PROCESSES)
-    .map((redis) => new RedisCache(redis, source, { prefix, catalogTtlSeconds: 300 })) as [
-    RedisCache,
-    ...RedisCache[],
-  ];
+    .map(
+      (redis) => new RedisCache(redis, source, { prefix, catalogTtlSeconds: 300 }, silentLogger),
+    ) as [RedisCache, ...RedisCache[]];
 
 /** 200 callers spread over 4 processes read one empty key; returns how many loads ran. */
 async function stampede(key: string, protection: StampedeProtection): Promise<number> {
