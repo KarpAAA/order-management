@@ -140,7 +140,13 @@ async function createCharge(req: IncomingMessage, res: ServerResponse): Promise<
     createdAt: new Date().toISOString(),
   };
   chargesByKey.set(key, charge);
-  log(`charge ${charge.id} ${charge.status} key=${key} amount=${amountMinor} ${currency}`);
+  log('charge stored', {
+    chargeId: charge.id,
+    status: charge.status,
+    idempotencyKey: key,
+    amountMinor,
+    currency,
+  });
   answer(res, 201, publicView(charge));
 }
 
@@ -160,7 +166,7 @@ async function voidCharge(id: string, res: ServerResponse): Promise<void> {
   if (failsForNow(res)) return;
   if (charge.status === 'succeeded' && charge.voidedAt === undefined) {
     charge.voidedAt = new Date().toISOString();
-    log(`void ${charge.id} key=${charge.idempotencyKey}`);
+    log('charge voided', { chargeId: charge.id, idempotencyKey: charge.idempotencyKey });
   }
   answer(res, 200, { id: charge.id, status: 'voided' });
 }
@@ -179,7 +185,7 @@ async function updateConfig(req: IncomingMessage, res: ServerResponse): Promise<
     next[field] = value;
   }
   Object.assign(behaviour, next);
-  log(`config ${JSON.stringify(behaviour)}`);
+  log('config changed', { ...behaviour });
   send(res, 200, behaviour);
 }
 
@@ -193,8 +199,46 @@ async function underWay(call: () => Promise<void>): Promise<void> {
   }
 }
 
-function log(message: string): void {
-  process.stdout.write(`[fake-psp] ${new Date().toISOString()} ${message}\n`);
+/**
+ * One JSON line, in the shape the services log in (docs/adr/0023), so that a provider's side
+ * of a charge is read with theirs.
+ */
+function log(msg: string, fields: Record<string, unknown> = {}): void {
+  const line = {
+    level: 'info',
+    time: new Date().toISOString(),
+    service: 'fake-psp',
+    ...fields,
+    msg,
+  };
+  process.stdout.write(`${JSON.stringify(line)}\n`);
+}
+
+/**
+ * One call to the provider: counted as under way, and logged when it is answered, under the
+ * chain its caller named (`x-correlation-id`). A real provider would log a request id of its
+ * own; this one keeps the caller's, so one id finds the charge on both sides.
+ */
+function called(
+  operation: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  call: () => Promise<void>,
+): Promise<void> {
+  const startedAt = Date.now();
+  const correlationId = req.headers['x-correlation-id'];
+  return underWay(async () => {
+    try {
+      await call();
+    } finally {
+      log('call', {
+        ...(typeof correlationId === 'string' ? { correlationId } : {}),
+        operation,
+        status: res.statusCode,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+  });
 }
 
 const VOID_ROUTE = /^POST \/charges\/([^/]+)\/void$/;
@@ -203,10 +247,12 @@ const server = createServer((req, res) => {
   const route = `${req.method ?? ''} ${(req.url ?? '').split('?')[0] ?? ''}`;
   const handle = async () => {
     const voided = VOID_ROUTE.exec(route)?.[1];
-    if (voided !== undefined) return underWay(() => voidCharge(decodeURIComponent(voided), res));
+    if (voided !== undefined) {
+      return called('void', req, res, () => voidCharge(decodeURIComponent(voided), res));
+    }
     switch (route) {
       case 'POST /charges':
-        return underWay(() => createCharge(req, res));
+        return called('charge', req, res, () => createCharge(req, res));
       case 'GET /charges':
         return send(res, 200, [...chargesByKey.values()]);
       case 'GET /admin/config':
@@ -233,4 +279,4 @@ const server = createServer((req, res) => {
   });
 });
 
-server.listen(port, () => log(`listening on :${port} ${JSON.stringify(behaviour)}`));
+server.listen(port, () => log('listening', { port, ...behaviour }));
