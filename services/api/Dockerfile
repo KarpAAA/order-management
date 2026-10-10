@@ -34,4 +34,5 @@ COPY --from=build --chown=node:node /out/package.json ./package.json
 COPY --from=build --chown=node:node /repo/services/api/dist ./dist
 USER node
 EXPOSE 3000
-CMD ["node", "dist/entrypoints/main.api.js"]
+# the tracing is loaded before the application, or it patches nothing (docs/adr/0025)
+CMD ["node", "--require", "./dist/instrumentation.js", "dist/entrypoints/main.api.js"]

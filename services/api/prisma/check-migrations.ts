@@ -14,6 +14,9 @@ import { basename, join, relative, resolve } from 'node:path';
 import { adminQuery, databaseUrl } from '../test/setup/database-url';
 import { startPostgres } from '../test/setup/postgres';
 
+// as in vitest.config.mts: the container is reached over IPv4, by this script and by the CLI
+if (!process.env.DOCKER_HOST) process.env.TESTCONTAINERS_HOST_OVERRIDE ??= '127.0.0.1';
+
 const API_DIR = resolve(__dirname, '..');
 const MIGRATIONS_DIR = join(API_DIR, 'prisma', 'migrations');
 

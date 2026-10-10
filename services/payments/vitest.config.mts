@@ -13,6 +13,12 @@ import { defineConfig } from 'vitest/config';
 
 const src = (dir: string): string => fileURLToPath(new URL(`./src/${dir}`, import.meta.url));
 
+// The containers of the suite are reached over IPv4. Testcontainers says `localhost`, which
+// resolves to ::1 first on some machines, where the port forwarding of Docker does not
+// answer: connections hang or are reset, in the client of Prisma and in its CLI. Not set
+// for a Docker that is somewhere else (DOCKER_HOST), where the host is that one.
+if (!process.env.DOCKER_HOST) process.env.TESTCONTAINERS_HOST_OVERRIDE ??= '127.0.0.1';
+
 /** Test-only environment; the dev .env is never read there. */
 const testEnv = parseEnv(readFileSync(new URL('./.env.test', import.meta.url), 'utf8'));
 

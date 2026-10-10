@@ -1,6 +1,9 @@
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
-import { Logger } from '@nestjs/common';
+import { Inject } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
+
+import { JobScope } from '@common/messaging/job-scope';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { CleanupOutboxJob } from './cleanup-outbox.job';
 import { OUTBOX_QUEUE } from './outbox.queue';
@@ -13,13 +16,22 @@ import type { Job } from 'bullmq';
  */
 @Processor(OUTBOX_QUEUE, { concurrency: 1 })
 export class OutboxConsumer extends WorkerHost {
-  private readonly logger = new Logger(OutboxConsumer.name);
+  private readonly log: Logger;
 
-  constructor(private readonly cleanupJob: CleanupOutboxJob) {
+  constructor(
+    private readonly cleanupJob: CleanupOutboxJob,
+    private readonly jobs: JobScope,
+    @Inject(LOGGER) logger: Logger,
+  ) {
     super();
+    this.log = logger.child({ context: OutboxConsumer.name });
   }
 
-  async process(job: Job): Promise<void> {
+  process(job: Job): Promise<void> {
+    return this.jobs.run(job, () => this.route(job));
+  }
+
+  private async route(job: Job): Promise<void> {
     switch (job.name) {
       case CleanupOutboxJob.QUEUE_JOB:
         return this.cleanupJob.run();
@@ -33,7 +45,8 @@ export class OutboxConsumer extends WorkerHost {
   onFailed(job: Job, err: Error): void {
     const attemptsSpent = job.attemptsMade >= (job.opts.attempts ?? 1);
     if (attemptsSpent || err.name === 'UnrecoverableError') {
-      this.logger.error(`dead job ${job.name} id=${job.id ?? ''}: ${err.message}`);
+      this.log.error({ queue: job.queueName, job: job.name, jobId: job.id, err }, 'dead job');
+      this.jobs.died(job);
     }
   }
 }

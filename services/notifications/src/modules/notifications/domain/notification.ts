@@ -37,6 +37,14 @@ export interface NotificationProps {
   nextAttemptAt: Date | null;
   lastError: string | null;
   occurredAt: Date;
+  /** The chain of the event that asked for it; null for one written before it was kept. */
+  correlationId: string | null;
+  /**
+   * The trace of the event that asked for it, as the repository kept it with the row: opaque
+   * here, handed to the mailer with the mail. Null at birth, and for a row written outside a
+   * trace (docs/adr/0025).
+   */
+  traceContext: Readonly<Record<string, string>> | null;
   createdAt: Date;
   /** SENT or FAILED: when. */
   settledAt: Date | null;
@@ -60,6 +68,7 @@ export class Notification {
     workspaceId: string;
     recipient: Recipient;
     notice: OrderNotice;
+    correlationId: string | null;
     now: Date;
   }): Notification {
     const { notice, now } = input;
@@ -76,6 +85,8 @@ export class Notification {
       nextAttemptAt: now,
       lastError: null,
       occurredAt: notice.occurredAt,
+      correlationId: input.correlationId,
+      traceContext: null,
       createdAt: now,
       settledAt: null,
     });
@@ -141,6 +152,15 @@ export class Notification {
   }
   get body(): string {
     return this.props.body;
+  }
+  get sendAttempts(): number {
+    return this.props.sendAttempts;
+  }
+  get correlationId(): string | null {
+    return this.props.correlationId;
+  }
+  get traceContext(): Readonly<Record<string, string>> | null {
+    return this.props.traceContext;
   }
   /** Nobody will try again: somebody has to look. */
   get givenUp(): boolean {

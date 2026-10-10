@@ -8,6 +8,18 @@ import type { ConfigType } from '@nestjs/config';
 let cached: ReturnType<typeof validateEnv> | undefined;
 const env = () => (cached ??= validateEnv(process.env));
 
+export const loggingConfig = registerAs('logging', () => ({
+  level: env().LOG_LEVEL,
+  pretty: env().LOG_PRETTY,
+}));
+export type LoggingConfig = ConfigType<typeof loggingConfig>;
+
+export const metricsConfig = registerAs('metrics', () => ({
+  port: env().METRICS_PORT,
+  durationBuckets: env().METRICS_DURATION_BUCKETS,
+}));
+export type MetricsConfig = ConfigType<typeof metricsConfig>;
+
 export const databaseConfig = registerAs('database', () => ({
   url: env().DATABASE_URL,
   poolMax: env().DATABASE_POOL_MAX,
@@ -54,4 +66,11 @@ export const inboxConfig = registerAs('inbox', () => ({
 }));
 export type InboxConfig = ConfigType<typeof inboxConfig>;
 
-export const allConfigs = [databaseConfig, rabbitConfig, outboxConfig, inboxConfig];
+export const allConfigs = [
+  loggingConfig,
+  metricsConfig,
+  databaseConfig,
+  rabbitConfig,
+  outboxConfig,
+  inboxConfig,
+];

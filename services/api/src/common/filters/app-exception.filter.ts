@@ -1,4 +1,4 @@
-import { Catch, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { Catch, HttpException, HttpStatus, Inject } from '@nestjs/common';
 
 import { AuthenticationError } from '@shared/errors/authentication-error';
 import {
@@ -10,6 +10,7 @@ import {
 import { ForbiddenError } from '@shared/errors/forbidden-error';
 import { IdempotencyKeyInProgressError } from '@shared/errors/idempotency-key.error';
 import { InfrastructureError } from '@shared/errors/infrastructure-error';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { VALIDATION_FAILED } from '../validation/validation-exception.factory';
 
@@ -46,10 +47,19 @@ const domain = (status: number, err: DomainError): Mapped => ({
   body: { code: err.code, message: err.message, ...(err.details && { details: err.details }) },
 });
 
-/** One global filter, one response format. Maps by base class, most specific first. */
+/**
+ * One global filter, one response format. Maps by base class, most specific first.
+ *
+ * It is where an error of a request is logged, once (ops/logging.md §3): a 5xx at `error`
+ * with the error itself, a 4xx at `warn` with its code and nothing a client sent.
+ */
 @Catch()
 export class AppExceptionFilter implements ExceptionFilter {
-  private readonly logger = new Logger(AppExceptionFilter.name);
+  private readonly log: Logger;
+
+  constructor(@Inject(LOGGER) logger: Logger) {
+    this.log = logger.child({ context: AppExceptionFilter.name });
+  }
 
   catch(err: unknown, host: ArgumentsHost): void {
     const http = host.switchToHttp();
@@ -57,9 +67,9 @@ export class AppExceptionFilter implements ExceptionFilter {
     const { status, body, headers } = this.map(err);
 
     if (status >= 500) {
-      this.logger.error(err instanceof Error ? (err.stack ?? err.message) : String(err));
+      this.log.error({ code: body.code, status, err }, 'request failed');
     } else {
-      this.logger.warn(clientErrorLine(err, status, body, http.getRequest<Request>()));
+      this.log.warn(clientError(err, status, body, http.getRequest<Request>()), 'request refused');
     }
 
     res
@@ -126,12 +136,11 @@ export class AppExceptionFilter implements ExceptionFilter {
  * of a validation failure (never values), the policy action of a 403, the IP of a failed login
  * (ops/security.md §3) — never the email or the password.
  */
-function clientErrorLine(err: unknown, status: number, body: ErrorBody, req: Request): string {
-  const line = `${body.code} status=${String(status)}`;
-  if (err instanceof AuthenticationError) return `${line} ip=${req.ip ?? 'unknown'}`;
-  if (err instanceof ForbiddenError) return `${line} action=${err.action}`;
-  if (body.code === VALIDATION_FAILED)
-    return `${line} fields=${[...new Set(fieldPaths(body))].join(',')}`;
+function clientError(err: unknown, status: number, body: ErrorBody, req: Request): object {
+  const line = { code: body.code, status };
+  if (err instanceof AuthenticationError) return { ...line, ip: req.ip ?? 'unknown' };
+  if (err instanceof ForbiddenError) return { ...line, action: err.action };
+  if (body.code === VALIDATION_FAILED) return { ...line, fields: [...new Set(fieldPaths(body))] };
   return line;
 }
 

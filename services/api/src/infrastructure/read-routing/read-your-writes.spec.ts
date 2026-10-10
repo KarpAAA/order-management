@@ -1,10 +1,10 @@
-import { Logger } from '@nestjs/common';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import type { DatabaseConfig } from '@config/configuration';
 import type { PrismaService } from '@infra/database/prisma.service';
 import type { ReplicaPrismaService } from '@infra/database/replica-prisma.service';
 import type { RedisService } from '@infra/redis/redis.service';
+import { silentLogger } from '@shared/logger/silent-logger';
 
 import { ReadYourWrites } from './read-your-writes';
 
@@ -43,12 +43,12 @@ function setup(opts: {
       },
     },
   } as unknown as ReplicaPrismaService;
-  return { readYourWrites: new ReadYourWrites(primary, replica, redis, config), stored, asked };
+  return {
+    readYourWrites: new ReadYourWrites(primary, replica, redis, config, silentLogger),
+    stored,
+    asked,
+  };
 }
-
-beforeAll(() => {
-  vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-});
 
 describe('ReadYourWrites.replicaIsCurrentFor (RPL-002, RPL-006)', () => {
   it('lets a user with no marker read the replica, without asking the replica', async () => {

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { TransactionHost } from '@nestjs-cls/transactional';
 
 import type { DbTransactionAdapter } from '@infra/database/transactional.adapter';
+import { captureTraceContext } from '@infra/tracing/trace-context';
 
 import { NotificationMapper } from './notification.mapper';
 
@@ -17,10 +18,15 @@ import type { NotificationsRepositoryPort } from '../ports/notifications-reposit
 export class NotificationsRepository implements NotificationsRepositoryPort {
   constructor(private readonly txHost: TransactionHost<DbTransactionAdapter>) {}
 
-  /** `ON CONFLICT DO NOTHING`: the fact is already owed, and the transaction goes on. */
+  /**
+   * `ON CONFLICT DO NOTHING`: the fact is already owed, and the transaction goes on.
+   *
+   * The row keeps the trace it is written in, the one of the event: the mail is sent later,
+   * by a timer, and is a span of that trace (docs/adr/0025).
+   */
   async insertIfAbsent(notification: Notification): Promise<boolean> {
     const { count } = await this.txHost.tx.notification.createMany({
-      data: [NotificationMapper.toCreate(notification)],
+      data: [NotificationMapper.toCreate(notification, captureTraceContext())],
       skipDuplicates: true,
     });
     return count === 1;

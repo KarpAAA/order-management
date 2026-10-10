@@ -1,6 +1,7 @@
 // transport · worker
 import { Module } from '@nestjs/common';
 
+import { ConsumerScope } from './infrastructure/consumer-scope';
 import { OrdersQueue } from './infrastructure/orders.queue';
 import { InventoryEventsConsumer } from './interface/worker/inventory-events.consumer';
 import { MaintainOrderEventPartitionsJob } from './interface/worker/maintain-order-event-partitions.job';
@@ -18,6 +19,7 @@ import type { OnApplicationBootstrap } from '@nestjs/common';
   providers: [
     OrdersConsumer,
     MaintainOrderEventPartitionsJob,
+    ConsumerScope,
     InventoryEventsConsumer,
     PaymentEventsConsumer,
     SagaTimeoutsConsumer,

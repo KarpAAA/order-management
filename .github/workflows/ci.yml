@@ -27,6 +27,8 @@ jobs:
       - run: pnpm format:check
       - run: pnpm lint
       - run: pnpm typecheck
+      # the SLIs are recording rules of Prometheus: promtool, from its image
+      - run: pnpm test:rules
 
   unit:
     name: unit

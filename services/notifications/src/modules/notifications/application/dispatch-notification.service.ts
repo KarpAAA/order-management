@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Transactional } from '@nestjs-cls/transactional';
 
 import type { Actor } from '@shared/auth/actor';
@@ -13,7 +13,7 @@ import {
 import { DELIVERY_POLICY } from './notification-commands';
 import { NotificationsPolicy } from './notifications.policy';
 
-import type { DeliveryPolicy, DispatchOutcome } from './notification-commands';
+import type { DeliveryPolicy, Dispatched, TriedNotification } from './notification-commands';
 import type { Notification } from '../domain/notification';
 import type { TransactionalAdapter } from '@nestjs-cls/transactional';
 
@@ -41,12 +41,12 @@ const describe = (error: unknown): string =>
  * (docs/adr/0019-notifications-service.md).
  *
  * A try that fails is not an error of the use case: it is recorded, and the next one is due
- * later, or the notification is given up and somebody is told.
+ * later, or the notification is given up and somebody is told: by the caller, which gets
+ * what was tried and how it went. Nothing is logged here: the line of a mail belongs to the
+ * chain of the event that asked for it, and the caller opens that (docs/adr/0023).
  */
 @Injectable()
 export class DispatchNotificationService {
-  private readonly logger = new Logger(DispatchNotificationService.name);
-
   constructor(
     @Inject(NOTIFICATIONS_REPOSITORY) private readonly notifications: NotificationsRepositoryPort,
     @Inject(MAILER) private readonly mailer: Mailer,
@@ -56,45 +56,51 @@ export class DispatchNotificationService {
   ) {}
 
   @Transactional<WithTimeout>({ timeout: TRANSACTION_TIMEOUT_MS })
-  async execute(actor: Actor): Promise<DispatchOutcome> {
+  async execute(actor: Actor): Promise<Dispatched> {
     this.policy.assertCanDispatch(actor);
     const notification = await this.notifications.lockNextDue(this.clock.now());
-    if (!notification) return 'idle';
+    if (!notification) return { outcome: 'idle' };
 
-    const outcome = await this.send(notification);
+    const failure = await this.send(notification);
     await this.notifications.save(notification);
-    return outcome;
+    const tried = { notification: triedOf(notification) };
+    if (failure === undefined) return { outcome: 'sent', ...tried };
+    return { outcome: notification.givenUp ? 'given-up' : 'postponed', ...tried, failure };
   }
 
-  private async send(notification: Notification): Promise<DispatchOutcome> {
+  /** One try. Resolves with why it failed, if it did: the notification has recorded it. */
+  private async send(notification: Notification): Promise<Dispatched['failure']> {
     try {
       await this.mailer.send({
         to: notification.recipient.email,
         subject: notification.subject,
         text: notification.body,
         messageId: `<${notification.id}@notifications.oms>`,
+        ...(notification.traceContext ? { traceContext: notification.traceContext } : {}),
       });
     } catch (err: unknown) {
-      return this.failed(notification, err);
+      // the server answered, and the answer was no; anything else may pass
+      const permanent = err instanceof MailDeliveryError && !err.retryable;
+      notification.markSendFailed({
+        error: describe(err),
+        permanent,
+        now: this.clock.now(),
+        policy: this.delivery,
+      });
+      const smtpCode = err instanceof MailDeliveryError ? err.smtpCode : undefined;
+      return { retryable: !permanent, ...(smtpCode === undefined ? {} : { smtpCode }) };
     }
     notification.markSent(this.clock.now());
-    return 'sent';
-  }
-
-  private failed(notification: Notification, err: unknown): DispatchOutcome {
-    notification.markSendFailed({
-      error: describe(err),
-      // the server answered, and the answer was no; anything else may pass
-      permanent: err instanceof MailDeliveryError && !err.retryable,
-      now: this.clock.now(),
-      policy: this.delivery,
-    });
-    if (!notification.givenUp) return 'postponed';
-
-    const { id, kind, orderId } = notification;
-    this.logger.error(
-      `notification ${id} (${kind} of order ${orderId}) given up, its mail was not sent: ${describe(err)}`,
-    );
-    return 'given-up';
+    return undefined;
   }
 }
+
+const triedOf = (notification: Notification): TriedNotification => ({
+  id: notification.id,
+  orderId: notification.orderId,
+  kind: notification.kind,
+  attempt: notification.attempt,
+  sendAttempts: notification.sendAttempts,
+  correlationId: notification.correlationId,
+  traceContext: notification.traceContext,
+});

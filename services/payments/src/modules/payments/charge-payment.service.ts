@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { TransactionHost } from '@nestjs-cls/transactional';
 
 import { PaymentStatus } from '@infra/database/generated/prisma/client';
@@ -10,6 +10,7 @@ import { Clock } from '@shared/domain/clock';
 import { newId } from '@shared/domain/id';
 import type { Money } from '@shared/domain/money';
 import { InfrastructureError } from '@shared/errors/infrastructure-error';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import {
   EXPIRED,
@@ -86,7 +87,9 @@ const chargeOf = (payment: PaymentRow): ChargeRequest => {
  */
 @Injectable()
 export class ChargePaymentService {
-  private readonly logger = new Logger(ChargePaymentService.name);
+  // As a property: the class has its six dependencies (code-style.md §2), and the logger is
+  // not one of what it works with. The use cases of the api get theirs the same way (@UseCase).
+  @Inject(LOGGER) private readonly logger!: Logger;
 
   constructor(
     private readonly txHost: TransactionHost<DbTransactionAdapter>,
@@ -153,7 +156,7 @@ export class ChargePaymentService {
   private async charge(payment: PaymentRow, cmd: ChargePaymentCommand): Promise<ChargeOutcome> {
     if (cmd.expiresAt !== null && this.clock.now() >= cmd.expiresAt) {
       // checked on every delivery: a provider that is down past the deadline ends here too
-      this.logger.warn(`charge of order ${payment.orderId} expired before it was made`);
+      this.log.warn(attemptOf(payment), 'charge expired before it was made');
       return { status: 'failed', failureCode: EXPIRED, chargeId: null };
     }
     try {
@@ -165,7 +168,7 @@ export class ChargePaymentService {
     } catch (err: unknown) {
       if (!(err instanceof InfrastructureError)) throw err;
       if (err.retryable && !cmd.lastDelivery) throw err;
-      this.logger.warn(`charge of order ${payment.orderId} failed: ${err.message}`);
+      this.log.warn({ ...attemptOf(payment), err }, 'charge given up');
       return {
         status: 'failed',
         failureCode: err.retryable ? PSP_UNAVAILABLE : PSP_REJECTED,
@@ -228,11 +231,24 @@ export class ChargePaymentService {
       where: { id: payment.id, voidedAt: null },
       data: { voidedAt: this.clock.now() },
     });
-    this.logger.warn(`charge ${payment.pspChargeId} of cancelled order ${payment.orderId} voided`);
+    this.log.warn(
+      { ...attemptOf(payment), chargeId: payment.pspChargeId },
+      'charge of a cancelled attempt voided',
+    );
   }
 
   /** The outcome of a settled row, into the outbox of the transaction that is open. */
   private answer(settled: PaymentRow): Promise<void> {
     return this.publisher.publish(outcomeOf(settled));
   }
+
+  private get log(): Logger {
+    return this.logger.child({ context: ChargePaymentService.name });
+  }
 }
+
+/** Which attempt a line is about: ids, never the amount. */
+const attemptOf = (payment: PaymentRow) => ({
+  orderId: payment.orderId,
+  paymentAttempt: payment.attempt,
+});

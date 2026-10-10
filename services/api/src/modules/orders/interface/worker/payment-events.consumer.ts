@@ -1,5 +1,5 @@
 import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import {
   exchanges,
   parseMessage,
@@ -8,19 +8,17 @@ import {
   PaymentSucceededV1,
 } from '@oms/contracts';
 
-import { CorrelationContext } from '@common/messaging/correlation-context';
-import { TenantContext } from '@common/tenancy/tenant-context';
 import { systemActor } from '@shared/auth/actor';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
-import { INBOX, type Inbox } from '@shared/messaging/inbox';
 
 import { CompleteOrderPaymentService } from '../../application/complete-order-payment.service';
 import {
   FailOrderPaymentService,
   PAYMENT_TIMEOUT,
 } from '../../application/fail-order-payment.service';
+import { ConsumerScope } from '../../infrastructure/consumer-scope';
 
-import { handleOnce, type MessageScope } from './handle-once';
+import { handleOnce } from './handle-once';
 
 import type { AnyMessage } from '@oms/contracts';
 
@@ -39,12 +37,8 @@ const PAYMENT_EVENTS_QUEUE = 'api.payment-events';
  */
 @Injectable()
 export class PaymentEventsConsumer {
-  private readonly logger = new Logger(PaymentEventsConsumer.name);
-
   constructor(
-    private readonly tenant: TenantContext,
-    private readonly correlation: CorrelationContext,
-    @Inject(INBOX) private readonly inbox: Inbox,
+    private readonly scope: ConsumerScope,
     private readonly completePayment: CompleteOrderPaymentService,
     private readonly failPayment: FailOrderPaymentService,
   ) {}
@@ -62,7 +56,7 @@ export class PaymentEventsConsumer {
       throw new UnprocessableMessageError(`${parsed.reason}: ${parsed.detail}`);
     }
     const { message } = parsed;
-    await handleOnce(this.scope(), PAYMENT_EVENTS_QUEUE, message, () => this.settle(message));
+    await handleOnce(this.scope, PAYMENT_EVENTS_QUEUE, message, () => this.settle(message));
   }
 
   private async settle(message: AnyMessage): Promise<void> {
@@ -89,14 +83,5 @@ export class PaymentEventsConsumer {
       default:
         throw new UnprocessableMessageError(`${message.name} is not an event of this queue`);
     }
-  }
-
-  private scope(): MessageScope {
-    return {
-      tenant: this.tenant,
-      correlation: this.correlation,
-      inbox: this.inbox,
-      logger: this.logger,
-    };
   }
 }

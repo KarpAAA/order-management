@@ -2,19 +2,19 @@
 // What a consumer does around its use case (tenant, correlation, inbox, what an error means)
 // is `handleOnce()`, shared with PaymentEventsConsumer and pinned in its spec; here: which
 // message calls which use case with what, and what is not a message of the queue.
-import { Logger } from '@nestjs/common';
 import {
   StockAdjustedV1,
   StockReleasedV1,
   StockReservationFailedV1,
   StockReservedV1,
 } from '@oms/contracts';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { CorrelationContext } from '@common/messaging/correlation-context';
 import type { TenantContext } from '@common/tenancy/tenant-context';
 import { InvalidStateError, NotFoundError } from '@shared/errors/domain-error';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
+import { silentLogger } from '@shared/logger/silent-logger';
 import type { Inbox } from '@shared/messaging/inbox';
 
 import { OrderSagaStep } from '../../domain/order-saga-step';
@@ -71,15 +71,12 @@ function scope() {
     tenant: { runInWorkspace } as unknown as TenantContext,
     correlation: { continue: (id: string) => continued.push(id) } as unknown as CorrelationContext,
     inbox,
+    logger: silentLogger,
     runInWorkspace,
     continued,
   };
 }
 
-beforeEach(() => {
-  vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-  vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-});
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -100,9 +97,7 @@ describe('InventoryEventsConsumer', () => {
     const release = vi.fn(outcome);
     const s = scope();
     const consumer = new InventoryEventsConsumer(
-      s.tenant,
-      s.correlation,
-      s.inbox,
+      s,
       { execute: confirm } as unknown as ConfirmStockReservationService,
       { execute: reject } as unknown as RejectStockReservationService,
       { execute: release } as unknown as ConfirmStockReleaseService,
@@ -205,7 +200,7 @@ describe('SagaTimeoutsConsumer', () => {
 
   function consumerWith(execute = vi.fn().mockResolvedValue(undefined)) {
     const s = scope();
-    const consumer = new SagaTimeoutsConsumer(s.tenant, s.correlation, s.inbox, {
+    const consumer = new SagaTimeoutsConsumer(s, {
       execute,
     } as unknown as ExpireSagaStepService);
     return { consumer, execute, ...s };

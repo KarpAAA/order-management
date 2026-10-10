@@ -66,6 +66,8 @@ model OutboxMessage {
   occurredAt  DateTime  @map("occurred_at") @db.Timestamptz(3)
   createdAt   DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
   publishedAt DateTime? @map("published_at") @db.Timestamptz(3)
+  /// the trace the row was written in, for the relay to publish it in (docs/adr/0025)
+  traceContext Json?    @map("trace_context")
 
   // the relay: `published_at IS NULL ORDER BY id`; the cleanup: `published_at < …`
   @@index([publishedAt, id])

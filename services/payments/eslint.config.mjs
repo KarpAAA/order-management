@@ -91,6 +91,9 @@ export default tseslint.config(
       'boundaries/elements': [
         // process roots (project-structure.md §1): they wire everything
         { type: 'entry', pattern: 'src/entrypoints/**' },
+        // project: the tracing preload is a root of the process too, loaded before any
+        // entrypoint with `node --require` (docs/adr/0025)
+        { type: 'entry', pattern: 'src/instrumentation.ts', mode: 'file' },
         // project: addition 3. pnpm links the workspace package, so it resolves to a path, not to node_modules
         { type: 'contracts', pattern: '**/packages/contracts/**', mode: 'full' },
         { type: 'shared', pattern: 'src/shared/**' },
@@ -185,6 +188,15 @@ export default tseslint.config(
             {
               group: ['../../modules/**', '../../../modules/**'],
               message: 'Cross-module imports use the @modules alias.',
+            },
+          ],
+          // as in the api: one logger, injected
+          paths: [
+            {
+              name: '@nestjs/common',
+              importNames: ['Logger', 'ConsoleLogger'],
+              message:
+                'Inject LOGGER (@shared/logger/logger): one logger, structured (ops/logging.md §1).',
             },
           ],
         },

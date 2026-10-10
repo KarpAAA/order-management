@@ -16,6 +16,18 @@ export const appConfig = registerAs('app', () => ({
 }));
 export type AppConfig = ConfigType<typeof appConfig>;
 
+export const loggingConfig = registerAs('logging', () => ({
+  level: env().LOG_LEVEL,
+  pretty: env().LOG_PRETTY,
+}));
+export type LoggingConfig = ConfigType<typeof loggingConfig>;
+
+export const metricsConfig = registerAs('metrics', () => ({
+  port: env().METRICS_PORT,
+  durationBuckets: env().METRICS_DURATION_BUCKETS,
+}));
+export type MetricsConfig = ConfigType<typeof metricsConfig>;
+
 export const databaseConfig = registerAs('database', () => ({
   url: env().DATABASE_URL,
   poolMax: env().DATABASE_POOL_MAX,
@@ -127,6 +139,8 @@ export type OrderSagaConfig = ConfigType<typeof orderSagaConfig>;
 
 export const allConfigs = [
   appConfig,
+  loggingConfig,
+  metricsConfig,
   databaseConfig,
   redisConfig,
   cacheConfig,

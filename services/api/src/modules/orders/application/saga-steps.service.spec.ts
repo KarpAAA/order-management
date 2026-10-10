@@ -1,11 +1,11 @@
 // The steps of the saga an answer or a timeout decides (SAGA-002…014), on in-memory ports:
 // what each step does to the saga and to the order, what it sends, and what it leaves alone
 // when the saga is not waiting for it. The domain rules are in domain/order-saga.spec.ts.
-import { Logger } from '@nestjs/common';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ConcurrencyError } from '@shared/errors/domain-error';
 import { ForbiddenError } from '@shared/errors/forbidden-error';
+import { RecordingLogger } from '@shared/logger/__test__/recording-logger';
 
 import {
   LATER,
@@ -50,7 +50,6 @@ import { RejectStockReservationService } from './reject-stock-reservation.servic
 
 import type { OrderHistoryEntry } from '../domain/order';
 import type { WaitingStep } from '../domain/order-saga-step';
-import type { MockInstance } from 'vitest';
 
 // The builders restore orders at version 3 and sagas at version 2, both for attempt 1.
 const ORDER_VERSION = 3;
@@ -76,7 +75,7 @@ describe('the steps of the order saga', () => {
   let charges: RecordingChargeScheduler;
   let timeouts: RecordingTimeoutScheduler;
   let events: RecordingEventPublisher;
-  let logged: MockInstance<Logger['error']>;
+  let logger: RecordingLogger;
   const policy = new OrdersPolicy();
 
   beforeAll(enableNoOpTransactions);
@@ -88,7 +87,7 @@ describe('the steps of the order saga', () => {
     charges = new RecordingChargeScheduler();
     timeouts = new RecordingTimeoutScheduler();
     events = new RecordingEventPublisher();
-    logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    logger = new RecordingLogger();
   });
   afterEach(() => {
     vi.restoreAllMocks();
@@ -126,7 +125,8 @@ describe('the steps of the order saga', () => {
   const failPayment = () =>
     new FailOrderPaymentService(orders, steps(), policy, fixedClock, events);
   const confirmRelease = () => new ConfirmStockReleaseService(orders, steps(), policy, fixedClock);
-  const expireStep = () => new ExpireSagaStepService(orders, steps(), policy, fixedClock, events);
+  const expireStep = () =>
+    new ExpireSagaStepService(orders, steps(), policy, fixedClock, events, logger);
 
   describe('ConfirmStockReservationService', () => {
     const cmd = { orderId: ORDER, attempt: 1 };
@@ -623,7 +623,7 @@ describe('the steps of the order saga', () => {
         status: OrderStatus.PendingPayment,
         version: ORDER_VERSION,
       });
-      expect(logged).toHaveBeenCalledWith(expect.stringContaining(ORDER));
+      expect(logger.at('error')).toMatchObject([{ fields: { orderId: ORDER, attempt: 1 } }]);
     });
 
     it('SAGA-009 asks inventory again when the release was not confirmed, and says so', async () => {
@@ -639,7 +639,7 @@ describe('the steps of the order saga', () => {
         status: OrderStatus.PaymentFailed,
         version: ORDER_VERSION,
       });
-      expect(logged).toHaveBeenCalledWith(expect.stringContaining(ORDER));
+      expect(logger.at('error')).toMatchObject([{ fields: { orderId: ORDER, attempt: 1 } }]);
     });
 
     it.each([
@@ -658,7 +658,7 @@ describe('the steps of the order saga', () => {
         );
 
         await expectUntouched(step);
-        expect(logged).not.toHaveBeenCalled();
+        expect(logger.at('error')).toEqual([]);
       },
     );
 

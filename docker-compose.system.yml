@@ -33,6 +33,20 @@ services:
     ports: !override
       - '${SYSTEM_PSP_PORT:-4110}:4010'
 
+  # Not part of this stack: a profile nobody asks for keeps it from starting. The suite has
+  # three windows and Grafana is not one of them (ADR 0022), and nothing sends to it: every
+  # service below runs with no Collector named, so its tracing does not start (ADR 0025).
+  lgtm:
+    profiles: [observability]
+
+  # and no agent for the logs: there is no Loki to push to
+  alloy:
+    profiles: !override [observability]
+
+  # and no exporter: there is no Prometheus to ask it
+  postgres-exporter:
+    profiles: [observability]
+
   # Fixed-id data (README → Seeded data): the users, the workspace and the products the
   # scenarios use. The same step as in docker-compose.contract.yml.
   seed:
@@ -62,11 +76,23 @@ services:
   api:
     ports: !override
       - '${SYSTEM_API_PORT:-3100}:3000'
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
     depends_on:
       seed:
         condition: service_completed_successfully
 
+  worker:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
+
+  notifications:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
+
   inventory:
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
     depends_on:
       seed-inventory:
         condition: service_completed_successfully
@@ -78,5 +104,6 @@ services:
   # ORDER_SAGA_CHARGE_TIMEOUT_MS of the api (150 s), as services/payments/.env.example asks.
   payments:
     environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ''
       PSP_TIMEOUT_MS: 10000
       PSP_CALL_BUDGET_MS: 12000

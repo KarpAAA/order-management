@@ -13,15 +13,20 @@ const ROOT = resolve(__dirname, '../..');
 const ARCH_RULES = new Set(['no-restricted-imports', 'no-restricted-syntax']);
 
 let eslint: ESLint;
+/** Any file of the layer map: what the warm-up lints. */
+const WARM_UP = 'src/modules/payments/payments.module.ts';
 
-beforeAll(() => {
+beforeAll(async () => {
   eslint = new ESLint({
     cwd: ROOT,
     // virtual files are outside the tsconfig program; the architecture rules need no types
     overrideConfig: tseslint.configs.disableTypeChecked,
     ruleFilter: ({ ruleId }) => ruleId.startsWith('boundaries/') || ARCH_RULES.has(ruleId),
   });
-});
+  // The first lint loads the config and its plugins, which takes seconds when the suites of
+  // the four services run at once: paid here, under the limit of a hook, not by the first test.
+  await eslint.lintText('export {};\n', { filePath: WARM_UP });
+}, 60_000);
 
 const ruleIdsOf = (results: ESLint.LintResult[]): (string | null)[] =>
   results.flatMap((result) => result.messages.map((message) => message.ruleId));

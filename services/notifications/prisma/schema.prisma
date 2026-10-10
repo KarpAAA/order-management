@@ -45,6 +45,12 @@ model Notification {
   lastError       String?            @map("last_error")
   /// when the fact happened, as the event said
   occurredAt      DateTime           @map("occurred_at") @db.Timestamptz(3)
+  /// the chain of the event that asked for it: the mail is sent later, by a timer, and is
+  /// logged under this id. NULL: written before the column was there
+  correlationId   String?            @map("correlation_id") @db.Uuid
+  /// the trace of the event that asked for it: the mail is a span of that trace
+  /// (docs/adr/0025). NULL: written outside a trace, or before the column was there
+  traceContext    Json?              @map("trace_context")
   createdAt       DateTime           @map("created_at") @db.Timestamptz(3)
   /// SENT or FAILED: when it was sent, or given up; the cleanup counts from here
   settledAt       DateTime?          @map("settled_at") @db.Timestamptz(3)

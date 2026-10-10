@@ -11,6 +11,7 @@ import { connectRabbit } from '@infra/messaging/rabbit-connection';
 import type { OutboxRecord } from '@infra/outbox/outbox-publisher.port';
 import { RabbitOutboxPublisher } from '@infra/outbox/rabbit-outbox.publisher';
 import { UnroutableMessageError } from '@infra/outbox/unroutable-message.error';
+import { silentLogger } from '@shared/logger/silent-logger';
 
 import type { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 
@@ -21,13 +22,16 @@ let connection: AmqpConnection;
 let publisher: RabbitOutboxPublisher;
 
 beforeAll(async () => {
-  connection = await connectRabbit({
-    url: process.env.RABBITMQ_URL ?? '',
-    prefetch: 1,
-    redeliveryLimit: 3,
-    retry: {},
-    delays: {},
-  });
+  connection = await connectRabbit(
+    {
+      url: process.env.RABBITMQ_URL ?? '',
+      prefetch: 1,
+      redeliveryLimit: 3,
+      retry: {},
+      delays: {},
+    },
+    silentLogger,
+  );
   publisher = new RabbitOutboxPublisher(connection, CONFIG);
 });
 afterAll(async () => {

@@ -1,0 +1,20 @@
+# The logins postgres-exporter connects with, one per server, named by Prometheus in its
+# request (docs/adr/0027). The owners of the dev databases: the stack has no monitoring role
+# (a deploy gives the exporter a login that is a member of `pg_monitor` and nothing else).
+auth_modules:
+  oms:
+    type: userpass
+    userpass: { username: oms, password: oms }
+    options: { sslmode: disable }
+  payments:
+    type: userpass
+    userpass: { username: payments, password: payments }
+    options: { sslmode: disable }
+  inventory:
+    type: userpass
+    userpass: { username: inventory, password: inventory }
+    options: { sslmode: disable }
+  notifications:
+    type: userpass
+    userpass: { username: notifications, password: notifications }
+    options: { sslmode: disable }

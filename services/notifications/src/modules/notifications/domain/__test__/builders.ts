@@ -14,6 +14,8 @@ export const OTHER_WORKSPACE = '01950000-0000-7000-8000-00000000a002';
 export const ORDER = '01950000-0000-7000-8000-00000000b001';
 export const OTHER_ORDER = '01950000-0000-7000-8000-00000000b002';
 export const USER = '01950000-0000-7000-8000-00000000c001';
+/** The chain of the event a notification is asked by. */
+export const CORRELATION_ID = '01950000-0000-7000-8000-00000000d001';
 
 export const RECIPIENT: Recipient = { userId: USER, email: 'buyer@example.com' };
 export const AMOUNT = { amountMinor: 12_990, currency: 'EUR' };
@@ -48,7 +50,13 @@ export const ALL_NOTICES: readonly OrderNotice[] = Object.values(NOTICES);
 
 /** A notification that was just asked for, at NOW. */
 export function requested(notice: OrderNotice = NOTICES.paid): Notification {
-  return Notification.request({ workspaceId: WORKSPACE, recipient: RECIPIENT, notice, now: NOW });
+  return Notification.request({
+    workspaceId: WORKSPACE,
+    recipient: RECIPIENT,
+    notice,
+    correlationId: CORRELATION_ID,
+    now: NOW,
+  });
 }
 
 /** A notification as the table holds it; tests override only what they test. */

@@ -1,7 +1,8 @@
 # Local environment. Infra (postgres, postgres-replica, pgbouncer, postgres-payments,
-# postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, fake-psp) starts by
-# default; `docker compose --profile app up --build` adds the services: api + worker from ONE
-# image, payments, inventory and notifications each from its own.
+# postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, lgtm, fake-psp) starts
+# by default; `docker compose --profile app up --build` adds the services: api + worker from ONE
+# image, payments, inventory and notifications each from its own, and `alloy`, the agent that
+# takes their log lines to Loki.
 name: oms
 
 services:
@@ -173,6 +174,67 @@ services:
       timeout: 3s
       retries: 10
 
+  # The observability stack of the dev environment: Grafana, Loki (logs), Tempo (traces),
+  # Prometheus (metrics), Pyroscope and an OpenTelemetry Collector in one container
+  # (docs/adr/0024-observability-stack.md). Grafana: http://localhost:3001 (admin / admin).
+  # The Collector takes OTLP on 4317 (gRPC) and 4318 (HTTP) and hands each signal to its store.
+  # Metrics are not sent to it: its Prometheus reads them from `/metrics` of every process, of
+  # the broker and of postgres-exporter (docs/adr/0027; devtools/observability/prometheus.yaml).
+  # The dashboards, the SLIs and the alert are files of the repository (docs/adr/0028).
+  lgtm:
+    image: grafana/otel-lgtm:0.36.0
+    ports:
+      - '3001:3000' # Grafana; 3000 on the host is the api
+      - '4317:4317'
+      - '4318:4318'
+    environment:
+      # the alert of Grafana is a mail, and the mail server of the dev stack takes it
+      GF_SMTP_ENABLED: 'true'
+      GF_SMTP_HOST: mailpit:1025
+      GF_SMTP_FROM_ADDRESS: grafana@oms.example
+      GF_SMTP_STARTTLS_POLICY: NoStartTLS
+    extra_hosts:
+      # the processes of `pnpm dev` are on the host; Docker Desktop knows the name, Linux needs it
+      - 'host.docker.internal:host-gateway'
+    volumes:
+      # everything the five keep: logs, traces, metrics, and what Grafana remembers
+      - lgtm-data:/data
+      # over the file of the image: its content plus our scrape targets and rules
+      - ./devtools/observability/prometheus.yaml:/otel-lgtm/prometheus.yaml:ro
+      - ./devtools/observability/rules:/otel-lgtm/oms-rules:ro
+      # beside the files of the image: Grafana reads every file of a provisioning folder
+      - ./devtools/observability/grafana/oms-dashboards.yaml:/otel-lgtm/grafana/conf/provisioning/dashboards/oms-dashboards.yaml:ro
+      - ./devtools/observability/grafana/dashboards:/otel-lgtm/oms-dashboards:ro
+      - ./devtools/observability/grafana/oms-alerting.yaml:/otel-lgtm/grafana/conf/provisioning/alerting/oms-alerting.yaml:ro
+    healthcheck:
+      # the check of the image (every component answers), asked more often than its 30 s
+      test: ['CMD', '/otel-lgtm/docker/healthcheck.sh']
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # What Prometheus asks about the five Postgres servers: connections, transactions, locks,
+  # the lag of the replica (docs/adr/0027). One exporter: Prometheus names the server in its
+  # request, and the login for it is in the mounted file. Nobody depends on it.
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    command: ['--config.file=/etc/postgres-exporter.yml']
+    volumes:
+      - ./devtools/observability/postgres-exporter.yml:/etc/postgres-exporter.yml:ro
+
+  # The agent of the logs (docs/adr/0026): reads the stdout of the containers of the services
+  # through the Docker socket and pushes the lines to Loki inside `lgtm`, again and again
+  # until it answers. Nobody depends on it: a service writes to stdout and runs the same
+  # without it.
+  alloy:
+    profiles: [app]
+    image: grafana/alloy:v1.20.1
+    volumes:
+      - ./devtools/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      # how far each container was read: a restart of the agent sends no line twice
+      - alloy-data:/var/lib/alloy/data
+
   fake-psp:
     build:
       context: .
@@ -220,7 +282,7 @@ services:
       context: .
       dockerfile: services/api/Dockerfile
     image: oms-api:local
-    command: ['node', 'dist/entrypoints/main.api.js']
+    command: ['node', '--require', './dist/instrumentation.js', 'dist/entrypoints/main.api.js']
     env_file: services/api/.env.example
     environment:
       &app-env # through the pooler; the migrate step above goes to postgres directly, as the owner
@@ -230,6 +292,14 @@ services:
       DATABASE_ADMIN_URL: ''
       REDIS_URL: redis://redis:6379
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
+      LOG_PRETTY: 'false'
+      # the Collector of the `lgtm` container; not a dependency: a service runs without it
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      # traces only: the log lines are read from stdout by `alloy`, and both would store each twice
+      OTEL_LOGS_EXPORTER: none
+      # GET /metrics for the Prometheus of `lgtm`; a container names its port (docs/adr/0027)
+      METRICS_PORT: '9464'
     ports:
       - '3000:3000'
     depends_on: &app-deps
@@ -245,7 +315,7 @@ services:
   worker:
     profiles: [app]
     image: oms-api:local
-    command: ['node', 'dist/entrypoints/main.worker.js']
+    command: ['node', '--require', './dist/instrumentation.js', 'dist/entrypoints/main.worker.js']
     env_file: services/api/.env.example
     environment: *app-env
     depends_on:
@@ -282,6 +352,14 @@ services:
       DATABASE_ADMIN_URL: ''
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       PSP_BASE_URL: http://fake-psp:4010
+      # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
+      LOG_PRETTY: 'false'
+      # the Collector of the `lgtm` container; not a dependency: a service runs without it
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      # traces only: the log lines are read from stdout by `alloy`, and both would store each twice
+      OTEL_LOGS_EXPORTER: none
+      # GET /metrics for the Prometheus of `lgtm`; a container names its port (docs/adr/0027)
+      METRICS_PORT: '9464'
     depends_on:
       migrate-payments:
         condition: service_completed_successfully
@@ -318,6 +396,14 @@ services:
       # env_file is the dev environment; the process itself gets no owner URL
       DATABASE_ADMIN_URL: ''
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
+      LOG_PRETTY: 'false'
+      # the Collector of the `lgtm` container; not a dependency: a service runs without it
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      # traces only: the log lines are read from stdout by `alloy`, and both would store each twice
+      OTEL_LOGS_EXPORTER: none
+      # GET /metrics for the Prometheus of `lgtm`; a container names its port (docs/adr/0027)
+      METRICS_PORT: '9464'
     depends_on:
       migrate-inventory:
         condition: service_completed_successfully
@@ -353,6 +439,14 @@ services:
       DATABASE_ADMIN_URL: ''
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       SMTP_HOST: mailpit
+      # JSON lines: the image carries no pino-pretty, and a container's log is read by a collector
+      LOG_PRETTY: 'false'
+      # the Collector of the `lgtm` container; not a dependency: a service runs without it
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+      # traces only: the log lines are read from stdout by `alloy`, and both would store each twice
+      OTEL_LOGS_EXPORTER: none
+      # GET /metrics for the Prometheus of `lgtm`; a container names its port (docs/adr/0027)
+      METRICS_PORT: '9464'
     depends_on:
       migrate-notifications:
         condition: service_completed_successfully
@@ -369,3 +463,5 @@ volumes:
   postgres-replica-data:
   redis-data:
   rabbitmq-data:
+  lgtm-data:
+  alloy-data:

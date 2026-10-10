@@ -11,6 +11,11 @@ export interface OutgoingMail {
    * is what a reader's mail client, or a provider that looks, can recognize a repetition by.
    */
   messageId: string;
+  /**
+   * The trace the mail belongs to, as the row of its notification kept it: the send is a span
+   * of that trace. Opaque to the caller (docs/adr/0025).
+   */
+  traceContext?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -20,12 +25,16 @@ export interface OutgoingMail {
 export class MailDeliveryError extends InfrastructureError {
   readonly code = 'MAIL_DELIVERY_FAILED';
 
+  /** The reply code of the server (550, 421), when it answered. */
+  readonly smtpCode: number | undefined;
+
   constructor(
     message: string,
     readonly retryable: boolean,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; smtpCode?: number },
   ) {
     super(message, options);
+    this.smtpCode = options?.smtpCode;
   }
 }
 

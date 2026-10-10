@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { inboxConfig, type InboxConfig } from '@config/configuration';
 import { Clock } from '@shared/domain/clock';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { InboxCleanup } from './inbox-cleanup';
 
@@ -18,7 +19,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 @Injectable()
 export class InboxCleanupRunner implements OnApplicationBootstrap, OnModuleDestroy {
-  private readonly logger = new Logger(InboxCleanupRunner.name);
+  private readonly log: Logger;
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<void> = Promise.resolve();
 
@@ -26,7 +27,10 @@ export class InboxCleanupRunner implements OnApplicationBootstrap, OnModuleDestr
     private readonly cleanup: InboxCleanup,
     private readonly clock: Clock,
     @Inject(inboxConfig.KEY) private readonly config: InboxConfig,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: InboxCleanupRunner.name });
+  }
 
   onApplicationBootstrap(): void {
     this.running = this.run();
@@ -48,11 +52,9 @@ export class InboxCleanupRunner implements OnApplicationBootstrap, OnModuleDestr
     try {
       const cutoff = new Date(this.clock.now().getTime() - this.config.retentionDays * DAY_MS);
       const deleted = await this.cleanup.deleteProcessedBefore(cutoff);
-      if (deleted > 0) this.logger.log(`inbox cleanup: deleted=${String(deleted)}`);
+      if (deleted > 0) this.log.info({ deleted }, 'inbox cleanup done');
     } catch (err: unknown) {
-      this.logger.error(
-        `inbox cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.log.error({ err }, 'inbox cleanup failed');
     }
   }
 }

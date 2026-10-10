@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
+import { silentLogger } from '@shared/logger/silent-logger';
 
 import { deliveryOf, retryOrPark } from './retry-or-park';
 
+import type { RetryContext } from './retry-or-park';
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib';
 
 const QUEUE = 'api.payment-events';
@@ -33,7 +35,22 @@ function channelThat({ confirms = true } = {}) {
   return { channel, asChannel: channel as unknown as ConfirmChannel };
 }
 
-const logger = () => ({ warn: vi.fn(), error: vi.fn() });
+/** What the handler logs through, and the chains it ran in. */
+const logger = () => {
+  const warn = vi.fn();
+  const error = vi.fn();
+  const chains: string[] = [];
+  const context: RetryContext = {
+    logger: { ...silentLogger, warn, error },
+    correlation: {
+      run: (correlationId, work) => {
+        chains.push(correlationId);
+        return work();
+      },
+    },
+  };
+  return { warn, error, chains, context };
+};
 
 describe('deliveryOf', () => {
   it.each([
@@ -66,7 +83,11 @@ describe('retryOrPark', () => {
     const log = logger();
     const message = delivered(1);
 
-    await retryOrPark(QUEUE, POLICY, log)(asChannel, message, new Error('database is down'));
+    await retryOrPark(QUEUE, POLICY, log.context)(
+      asChannel,
+      message,
+      new Error('database is down'),
+    );
 
     expect(channel.nack).toHaveBeenCalledExactlyOnceWith(message, false, false);
     expect(channel.sendToQueue).not.toHaveBeenCalled();
@@ -79,7 +100,7 @@ describe('retryOrPark', () => {
     const log = logger();
     const message = delivered(2, { 'x-custom': 'kept' });
 
-    await retryOrPark(QUEUE, POLICY, log)(asChannel, message, new Error('still down'));
+    await retryOrPark(QUEUE, POLICY, log.context)(asChannel, message, new Error('still down'));
 
     expect(channel.sendToQueue).toHaveBeenCalledExactlyOnceWith(
       'api.payment-events.dlq',
@@ -107,7 +128,7 @@ describe('retryOrPark', () => {
     const { channel, asChannel } = channelThat();
     const message = delivered(0);
 
-    await retryOrPark(QUEUE, POLICY, logger())(
+    await retryOrPark(QUEUE, POLICY, logger().context)(
       asChannel,
       message,
       new UnprocessableMessageError('unknown-contract: no such name'),
@@ -123,7 +144,7 @@ describe('retryOrPark', () => {
     const log = logger();
     const message = delivered(2);
 
-    await retryOrPark(QUEUE, POLICY, log)(asChannel, message, new Error('still down'));
+    await retryOrPark(QUEUE, POLICY, log.context)(asChannel, message, new Error('still down'));
 
     expect(channel.ack).not.toHaveBeenCalled();
     expect(channel.nack).toHaveBeenCalledExactlyOnceWith(message, false, false);
@@ -137,7 +158,37 @@ describe('retryOrPark', () => {
     });
 
     await expect(
-      retryOrPark(QUEUE, POLICY, logger())(asChannel, delivered(0), new Error('database is down')),
+      retryOrPark(QUEUE, POLICY, logger().context)(
+        asChannel,
+        delivered(0),
+        new Error('database is down'),
+      ),
     ).resolves.toBeUndefined();
+  });
+
+  it('logs under the correlation id of the message: the handler has left its scope (LOG-012)', async () => {
+    const { asChannel } = channelThat();
+    const log = logger();
+    const message = delivered(1);
+    const correlationId = '01927f4e-8b2a-7c3d-9e4f-5a6b7c8d9e03';
+    Object.assign(message.properties, { correlationId, messageId: 'm-1' });
+    const failure = new Error('database is down');
+
+    await retryOrPark(QUEUE, POLICY, log.context)(asChannel, message, failure);
+
+    expect(log.chains).toEqual([correlationId]);
+    expect(log.warn).toHaveBeenCalledExactlyOnceWith(
+      { queue: QUEUE, messageId: 'm-1', attempt: 2, maxAttempts: 3, retryInMs: 200, err: failure },
+      'delivery failed, the message comes again',
+    );
+  });
+
+  it('starts a chain of its own for a message that names none', async () => {
+    const { asChannel } = channelThat();
+    const log = logger();
+
+    await retryOrPark(QUEUE, POLICY, log.context)(asChannel, delivered(1), new Error('down'));
+
+    expect(log.chains).toEqual([expect.stringMatching(/^[0-9a-f-]{36}$/)]);
   });
 });

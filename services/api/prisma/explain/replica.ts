@@ -24,10 +24,10 @@ try {
 const urls = {
   owner: process.env.DATABASE_ADMIN_URL,
   // the owner on the replica: the same roles and passwords, it is a copy of the primary
-  replicaOwner: process.env.REPLICA_ADMIN_URL ?? 'postgresql://oms:oms@localhost:5433/oms',
+  replicaOwner: process.env.REPLICA_ADMIN_URL ?? 'postgresql://oms:oms@127.0.0.1:5433/oms',
   // the application role past the pooler, on each server
-  primary: process.env.DATABASE_DIRECT_URL ?? 'postgresql://oms_app:oms_app@localhost:5432/oms',
-  replica: process.env.REPLICA_DIRECT_URL ?? 'postgresql://oms_app:oms_app@localhost:5433/oms',
+  primary: process.env.DATABASE_DIRECT_URL ?? 'postgresql://oms_app:oms_app@127.0.0.1:5432/oms',
+  replica: process.env.REPLICA_DIRECT_URL ?? 'postgresql://oms_app:oms_app@127.0.0.1:5433/oms',
 };
 
 const print = (line: string) => process.stdout.write(`${line}\n`);

@@ -1,9 +1,10 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { databaseConfig, type DatabaseConfig } from '@config/configuration';
 import { PrismaService } from '@infra/database/prisma.service';
 import { ReplicaPrismaService } from '@infra/database/replica-prisma.service';
 import { RedisService } from '@infra/redis/redis.service';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 /** Stored when the primary's position could not be read: the writer stays on the primary. */
 const PINNED = 'pinned';
@@ -20,14 +21,17 @@ const markerKey = (userId: string) => `ryw:${userId}`;
  */
 @Injectable()
 export class ReadYourWrites {
-  private readonly logger = new Logger(ReadYourWrites.name);
+  private readonly log: Logger;
 
   constructor(
     private readonly primary: PrismaService,
     private readonly replica: ReplicaPrismaService,
     private readonly redis: RedisService,
     @Inject(databaseConfig.KEY) private readonly config: DatabaseConfig,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: ReadYourWrites.name });
+  }
 
   /** Never throws: a write that succeeded must not fail on its marker. */
   async recordWrite(userId: string): Promise<void> {
@@ -39,7 +43,7 @@ export class ReadYourWrites {
         this.config.readYourWritesTtlSeconds,
       );
     } catch (error) {
-      this.logger.warn(`No write marker for ${userId}, a stale read may follow: ${String(error)}`);
+      this.log.warn({ userId, err: error }, 'no write marker stored, a stale read may follow');
     }
   }
 
@@ -53,7 +57,7 @@ export class ReadYourWrites {
     try {
       position = await this.redis.get(markerKey(userId));
     } catch (error) {
-      this.logger.warn(`No write marker readable, reading the replica: ${String(error)}`);
+      this.log.warn({ userId, err: error }, 'no write marker readable, reading the replica');
       return true;
     }
     if (position === null) return true;
@@ -63,7 +67,7 @@ export class ReadYourWrites {
         SELECT pg_last_wal_replay_lsn() >= ${position}::pg_lsn AS replayed`;
       return row?.replayed === true;
     } catch (error) {
-      this.logger.warn(`The replica did not answer, reading the primary: ${String(error)}`);
+      this.log.warn({ userId, err: error }, 'the replica did not answer, reading the primary');
       return false;
     }
   }

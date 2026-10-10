@@ -1,8 +1,13 @@
 import { Inject, Injectable } from '@nestjs/common';
 
+import { CorrelationContext } from '@common/messaging/correlation-context';
+import { correlationIdFrom } from '@common/messaging/correlation-header';
+import { runInTraceContext, traceCarrierFrom } from '@common/tracing/trace-context';
 import { outboxConfig, type OutboxConfig } from '@config/configuration';
 import { PrismaService } from '@infra/database/prisma.service';
 import { Clock } from '@shared/domain/clock';
+import { newId } from '@shared/domain/id';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { OUTBOX_PUBLISHER, type OutboxPublisher, type OutboxRecord } from './outbox-publisher.port';
 
@@ -21,6 +26,14 @@ export interface RelayPass {
   failure?: unknown;
 }
 
+/** The chain a row belongs to: the correlation id of the envelope it holds. */
+const correlationOf = (payload: unknown): string => {
+  const envelope = typeof payload === 'object' && payload !== null ? payload : {};
+  return (
+    correlationIdFrom('correlationId' in envelope ? envelope.correlationId : undefined) ?? newId()
+  );
+};
+
 /**
  * One pass of the relay: takes the oldest unpublished messages, publishes them one by one in
  * the order they were written, and marks the published ones, all in one transaction.
@@ -35,15 +48,25 @@ export interface RelayPass {
  *    messages again: at-least-once, with the same message id.
  *
  * The unscoped client, on purpose: the rows belong to no tenant (docs/adr/0014).
+ *
+ * The relay has no chain of its own: each row is published under the correlation id of its
+ * message, so the line of a publish is found with the request that caused it. The same goes
+ * for its trace: a row is published in the trace it was written in (docs/adr/0025).
  */
 @Injectable()
 export class OutboxRelay {
+  private readonly log: Logger;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly clock: Clock,
     @Inject(OUTBOX_PUBLISHER) private readonly publisher: OutboxPublisher,
     @Inject(outboxConfig.KEY) private readonly config: OutboxConfig,
-  ) {}
+    private readonly correlation: CorrelationContext,
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: OutboxRelay.name });
+  }
 
   pass(): Promise<RelayPass> {
     const { batchSize, publishTimeoutMs } = this.config;
@@ -54,7 +77,8 @@ export class OutboxRelay {
         if (!lock?.locked) return { skipped: true, published: 0, more: false };
 
         const batch = await tx.$queryRaw<OutboxRecord[]>`
-          SELECT id, exchange, routing_key AS "routingKey", payload
+          SELECT id, exchange, routing_key AS "routingKey", payload,
+                 trace_context AS "traceContext"
             FROM outbox
            WHERE published_at IS NULL
            ORDER BY id
@@ -64,13 +88,15 @@ export class OutboxRelay {
         const published: string[] = [];
         let failure: unknown;
         for (const record of batch) {
-          try {
-            await this.publisher.publish(record);
-            published.push(record.id);
-          } catch (err: unknown) {
-            failure = err ?? new Error('publish failed');
-            break;
-          }
+          // read back from JSON: whatever is not a carrier is no trace
+          const traceContext = traceCarrierFrom(record.traceContext);
+          failure = await runInTraceContext(traceContext, () =>
+            this.correlation.run(correlationOf(record.payload), () =>
+              this.publish({ ...record, traceContext }),
+            ),
+          );
+          if (failure !== undefined) break;
+          published.push(record.id);
         }
         if (published.length > 0) {
           await tx.outboxMessage.updateMany({
@@ -87,5 +113,23 @@ export class OutboxRelay {
       },
       { timeout: publishTimeoutMs + TRANSACTION_MARGIN_MS },
     );
+  }
+
+  /** One row to the broker, in the scope of its chain. Resolves with why it failed, if it did. */
+  private async publish(record: OutboxRecord): Promise<unknown> {
+    const message = {
+      messageId: record.id,
+      exchange: record.exchange,
+      routingKey: record.routingKey,
+    };
+    try {
+      await this.publisher.publish(record);
+    } catch (err: unknown) {
+      // every pass meets the same row until it goes out: the runner reports it once, as an error
+      this.log.debug({ ...message, err }, 'message not published');
+      return err ?? new Error('publish failed');
+    }
+    this.log.debug(message, 'message published');
+    return undefined;
   }
 }

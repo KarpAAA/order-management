@@ -1,8 +1,10 @@
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
-import { Inject, Logger } from '@nestjs/common';
+import { Inject } from '@nestjs/common';
 import { UnrecoverableError } from 'bullmq';
 
+import { JobScope } from '@common/messaging/job-scope';
 import { ordersQueueConfig, type OrdersQueueConfig } from '@config/configuration';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { ORDERS_QUEUE } from '../../infrastructure/orders.queue';
 
@@ -18,20 +20,27 @@ import type { Job } from 'bullmq';
  */
 @Processor(ORDERS_QUEUE)
 export class OrdersConsumer extends WorkerHost implements OnApplicationBootstrap {
-  private readonly logger = new Logger(OrdersConsumer.name);
+  private readonly log: Logger;
 
   constructor(
     private readonly partitionsJob: MaintainOrderEventPartitionsJob,
     @Inject(ordersQueueConfig.KEY) private readonly config: OrdersQueueConfig,
+    private readonly jobs: JobScope,
+    @Inject(LOGGER) logger: Logger,
   ) {
     super();
+    this.log = logger.child({ context: OrdersConsumer.name });
   }
 
   onApplicationBootstrap(): void {
     this.worker.concurrency = this.config.concurrency;
   }
 
-  async process(job: Job): Promise<void> {
+  process(job: Job): Promise<void> {
+    return this.jobs.run(job, () => this.route(job));
+  }
+
+  private async route(job: Job): Promise<void> {
     switch (job.name) {
       case MaintainOrderEventPartitionsJob.QUEUE_JOB:
         // no workspace: partitions belong to the table, not to a tenant
@@ -49,7 +58,8 @@ export class OrdersConsumer extends WorkerHost implements OnApplicationBootstrap
   onFailed(job: Job, err: Error): void {
     const attemptsSpent = job.attemptsMade >= (job.opts.attempts ?? 1);
     if (attemptsSpent || err.name === 'UnrecoverableError') {
-      this.logger.error(`dead job ${job.name} id=${job.id ?? ''}: ${err.message}`);
+      this.log.error({ queue: job.queueName, job: job.name, jobId: job.id, err }, 'dead job');
+      this.jobs.died(job);
     }
   }
 }

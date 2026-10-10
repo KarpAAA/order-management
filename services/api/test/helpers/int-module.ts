@@ -1,5 +1,6 @@
-// A slice of the app for int tests: config, database, CLS + transactions — exactly as
-// shared.module.ts wires them — plus whatever the test is about. No HTTP, queues or JWT.
+// A slice of the app for int tests: config, the logger, database, CLS + transactions —
+// exactly as shared.module.ts wires them — plus whatever the test is about. No HTTP, queues
+// or JWT. The log goes nowhere.
 import { ConsoleLogger } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { ClsPluginTransactional, TransactionHost } from '@nestjs-cls/transactional';
@@ -10,6 +11,7 @@ import { ConfigModule } from '@config/config.module';
 import { DatabaseModule } from '@infra/database/database.module';
 import type { DbTransactionAdapter } from '@infra/database/database.tokens';
 import { createTransactionalAdapter } from '@infra/database/transactional.adapter';
+import { LOG_DESTINATION, LoggerModule } from '@infra/logger/logger.module';
 import type { WorkspaceMembership } from '@shared/auth/workspace-role';
 
 import type { DynamicModule, Provider, Type } from '@nestjs/common';
@@ -31,6 +33,7 @@ export async function createIntModule(opts: {
     imports: [
       ConfigModule, // DATABASE_URL of this file's database, set by test/setup/db.ts
       DatabaseModule,
+      LoggerModule,
       ClsModule.forRoot({
         global: true,
         plugins: [
@@ -44,6 +47,8 @@ export async function createIntModule(opts: {
     ],
     providers: opts.providers,
   })
+    .overrideProvider(LOG_DESTINATION)
+    .useValue({ write: () => undefined })
     .setLogger(new ConsoleLogger({ logLevels: ['fatal', 'error', 'warn'] })) // no query debug spam
     .compile();
   await moduleRef.init();

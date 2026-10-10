@@ -13,6 +13,7 @@ import { correlationOf, recordingOutbox } from '@infra/outbox/__test__/recording
 import { ReliableEvents } from '@infra/outbox/reliable-events';
 import { Money } from '@shared/domain/money';
 import type { DomainEvent } from '@shared/events/domain-event';
+import { silentLogger } from '@shared/logger/silent-logger';
 import type { Inbox } from '@shared/messaging/inbox';
 
 import { fixedClock } from './application/__test__/fixtures';
@@ -66,15 +67,9 @@ describe('the api as a consumer', () => {
         return true;
       },
     };
-    const payments = new PaymentEventsConsumer(tenant, correlation, inbox, useCase, useCase);
-    const inventory = new InventoryEventsConsumer(
-      tenant,
-      correlation,
-      inbox,
-      useCase,
-      useCase,
-      useCase,
-    );
+    const scope = { tenant, correlation, inbox, logger: silentLogger };
+    const payments = new PaymentEventsConsumer(scope, useCase, useCase);
+    const inventory = new InventoryEventsConsumer(scope, useCase, useCase, useCase);
     return {
       execute,
       queues: [

@@ -1,9 +1,12 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
-import { PrismaPg } from '@prisma/adapter-pg';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 
 import { databaseConfig, type DatabaseConfig } from '@config/configuration';
+import { LOGGER, type Logger } from '@shared/logger/logger';
+import { METRICS, type Metrics } from '@shared/observability/metrics';
+import { silentMetrics } from '@shared/observability/silent-metrics';
 
 import { PrismaClient } from './generated/prisma/client';
+import { MeasuredPrismaPg, measurePool } from './pool.metrics';
 
 import type { Prisma } from './generated/prisma/client';
 import type { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
@@ -17,11 +20,19 @@ import type { OnModuleDestroy, OnModuleInit } from '@nestjs/common';
  */
 @Injectable()
 export class PrismaService extends PrismaClient implements OnModuleInit, OnModuleDestroy {
-  constructor(@Inject(databaseConfig.KEY) config: DatabaseConfig) {
+  constructor(
+    @Inject(databaseConfig.KEY) config: DatabaseConfig,
+    @Inject(LOGGER) logger: Logger,
+    // left out by a test that builds the client by hand
+    @Optional() @Inject(METRICS) metrics: Metrics = silentMetrics,
+  ) {
     super({
       // No `statementNameGenerator`: the adapter then sends unnamed statements only, which is
       // what PgBouncer in transaction mode needs (docs/adr/0008-pgbouncer-transaction-mode.md).
-      adapter: new PrismaPg({ connectionString: config.url, max: config.poolMax }),
+      adapter: new MeasuredPrismaPg(
+        { connectionString: config.url, max: config.poolMax },
+        measurePool(metrics, 'primary'),
+      ),
       log: config.logQueries
         ? ['warn', 'error', { emit: 'event', level: 'query' }]
         : ['warn', 'error'],
@@ -29,9 +40,10 @@ export class PrismaService extends PrismaClient implements OnModuleInit, OnModul
     // Subscribed here, not in onModuleInit: the tenant-scoped client ($extends) inherits this
     // class's methods, so Nest runs onModuleInit on it too — and extended clients have no $on.
     if (config.logQueries) {
-      const logger = new Logger('Prisma');
+      // the statement with its placeholders: the parameters are never logged
+      const log = logger.child({ context: 'Prisma' });
       this.onQuery((e) => {
-        logger.debug(`${String(e.duration)} ms ${e.query}`);
+        log.debug({ durationMs: e.duration, query: e.query }, 'query');
       });
     }
   }

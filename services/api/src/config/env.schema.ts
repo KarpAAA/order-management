@@ -16,6 +16,40 @@ export const envSchema = z.object({
         .filter(Boolean),
     ),
 
+  /** The lowest level that is written (ops/logging.md §2). */
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
+  /** Lines for a human (pino-pretty) instead of JSON: a terminal in development, never a deploy. */
+  LOG_PRETTY: booleanString.default(false),
+  /**
+   * The OpenTelemetry Collector, OTLP over HTTP (docs/adr/0024, 0025). Unset or empty: no
+   * trace is sent. Read by `src/instrumentation.ts` before this schema is: it is here so
+   * that a value that is not a URL stops the boot instead of sending nowhere.
+   */
+  OTEL_EXPORTER_OTLP_ENDPOINT: z
+    .union([z.literal(''), z.url({ protocol: /^https?$/ })])
+    .optional()
+    .transform((v) => (v === '' ? undefined : v)),
+  /**
+   * `otlp`: the log lines go to the Collector as well as to stdout (docs/adr/0026). For a
+   * process on a developer's machine only: in a container an agent reads stdout, and both
+   * would store every line twice. Read by `src/instrumentation.ts`, as the endpoint is.
+   */
+  OTEL_LOGS_EXPORTER: z.enum(['otlp', 'none']).default('none'),
+
+  /**
+   * The port `GET /metrics` is served on, for Prometheus (docs/adr/0027). Unset: 9464 for the
+   * api and 9465 for the worker, which share this file under `pnpm dev`. 0: not served.
+   */
+  METRICS_PORT: z.coerce.number().int().min(0).max(65_535).optional(),
+  /** The buckets of the duration histograms, in seconds (ops/observability.md §1). */
+  METRICS_DURATION_BUCKETS: z
+    .string()
+    .default('0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10')
+    .transform((v) => v.split(',').map((bound) => Number(bound.trim())))
+    .refine((bounds) => bounds.every((bound) => Number.isFinite(bound) && bound > 0), {
+      message: 'a comma-separated list of positive numbers',
+    }),
+
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   /**
    * Connections one process keeps open. Behind PgBouncer they are client connections: cheap,
@@ -166,6 +200,10 @@ export function validateEnv(raw: Record<string, unknown>): Env {
   // Boot-time safety checks (ops/config-env.md §3).
   if (env.NODE_ENV === 'production' && (env.SWAGGER_ENABLED || env.BULL_BOARD_ENABLED)) {
     throw new Error('Invalid environment: Swagger and bull-board must be disabled in production');
+  }
+  if (env.NODE_ENV === 'production' && env.LOG_PRETTY) {
+    // what collects the logs reads JSON, and pino-pretty is not in the image
+    throw new Error('Invalid environment: LOG_PRETTY must be off in production');
   }
   return env;
 }

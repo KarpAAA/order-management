@@ -1,0 +1,85 @@
+// The agent that takes the log lines of the containers to Loki (docs/adr/0026). A service
+// writes JSON lines to stdout and knows nothing of this: the agent asks Docker for the output
+// of the containers of the `app` profile, and a service runs the same with no agent.
+//
+// A process under `pnpm dev` is not a container: it sends its lines to the Collector itself
+// (OTEL_LOGS_EXPORTER=otlp). What Loki holds has the same two names either way, the ones the
+// data sources of the `lgtm` image join logs and traces by: the label `service_name`, equal
+// to `service.name` of the traces, and `trace_id`.
+
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+  // a container that has just started is read within seconds, not after the default minute
+  refresh_interval = "5s"
+
+  // the dev stack only: the stacks of the contract and system tests start no agent
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=oms"]
+  }
+}
+
+discovery.relabel "services" {
+  targets = discovery.docker.containers.targets
+
+  // the processes that write our JSON lines; a database or the broker is not collected
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "api|worker|payments|inventory|notifications|fake-psp"
+    action        = "keep"
+  }
+
+  // oms-api, oms-worker, oms-payments, …: what src/instrumentation.ts names the process
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service_name"
+    replacement   = "oms-$1"
+  }
+}
+
+loki.source.docker "services" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.services.output
+  forward_to = [loki.process.lines.receiver]
+}
+
+loki.process "lines" {
+  // a line that is not JSON (the last words of a process that crashed) passes as it is
+  stage.json {
+    expressions = {
+      time          = "",
+      context       = "",
+      correlationId = "",
+      trace_id      = "traceId",
+      span_id       = "spanId",
+    }
+  }
+
+  // when the process wrote the line, not when the agent read it
+  stage.timestamp {
+    source = "time"
+    format = "RFC3339Nano"
+  }
+
+  // Not labels: a label is a stream, and an id has a value per request. Beside the line,
+  // unindexed, and still a filter: {service_name="oms-worker"} | trace_id="…"
+  // The names are the ones a line sent over OTLP gets, so that one query reads both: the
+  // fields of the line as they are, `trace_id` and `span_id` as OpenTelemetry names them.
+  // The level needs none: Loki reads it from the line (`detected_level`).
+  stage.structured_metadata {
+    values = {
+      trace_id      = "",
+      span_id       = "",
+      correlationId = "",
+      context       = "",
+    }
+  }
+
+  forward_to = [loki.write.lgtm.receiver]
+}
+
+loki.write "lgtm" {
+  endpoint {
+    url = "http://lgtm:3100/loki/api/v1/push"
+  }
+}

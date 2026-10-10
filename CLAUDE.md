@@ -1,7 +1,7 @@
 # order-management
 
 Multi-tenant order management backend, built step by step as a learning project.
-Current step: **Step 3: microservices and brokers**, 3.13 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
+Current step: **Step 4: observability**, 4.6 done (see `docs/ROADMAP.md`; architecture: `docs/architecture.md`).
 Four services: `services/api` (this file), `services/payments`, `services/inventory` and
 `services/notifications` (their own decisions: `services/payments/CLAUDE.md`,
 `services/inventory/CLAUDE.md`, `services/notifications/CLAUDE.md`). They share
@@ -42,19 +42,19 @@ outbox: yes                     # table `outbox` + a relay in the worker (ADR 00
 broker: rabbitmq                # between services only (ADR 0012): commands → exchange `commands`, events → `events`
 queue: bullmq
 processes: api+worker
-dlq: alert                      # dead job → Logger.error in OrdersConsumer; a broker message given up → `<queue>.dlq` + Logger.error (Step 4: metric)
+dlq: alert                      # dead job → an `error` line of its consumer + `queue_job_dead_total`; a broker message given up → `<queue>.dlq` + an `error` line + `broker_messages_parked_total` (ADR 0027)
 cron: bullmq                    # job schedulers on the owner's queue: maintain-order-event-partitions (orders), cleanup-outbox (outbox), cleanup-inbox (inbox), cleanup-idempotency-keys (idempotency)
 idempotency-key: required       # on POST /orders and POST /orders/{id}/place only (ADR 0018); a row in the transaction of the write
 validation: class-validator
 swagger-prod: off
 async-push: poll
-logs: stdout                    # Nest built-in Logger in Step 0; pino in Step 4
-traces: none
-metrics-endpoint: none          # Step 4
+logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023), traceId + spanId of the active span; to Loki by the agent `alloy` in a container, by OTLP under `pnpm dev` (OTEL_LOGS_EXPORTER, ADR 0026); LOG_LEVEL, LOG_PRETTY
+traces: otlp                    # the SDK is a preload (`node --require ./dist/instrumentation.js`); OTEL_EXPORTER_OTLP_ENDPOINT unset = off (ADR 0025)
+metrics-endpoint: port          # GET /metrics on METRICS_PORT of every process (9464 api, 9465 worker; 0 = off), pulled by Prometheus (ADR 0027)
 tracker: none
 merge: merge-commit
 testing: vitest                 # projects unit + e2e; test levels per requirement in docs/requirements.md
-ci: github-actions              # PR + main: static, unit, e2e, migrations, contracts, audit; PR: commits; main + nightly: mutation, contract, system
+ci: github-actions              # PR + main: static (+ promtool on the SLO rules), unit, e2e, migrations, contracts, audit; PR: commits; main + nightly: mutation, contract, system
 hooks: husky                    # pre-commit: lint-staged; commit-msg: commitlint + no AI trailers; pre-push: typecheck + unit
 ```
 
@@ -67,7 +67,7 @@ Node 24 LTS, TypeScript 6.0, pnpm 10 (workspaces: `services/*`, `packages/*`, `d
 ## Commands (CMD-friendly, from the repo root)
 
 ```
-pnpm infra:up          # postgres, postgres-replica, pgbouncer, postgres-payments, postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, fake-psp (healthy)
+pnpm infra:up          # postgres, postgres-replica, pgbouncer, postgres-payments, postgres-inventory, postgres-notifications, redis, rabbitmq, mailpit, lgtm (Grafana on 3001, OTLP on 4317 / 4318), postgres-exporter, fake-psp (healthy)
 pnpm db:migrate        # prisma migrate dev (api)
 pnpm db:migrate:payments     # prisma migrate dev (payments, its own Postgres on 5434)
 pnpm db:migrate:inventory    # prisma migrate dev (inventory, its own Postgres on 5435)
@@ -94,8 +94,10 @@ pnpm test:e2e          # Vitest project e2e of api, then of inventory, notificat
 pnpm test:contract     # Schemathesis vs /docs-json in compose project oms-contract (devtools/contract)
 pnpm test:system       # the four services from their images in compose project oms-system, four scenarios through the HTTP API (devtools/system; SYSTEM_KEEP_STACK=1 leaves it up, pnpm system:down removes it)
 pnpm test:migrations   # guard + fresh + drift (migrate diff) + upgrade on base seed (Testcontainers)
+pnpm test:rules        # promtool on the SLO recording rules (devtools/observability/rules; Docker)
+pnpm demo:orders       # a client that keeps placing orders in the seeded workspace: traffic for the dashboards (-- --interval 250, --count 50)
 pnpm test:mutation     # Stryker on orders domain/ + application/ + money.ts; report only (reports/mutation)
-docker compose --profile app up --build   # migrate + api + worker from one image; payments, inventory and notifications each from its own, with its migrate step
+docker compose --profile app up --build   # migrate + api + worker from one image; payments, inventory and notifications each from its own, with its migrate step; alloy (the agent that takes their log lines to Loki)
 ```
 
 Root `lint`, `typecheck`, `test`, `test:e2e` and `dev` build `@oms/contracts` first; run through
@@ -286,7 +288,7 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
     without one;
   - never `Nack(true)` and never a retry loop in a consumer: throw. `UnprocessableMessageError`
     = parked at once; anything else = `maxAttempts` deliveries, then parked. A parked message
-    is a `Logger.error` and is put back by hand (management UI → Move messages);
+    is an `error` in the log and is put back by hand (management UI → Move messages);
   - the second argument of a handler is the delivery (`{ attempt, last }`,
     `@shared/messaging/delivery`), not the raw amqp message;
   - the arguments of an existing queue cannot be changed (`PRECONDITION_FAILED` at boot): a
@@ -374,6 +376,158 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
     uses the unscoped `PrismaService`;
   - `api.http()` in the e2e suite sends a fresh key with every request; a test about the
     key sets or unsets the header.
+- **One logger, and a correlation id nobody passes** (ADR 0023; `@shared/logger/logger`,
+  `infrastructure/logger/`, `common/messaging/correlation-context.ts`). A class injects
+  `LOGGER` and writes `log.info({ orderId }, 'order placed')`; pino writes a JSON line with
+  the `correlationId` of the work under way, read from CLS. Consequences:
+  - the fields first, then a message that is the same every time: no value inside the
+    message, never `Logger` of Nest or `console` (lint). An error goes under `err`;
+  - never a body, a payload, a header, an email or a token: ids, codes and counts. The
+    redaction of pino is a net for eleven keys at three depths, not the rule;
+  - `error` means somebody has to look; a 4xx, a retry and a message that was skipped are
+    `warn` at most;
+  - an entry opens the chain and writes its line: `httpEntry` (the `setup` of the CLS
+    middleware: `x-correlation-id` when it is a UUID, the same header on the answer),
+    `RabbitSubscribers` (the id of the message), `JobScope` (a job), `OutboxRelay` (a row).
+    A new kind of entry does the same; a consumer, a job class and a use case never do;
+  - what runs after a handler and outside its scope (`retry-or-park.ts`, a listener of an
+    event emitter) has no chain: it opens one again (`correlation.run()`), or is bound to the
+    scope (`AsyncResource.bind`);
+  - `correlation.run()` and `runInWorkspace()` inherit the scope around them (nestjs-cls 7),
+    a transaction included; `continue()` changes the chain of the scope it is called in;
+  - a use case logs nothing by hand: `@UseCase()` writes its line (name, actor, duration,
+    `ok` | the code of the `DomainError` | `error`), and the error itself is logged once, by
+    the exception filter or by `retry-or-park`;
+  - a job enqueued from a request or a message puts `correlationId` into its **data**
+    (`JobScope` reads it). Today the queues carry scheduler ticks only: each run is a chain
+    of its own;
+  - a class built by hand (a test, a script) takes `silentLogger` or a `RecordingLogger`
+    (`@shared/logger/`); an e2e app logs to memory, and `api.logs()` / `worker.logs()` give
+    the lines (`test/helpers/log-capture.ts`, `test/observability/`);
+  - the process name of a line (`api`, `worker`) comes from `ProcessNameModule.is()` in the
+    entrypoint module;
+  - the logger and the entry of the broker are copied in the three other services: a fix in
+    one is made in the others.
+- **The observability stack is one container of the dev infrastructure** (ADR 0024; `lgtm`
+  in `docker-compose.yml`: Grafana, Loki, Tempo, Prometheus and an OpenTelemetry Collector).
+  Traces are sent since 4.3. Consequences:
+  - a service sends OTLP to the Collector (`localhost:4318` under `pnpm dev`, `lgtm:4318` in
+    a container) and never writes to Loki, Tempo or Prometheus itself;
+  - Grafana is on 3001 of the host: 3000 is the api;
+  - its configuration is inside the image: a change is a file mounted over
+    `/otel-lgtm/<name>.yaml`, and a dashboard made in the UI lives in the volume only;
+  - the stack of the system tests starts without it (a profile nobody asks for in
+    `docker-compose.system.yml`): a service must run with no Collector;
+  - metrics are pulled from `/metrics` (ADR 0027), not sent to the Collector.
+- **Every process counts, and Prometheus reads** (ADR 0027; `@shared/observability/metrics`,
+  `infrastructure/observability/`). A class injects `METRICS` and asks for a counter, a
+  gauge or a histogram; `GET /metrics` is a server of its own on `METRICS_PORT`.
+  Consequences:
+  - a label takes its values from a closed set: a route pattern, a class name, a code. Never
+    an id of a tenant, an order or a user, never a reason somebody else writes: every value
+    is a time series for every combination of the others (`metrics.e2e-spec.ts`, MET-037);
+  - an entry counts where it writes its line (`httpEntry`, `@UseCase()`, `JobScope`,
+    `RabbitSubscribers`, `retry-or-park.ts`, the runner of the relay). A use case, a
+    consumer and a job class never count;
+  - a business metric is counted from a domain event, after the commit: its module registers
+    the count in `EventMeters` (`orders/infrastructure/order-events.meter.ts`), beside the
+    translation. A new event to count is a line there; a new reason of a failed payment is a
+    case of `paymentFailureCause()`, or it is `declined`;
+  - a duration is in seconds (`secondsSince()`), a counter ends in `_total`;
+  - a fact of a store (the backlog of the outbox, the depth of a queue) is a gauge with
+    `collect`, asked at the scrape, and reported by the worker only: two processes would be
+    added up. A read that fails shows no value, never 0;
+  - `prom-client` is imported in `infrastructure/observability/` only, and the registry is
+    the application's own, not the global one: the e2e suite runs several in a process;
+  - a class built by hand takes `silentMetrics` or a `RecordingMetrics`
+    (`@shared/observability/`); an e2e test reads `scrape(app)` (`test/helpers/metrics.ts`),
+    and waits for a count that is made after the commit;
+  - a histogram keeps the trace of an observation as an exemplar, read from the active
+    span: nobody passes it;
+  - the pool is the adapter's: `MeasuredPrismaPg` only says which pool was made. Do not hand
+    Prisma a pool of ours;
+  - a new process, or a new service, is a target in `devtools/observability/prometheus.yaml`
+    (both ways to run it) and a port in `DEFAULT_PORTS`; a container names `METRICS_PORT`;
+  - a dashboard, a rule and the alert are files of `devtools/observability/`: what is made
+    in the UI of Grafana lives in the volume only. After a change:
+    `docker compose up -d --force-recreate lgtm`;
+  - the port, the registry, the server and the meters of the broker are copied in the three
+    other services: a fix in one is made in the others.
+- **`place` has two objectives, and the first is not read from HTTP** (ADR 0028;
+  `devtools/observability/rules/slo.yaml`). `POST …/place` answers 202 with the provider
+  down: the success of `place` is `paid / (paid + failed by the system)`, from the business
+  counters. Consequences:
+  - `declined` and `out_of_stock` are the system working, and are in neither part;
+  - the SLIs are recording rules of Prometheus, so that `pnpm test:rules` can hold them to
+    six kinds of traffic. A change of a rule is a change of `slo.test.yaml`;
+  - one alert, in Grafana, on a symptom: `PlaceSuccessRatioLow`, a mail to Mailpit. It is
+    minutes late by design (the retries of the charge, the window, `for`). The other rules
+    wait in the second pass of the roadmap;
+  - `pnpm demo:orders` is the traffic; `docker compose stop fake-psp` is the outage.
+- **A log line carries its trace, and reaches Loki in two ways** (ADR 0026;
+  `infrastructure/logger/pino.logger.ts`, `src/instrumentation.ts`, `devtools/alloy/config.alloy`).
+  The `mixin` of the logger adds `traceId` and `spanId` of the active span, beside the
+  correlation id. Consequences:
+  - `correlationId` and `traceId` are two fields on purpose: the first may come from the
+    caller and follows a delayed message, a timeout of the saga begins another trace. Never
+    make one stand for the other;
+  - a line outside a span has no `traceId` (a tick of the relay or of a scheduler). Do not
+    open a span to give a line an id. A line about a row that kept a trace is written in
+    that trace (`TRACE_SCOPE` in notifications, `runInTraceContext()` here);
+  - the broker library logs through `LibraryLogger` (`infrastructure/messaging/`), which
+    writes its report of a handler that threw at `debug`: the line of that delivery is the
+    one of `retry-or-park.ts`. Do not hand the library a plain `NestLoggerAdapter`;
+  - `pnpm db:reset` leaves RabbitMQ as it was: the delayed messages of orders that are gone
+    are parked with an `error` (`ORDER_SAGA_NOT_FOUND`). Purge `api.saga-timeouts.dlq` after
+    a reset, it is not a defect;
+  - in a container the agent `alloy` reads stdout and pushes to Loki; under `pnpm dev` the
+    process sends its lines over OTLP (`OTEL_LOGS_EXPORTER=otlp` in `.env`). The setting is
+    `none` in every container of a compose file: with both, each line is stored twice;
+  - `logRecordProcessors` is always passed to `NodeSDK`, empty when off: left out, the SDK
+    reads `OTEL_LOGS_EXPORTER` itself and its default sends;
+  - the instrumentation of pino only forwards the line (`disableLogCorrelation`): the ids
+    are written by our logger, so a container, a test and a host process write the same line;
+  - Loki has one label, `service_name` = `service.name` of the traces = `oms-<compose
+service>`. An id is never a label: `trace_id`, `span_id`, `correlationId` and `context`
+    are structured metadata, under the same names in both ways;
+  - a new service of the `app` profile is a name in the `keep` rule of `config.alloy`;
+  - Grafana is not provisioned: the data sources of the image join Loki and Tempo by
+    `trace_id` and `service_name`, and we use its names;
+  - `alloy` has a profile nobody asks for in `docker-compose.system.yml`, as `lgtm` has;
+  - the mixin, the exporter and the setting are copied in the three other services: a fix
+    in one is made in the others.
+- **A trace is one for an order, and a row that waits carries it** (ADR 0025;
+  `src/instrumentation.ts`, `common/tracing/trace-context.ts`). The SDK and the
+  instrumentations of `http`, `pg`, `ioredis` and `amqplib` are a preload; our code only
+  keeps the context where a timer takes the work over. Consequences:
+  - `src/instrumentation.ts` is loaded with `node --require`, before any entrypoint, and is
+    never imported: imported later it patches nothing and nothing fails. A new way to start
+    a process (a script, a Dockerfile, a compose `command`) names it. It imports
+    OpenTelemetry and `trace-context.ts` only;
+  - `OTEL_EXPORTER_OTLP_ENDPOINT` unset or empty = no SDK: the tests and the stacks of the
+    system and contract tests run so. Never make a service wait for the Collector;
+  - `Outbox.append()` stores the `traceparent` of the active span in `outbox.trace_context`
+    and the relay publishes the row in it. A new table whose rows are worked off later
+    (by a timer, a job, another process) keeps the trace the same way:
+    `captureTraceContext()` at the write, `runInTraceContext()` at the work;
+  - `appendDelayed()` stores a link, not a parent: the relay publishes such a row with
+    tracing suppressed and the header `x-trace-link`, and the consumer span begins a trace
+    that points back. Do not make a timeout a child: the trace of an order would last as
+    long as its timeout;
+  - `pg` and `ioredis` trace only inside a trace (`requireParentSpan`): the relay and
+    BullMQ poll. A span that is missing under a timer has no parent: open one, do not
+    switch the option off;
+  - a manual span comes from `inSpan()` and exists in two places: `@UseCase()` and
+    `JobScope`. A use case never opens one by hand. The manual spans of the saga steps are
+    deferred (second pass);
+  - a span carries ids, codes and counts, as a log line does: never a body, an address or
+    an id of a user. A `DomainError` is the `outcome` of a span, not its failure;
+  - a job enqueued from a request puts `traceparent` into its data, beside
+    `correlationId` (`captureTraceContext()`); `JobScope` reads both;
+  - a unit test that looks at spans takes `recordingTracer()`
+    (`common/tracing/__test__/recording-tracer.ts`): the provider is global to the file;
+  - the carrier and the preload are copied in the three other services, without the link:
+    a fix in one is made in the others.
 - **The system as a whole is tested by four scenarios, not by a fifth suite of rules**
   (ADR 0022; `devtools/system`, `docker-compose.system.yml`, `pnpm test:system`). All four
   services from their images, and a test that knows what a client and an operator know: the
@@ -465,9 +619,10 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
 
 ## Deviations from the conventions templates
 
-- `eslint.config.mjs` is the template plus four additions (3: `@oms/contracts` is a layer of
+- `eslint.config.mjs` is the template plus six additions (3: `@oms/contracts` is a layer of
   its own, importable from `infrastructure/`, a module's adapters and its consumers only;
-  4: `@RabbitSubscribe` is an entry decorator). The first two: the generated Prisma client,
+  4: `@RabbitSubscribe` is an entry decorator; 5: `Logger` of `@nestjs/common` is not
+  imported; 6: `src/instrumentation.ts` is a root of the process, like an entrypoint). The first two: the generated Prisma client,
   `prisma/` and root tool files are outside the layer map; `test/factories`, `test/doubles`
   and `test/helpers` may import module internals. Details at the top of the file.
 - Module core exports include the use cases and query services, for the module's own
@@ -535,6 +690,29 @@ message })` addresses it to `<queue>.delay.<ms>` on the exchange `api.delayed`: 
   of the saga and the three ports a step sends through, as one collaborator. Six constructor
   dependencies are the limit (`code-style.md` §2), and every use case of the saga needs these
   four.
+- `ConsumerScope` (`orders/infrastructure/`) is the tenant, the correlation, the inbox and
+  the logger as one collaborator of the three broker consumers, for the same limit of six.
+  It is in `infrastructure/` because a transport module may not import `interface/` (lint).
+- The logger of a use case is a property the injector sets (`@UseCase()`), not a constructor
+  parameter (`ops/logging.md` §1: injected by token): the decorator has no constructor of
+  its own, and the logger does not count against the six (`docs/conventions-backlog.md` §25).
+- The line of an HTTP request is written by the `setup` of the CLS middleware
+  (`ops/logging.md` §3: `pino-http` or an interceptor), and a broker delivery, a job and a
+  row of the outbox are entries the conventions do not name: `docs/conventions-backlog.md` §23.
+  `redact` covers three depths, not any (§24).
+- The metrics differ from `ops/observability.md` §1 in five ways: a registry per application
+  (not the global one), `/metrics` served outside Nest by a server that starts in the frame
+  every entrypoint imports (principles #12 asks for a transport module: every process serves
+  it, and a worker has no HTTP application to put it in), the entry of the broker has
+  metrics the rule does not name, a business metric is counted from a domain event and not
+  from a use case, and no `db_query_duration_seconds` (`docs/conventions-backlog.md` §28).
+- `RabbitSubscribers` gets `METRICS` as a property (`@Inject` on a field), not through its
+  constructor, which is at the limit of six (`docs/conventions-backlog.md` §25).
+- The traces differ from `ops/observability.md` §3 in four ways: the instrumentations are
+  listed one by one (not `getNodeAutoInstrumentations`), the context of a job is in its data
+  (not in its `opts` through a BullMQ instrumentation), a trace id is not the correlation
+  id, and a row of the outbox, a delayed message and a notification carry the context, which
+  the conventions do not foresee (`docs/conventions-backlog.md` §26).
 - `POST …/orders/{id}/cancel` has two success statuses, 204 and 202
   (`http/controller.md`: one status per route): `docs/conventions-backlog.md` §16.
 - `OrderSaga` does not extend `AggregateRoot`: it records no events, and its version is

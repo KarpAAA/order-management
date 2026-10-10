@@ -1,9 +1,12 @@
 import type { RetryPolicy } from '@config/configuration';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
+import type { Logger } from '@shared/logger/logger';
 import type { Delivery } from '@shared/messaging/delivery';
 
+import { correlationOf } from './message-correlation';
 import { deadLetterQueue, rejections } from './retry-topology';
 
+import type { BrokerMeters } from './broker.meters';
 import type { MessageErrorHandler } from '@golevelup/nestjs-rabbitmq';
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib';
 
@@ -16,9 +19,16 @@ export function deliveryOf(
   return { attempt, last: attempt >= policy.maxAttempts };
 }
 
-interface RetryLogger {
-  warn(message: string): void;
-  error(message: string): void;
+/** The scope of a chain: `CorrelationContext`, as much of it as is needed here. */
+export interface CorrelationScope {
+  run<T>(correlationId: string, work: () => T): T;
+}
+
+export interface RetryContext {
+  logger: Logger;
+  correlation: CorrelationScope;
+  /** Left out, nothing is counted. */
+  meters?: BrokerMeters;
 }
 
 const describe = (error: unknown): string =>
@@ -57,34 +67,47 @@ function park(channel: ConfirmChannel, queue: string, message: ConsumeMessage, e
  *  - `UnprocessableMessageError`, or the last delivery → the dead-letter queue, and an error
  *    in the log: somebody has to look at it.
  * Never put back at once: a message that fails every time would spin (docs/adr/0013).
+ *
+ * It runs after the handler, outside the scope the handler had: the correlation id of its
+ * lines is read from the message again.
  */
 export const retryOrPark =
-  (queue: string, policy: RetryPolicy, logger: RetryLogger): MessageErrorHandler =>
-  async (channel, message, error) => {
-    try {
-      const { attempt, last } = deliveryOf(message, queue, policy);
-      if (!(error instanceof UnprocessableMessageError) && !last) {
-        logger.warn(
-          `${queue}: delivery ${String(attempt)} of ${String(policy.maxAttempts)} failed, ` +
-            `again in ${String(policy.delayMs)} ms: ${describe(error)}`,
-        );
-        channel.nack(message, false, false);
-        return;
-      }
-      // the consumer channels of the connection are confirm channels (amqp-connection-manager)
-      await park(channel as ConfirmChannel, queue, message, error);
-      channel.ack(message);
-      logger.error(
-        `${queue}: parked in ${deadLetterQueue(queue)} after delivery ${String(attempt)}: ` +
-          describe(error),
-      );
-    } catch (err: unknown) {
-      logger.error(`${queue}: a failed message could not be settled: ${describe(err)}`);
+  (
+    queue: string,
+    policy: RetryPolicy,
+    { logger, correlation, meters }: RetryContext,
+  ): MessageErrorHandler =>
+  (channel, message, error: unknown) =>
+    correlation.run(correlationOf(message), async () => {
+      const messageId: unknown = message.properties.messageId;
+      const fields = { queue, messageId };
       try {
-        // the broker refused the copy: through the wait queue, and parked on the way back
-        channel.nack(message, false, false);
-      } catch {
-        // the channel is gone: the broker has taken the unacknowledged message back already
+        const { attempt, last } = deliveryOf(message, queue, policy);
+        const delivery = { ...fields, attempt, maxAttempts: policy.maxAttempts };
+        if (!(error instanceof UnprocessableMessageError) && !last) {
+          logger.warn(
+            { ...delivery, retryInMs: policy.delayMs, err: error },
+            'delivery failed, the message comes again',
+          );
+          channel.nack(message, false, false);
+          meters?.retried(queue);
+          return;
+        }
+        // the consumer channels of the connection are confirm channels (amqp-connection-manager)
+        await park(channel as ConfirmChannel, queue, message, error);
+        channel.ack(message);
+        meters?.parked(queue);
+        logger.error(
+          { ...delivery, deadLetterQueue: deadLetterQueue(queue), err: error },
+          'message parked',
+        );
+      } catch (err: unknown) {
+        logger.error({ ...fields, err }, 'a failed message could not be settled');
+        try {
+          // the broker refused the copy: through the wait queue, and parked on the way back
+          channel.nack(message, false, false);
+        } catch {
+          // the channel is gone: the broker has taken the unacknowledged message back already
+        }
       }
-    }
-  };
+    });

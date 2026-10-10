@@ -1,5 +1,5 @@
 import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   AdjustStockV1,
   exchanges,
@@ -11,6 +11,7 @@ import {
 import { systemActor } from '@shared/auth/actor';
 import { ConflictError, DomainError } from '@shared/errors/domain-error';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 import { INBOX, type Inbox } from '@shared/messaging/inbox';
 
 import { AdjustStockService } from '../../application/adjust-stock.service';
@@ -35,14 +36,17 @@ const INVENTORY_COMMANDS_QUEUE = 'inventory.commands';
  */
 @Injectable()
 export class InventoryConsumer {
-  private readonly logger = new Logger(InventoryConsumer.name);
+  private readonly log: Logger;
 
   constructor(
     @Inject(INBOX) private readonly inbox: Inbox,
     private readonly reserveStock: ReserveStockService,
     private readonly releaseStock: ReleaseStockService,
     private readonly adjustStock: AdjustStockService,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: InventoryConsumer.name });
+  }
 
   // the queue's arguments and its retry policy are added by RabbitSubscribers, from the config
   @RabbitSubscribe({
@@ -73,7 +77,10 @@ export class InventoryConsumer {
     }
     if (!fresh) {
       // the same message again (the broker, the relay of the sender, an operator): done before
-      this.logger.log(`${message.name} ${message.messageId} skipped: duplicate`);
+      this.log.info(
+        { messageName: message.name, messageId: message.messageId, reason: 'duplicate' },
+        'message skipped',
+      );
     }
   }
 

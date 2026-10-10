@@ -464,6 +464,119 @@ second service: the level `contracts unit` is the Vitest run of `packages/contra
 | CTR-021 | A consumer handles the released message of every contract it reads: it does not refuse it, and calls one use case.                                                                                                                       | `<service> unit`            |
 | CTR-030 | A service writes, through its real adapters, exactly the contracts the map says it writes; each is accepted by `parseMessage()` after JSON and addressed to the exchange the map names.                                                  | `<service> unit`            |
 
+## LOG: structured logs and the correlation id (Step 4.1)
+
+One logger per service, JSON lines, and a correlation id that is read from CLS and never
+passed (`docs/adr/0023-structured-logs-and-correlation-id.md`). The logger and the
+correlation context are copies in the four services: LOG-001…011 run in each of them
+(`<service> unit`), the rest where the rule lives. An e2e app logs to memory
+(`test/helpers/log-capture.ts`), and a test reads the lines as their collector would.
+
+| ID      | Requirement                                                                                                                                                                                    | Level                                     |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| LOG-001 | A log line is one JSON object: `level` by name, `time`, `service` (and `process` in the api), the fields, and `msg`.                                                                           | `<service> unit`                          |
+| LOG-002 | A line written inside a chain carries its `correlationId`, a child logger included; a line outside a chain has no such field.                                                                  | `<service> unit`                          |
+| LOG-003 | The message of a line is the same every time: the values are fields.                                                                                                                           | `unit`                                    |
+| LOG-004 | Nothing below `LOG_LEVEL` is written.                                                                                                                                                          | `<service> unit`                          |
+| LOG-005 | An error is logged under `err` with its type, message, stack, and the `code` and `details` of ours.                                                                                            | `<service> unit`                          |
+| LOG-006 | A secret or an address (`authorization`, `cookie`, `password`, `token`, `secret`, `apiKey`, `email`, …) is never written, as a field, as a field of a field, or one below.                     | `<service> unit`                          |
+| LOG-010 | Only a UUID is continued as a correlation id; anything else (a word, a line break, a repeated header) is not.                                                                                  | `<service> unit`                          |
+| LOG-011 | Work run as a part of a chain reads its id, two chains under way at once stay apart, a nested chain keeps what the scope around it holds (a transaction), and the chain is left with the work. | `<service> unit`                          |
+| LOG-012 | What settles a failed message logs under the correlation id of that message, though the handler has left its scope; a message that names none gets a chain of its own.                         | `<service> unit`                          |
+| LOG-013 | A job runs under the `correlationId` of its data, or under a new id when it has none (a scheduler tick), and its run is logged: queue, job, attempt, duration, outcome.                        | `unit`                                    |
+| LOG-020 | A use case logs one line: its name, the actor, the duration, and `ok`, the code of the `DomainError`, or `error`. Never the command, never the error itself.                                   | `unit`                                    |
+| LOG-021 | An HTTP request is logged once, when it is answered: method, the route as its pattern, status, duration, the actor; inside the chain of the request.                                           | `unit`                                    |
+| LOG-030 | The answer to a request names the chain the caller named (`x-correlation-id`).                                                                                                                 | `api`                                     |
+| LOG-031 | Every command of the saga and every event of the order carries the correlation id of the request that placed it, also after the answers of inventory and payments.                             | `api`                                     |
+| LOG-032 | The api logs the request and its use case under that id.                                                                                                                                       | `api`                                     |
+| LOG-033 | The worker logs every delivery and every use case of the saga under that id.                                                                                                                   | `api`                                     |
+| LOG-034 | A request without the header, or with one that is not a UUID, starts a chain of its own: its id is on the answer and in the command.                                                           | `api`                                     |
+| LOG-035 | A refused request is logged at `warn` with its code, under the id the caller was given; the token of a caller is on no line.                                                                   | `api`                                     |
+| LOG-040 | payments names the chain of the command to the provider on every call (`x-correlation-id`), and sends no such header outside a chain.                                                          | `payments adapter`                        |
+| LOG-041 | A notification keeps the correlation id of the event that asked for it.                                                                                                                        | `notifications unit`, `notifications api` |
+| LOG-042 | A pass of the dispatcher tells its caller what it tried and why a try failed: ids, counts, the reply code of the server. Never the address, never the text of the server.                      | `notifications unit`                      |
+| LOG-043 | notifications logs the delivery of an event and its mail under the id of the event; a mail given up is an `error` with the code of the server. The address of the recipient is on no line.     | `notifications api`                       |
+| LOG-050 | A line written inside a span carries its `traceId` and `spanId`, beside the correlation id, a child logger included (Step 4.4, `docs/adr/0026-logs-to-loki-and-trace-id.md`).                  | `<service> unit`                          |
+| LOG-051 | A line written outside a trace, or with no SDK in the process, has neither field.                                                                                                              | `<service> unit`                          |
+| LOG-052 | What a library logs through the Nest logger keeps its stack as `stack`: a stack given alone is never the `context` of the line.                                                                | `<service> unit`                          |
+| LOG-053 | A handler that threw is not an error line of the broker library: the delivery has its own (`warn` when it comes again, `error` when parked).                                                   | `<service> unit`                          |
+| LOG-054 | A line about a mail is written in the trace its notification kept, though no span is under way; a notification with no trace gives its line none.                                              | `notifications unit`                      |
+
+## TRC: traces (Step 4.3)
+
+One trace from the request that places an order to its mail, through every row that waits
+for a timer (`docs/adr/0025-traces-opentelemetry.md`). The carrier of a trace is a copy in
+the four services: TRC-001…004 run in each of them. What is tested is our code: the
+instrumentations and the waterfall in Tempo were checked by hand (ADR 0025 → Known gaps).
+
+| ID      | Requirement                                                                                                             | Level                |
+| ------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------- |
+| TRC-001 | Outside a trace nothing is captured: a row written there carries no trace.                                              | `<service> unit`     |
+| TRC-002 | Work run in a captured context is a child of the span that captured it, though no trace was under way when it began.    | `<service> unit`     |
+| TRC-003 | A link is not continued: the work is not traced and hands no context on; the link still names the span it was taken in. | `unit`               |
+| TRC-004 | A carrier is read back from JSON; anything that is not one is no trace.                                                 | `<service> unit`     |
+| TRC-010 | A row of the outbox is published in the trace of the request that wrote it.                                             | `unit`               |
+| TRC-011 | A row written outside a trace is published outside one.                                                                 | `unit`               |
+| TRC-012 | A delayed message keeps its trace as a link and is published outside any.                                               | `unit`               |
+| TRC-013 | The publisher names a linked trace in the header `x-trace-link`, and sends no such header otherwise.                    | `unit`               |
+| TRC-020 | A use case is a span named after it, with the kind of its actor and its outcome; never an id of the actor.              | `unit`               |
+| TRC-021 | A `DomainError` is an outcome of the span; anything else marks it as failed.                                            | `unit`               |
+| TRC-030 | A job runs as a span of the trace in its data (`traceparent`); a scheduler tick begins a trace.                         | `unit`               |
+| TRC-040 | A send to the mail server is a span `smtp send` that names the server and how it ended, never the address.              | `notifications unit` |
+
+## MET: metrics (Step 4.5)
+
+Every process counts what its entries do and serves it to Prometheus
+(`docs/adr/0027-metrics-prometheus.md`). The port `METRICS` and its implementation are copies
+in the four services: MET-001…005 and MET-013, MET-016 run in each of them. An e2e test reads
+the registry of the application (`test/helpers/metrics.ts`), as its scrape would. The scrape
+itself, the exporters and the dashboards were checked by hand (ADR 0027).
+
+| ID      | Requirement                                                                                                                                                   | Level               |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
+| MET-001 | A metric counts under the labels it declared and no other, names its process on every series, and is one metric however often it is asked for.                | `<service> unit`    |
+| MET-002 | A histogram keeps a duration in the buckets of the configuration, or in its own.                                                                              | `<service> unit`    |
+| MET-003 | A collected gauge is asked when the metrics are read, every collector of it; one that fails shows no value (never 0), and the read goes through.              | `<service> unit`    |
+| MET-004 | An observation made inside a recorded trace keeps `trace_id` and `span_id` as an exemplar; outside a trace, or in one that is not recorded, it keeps none.    | `<service> unit`    |
+| MET-005 | `GET /metrics` answers with OpenMetrics; any other path or method is a 404.                                                                                   | `<service> unit`    |
+| MET-010 | An HTTP request is observed once, when it is answered: method, the route as its pattern, status, in seconds; a request no route matched is `unmatched`.       | `unit`              |
+| MET-011 | A use case is observed by its name and outcome: `ok`, the code of the `DomainError`, or `error`. One built by hand counts nothing.                            | `unit`              |
+| MET-012 | A job is observed by queue, name and outcome; a run that went through sets the time of its last success, one that failed does not; a job given up is counted. | `unit`              |
+| MET-013 | A delivery is observed by its queue and outcome; a failed one that comes again is counted as retried, one given up as parked.                                 | `<service> unit`    |
+| MET-016 | The pool of a process is read when the metrics are read: held, free, and queries that wait; before the client connects it has no sample.                      | `<service> unit`    |
+| MET-020 | Every event of an order is counted once, after the commit: nothing while the transaction is open, nothing for a write that is rolled back.                    | `unit`              |
+| MET-021 | A failed payment and an attempt that never reached a charge are counted by their cause.                                                                       | `unit`              |
+| MET-022 | The cause is a closed set: whatever a provider writes as its reason is `declined`, and never a new value of the label.                                        | `unit`              |
+| MET-030 | The api observes a request under the pattern of its route.                                                                                                    | `api`               |
+| MET-031 | An order is counted as placed by the process that placed it and as paid by the one that paid it.                                                              | `api`               |
+| MET-032 | The use cases are observed in the process that ran them.                                                                                                      | `api`               |
+| MET-033 | The worker observes every delivery by its queue, and counts what the relay published.                                                                         | `api`               |
+| MET-034 | A payment the provider never answered is counted as `provider_unavailable`, a refused card as `declined`; the reason of the provider is on no series.         | `api`               |
+| MET-035 | The worker alone reports the backlog of the outbox and the depth of every BullMQ queue; every process reports its own pool.                                   | `api`               |
+| MET-036 | A message the worker gives up is counted as parked, under its queue.                                                                                          | `api`               |
+| MET-037 | No label of any process carries an id (of a tenant, an order, a user); a request no route matched is one series; `/metrics` is not on the port of the API.    | `api`               |
+| MET-040 | payments observes every call to the provider by operation and status, `no_answer` when none came; a charge id is on no series.                                | `payments adapter`  |
+| MET-041 | The state of the circuit is a gauge: closed from the start, open, half-open, closed again; an operation that was not called is counted.                       | `payments adapter`  |
+| MET-050 | payments observes the delivery of a command, reports its outbox and its pool, and carries no id on a label.                                                   | `payments api`      |
+| MET-051 | inventory does the same.                                                                                                                                      | `inventory api`     |
+| MET-052 | notifications observes the delivery of an event and counts its mail as sent, or as given up; no id and no address is on a label.                              | `notifications api` |
+
+## SLO: the objectives of `place` and their alert (Step 4.6)
+
+Two indicators as recording rules of Prometheus, tested with promtool
+(`docs/adr/0028-slo-and-alert.md`; `devtools/observability/rules/slo.test.yaml`,
+`pnpm test:rules`). The alert of Grafana that reads them, and its mail, were checked by hand
+with the provider stopped (ADR 0028).
+
+| ID      | Requirement                                                                                                          | Level   |
+| ------- | -------------------------------------------------------------------------------------------------------------------- | ------- |
+| SLO-001 | Every attempt is paid: the ratio is 1 and the error budget untouched, whichever process counted.                     | `rules` |
+| SLO-002 | The provider is away: the ratio is 0, and the budget of the window is spent many times over.                         | `rules` |
+| SLO-003 | Declined cards alone do not lower the ratio.                                                                         | `rules` |
+| SLO-004 | No attempt ended in the window: the ratio has no value.                                                              | `rules` |
+| SLO-005 | One attempt in a hundred fails on a timeout: the ratio is the objective, and the budget is spent to the end exactly. | `rules` |
+| SLO-006 | The latency is the 95th percentile of `POST …/place` alone.                                                          | `rules` |
+
 ## SYS: the system as a whole (Step 3.13)
 
 The four services from their images, in the compose project `oms-system`, with their

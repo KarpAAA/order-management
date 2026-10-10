@@ -19,10 +19,10 @@ outbox: yes                     # table `outbox` + a relay in this process (ADR 
 broker: rabbitmq                # in: queue `inventory.commands`; out: exchange `events`
 queue: none                     # no BullMQ, no Redis
 processes: worker               # one process: a broker consumer, the relay of the outbox, the cleanups of the outbox and the inbox; no HTTP
-dlq: alert                      # a command given up → `inventory.commands.dlq` + Logger.error (Step 4: metric)
+dlq: alert                      # a command given up → `inventory.commands.dlq` + an `error` line + `broker_messages_parked_total` (ADR 0027)
 cron: none                      # the cleanups are timers of the process (`*_CLEANUP_INTERVAL_MS`)
 validation: zod                 # messages through `parseMessage()` of @oms/contracts; env through zod
-logs: stdout                    # Nest built-in Logger; pino in Step 4
+logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023), traceId of the active span, to Loki by agent or OTLP (ADR 0026); LOG_LEVEL, LOG_PRETTY
 testing: vitest                 # projects unit + e2e; the e2e suite stops at the service boundary
 ```
 
@@ -95,10 +95,39 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/inventory/
   at a time (`RABBITMQ_PREFETCH=1`), which is what makes `handled()` a proof; the concurrency
   suite starts four processes instead. Stock a test starts from is written as the owner
   (`givenStock()` in `test/helpers/commands.ts`).
+- **One logger, and a correlation id nobody passes** (ADR 0023; a copy of the api's:
+  `@shared/logger/logger`, `infrastructure/logger/`, `infrastructure/correlation/`, the port
+  `CORRELATION`). `RabbitSubscribers` runs every delivery in the chain of its message and
+  writes its line (`message delivered`); `retry-or-park.ts` opens the chain again. A class
+  injects `LOGGER`: fields first, a message that never changes, ids and codes only, never
+  `Logger` of Nest (lint). A class built by hand takes `silentLogger`; the e2e app logs to
+  memory (`app.logs()`). The relay publishes each row in the chain of its envelope.
 - **The service is held to its rows of the map of parties** (ADR 0021;
   `inventory.contract.spec.ts`): what the queue is bound to, a released message of each
   command through the consumer, and every answer the adapter writes. A new command or a new
   answer is a row in `packages/contracts/src/parties.ts` first.
+- **The trace of a reservation is the trace of the order** (ADR 0025; copies of the api's:
+  `src/instrumentation.ts`, loaded with `node --require` and never imported, and
+  `infrastructure/tracing/trace-context.ts`, without the link of a delayed message). The
+  instrumentation of amqplib continues the trace of the command; `Outbox.append()` keeps it
+  in `outbox.trace_context` and the relay publishes the answer in it. `pg` traces only
+  inside a trace. No `OTEL_EXPORTER_OTLP_ENDPOINT`, no SDK.
+- **A log line carries its trace** (ADR 0026; copies of the api's): the `mixin` of
+  `infrastructure/logger/pino.logger.ts` adds `traceId` and `spanId` of the active span,
+  beside the correlation id, and both stay two fields. In a container the agent `alloy`
+  reads stdout; under `pnpm dev` the process sends its lines over OTLP
+  (`OTEL_LOGS_EXPORTER=otlp`, `none` in a container: both would store each line twice).
+  `logRecordProcessors` is always passed to `NodeSDK`. Loki knows the process as `oms-inventory`.
+  The broker library logs through `LibraryLogger` (`infrastructure/messaging/`): its report
+  of a handler that threw is `debug`, the line of the delivery is `retry-or-park.ts`'s.
+- **The process counts, and Prometheus reads** (ADR 0027; copies of the api's:
+  `@shared/observability/metrics`, `infrastructure/observability/`, `broker.meters.ts`,
+  `pool.metrics.ts`). `GET /metrics` on `METRICS_PORT` (9467 unless said, 9464 in a
+  container, 0 in the tests): every delivery by queue and outcome, messages retried and
+  parked, the backlog of the outbox, the pool, the runtime. `process` is `worker` on every series.
+  A label never carries an id; a class built by hand takes `silentMetrics`; the e2e suite
+  reads `scrape(service)` (`test/helpers/metrics.ts`). No `@UseCase()` here, so no
+  `use_case_duration_seconds`: the duration of a handler is that of its delivery.
 
 ## Deviations from the conventions templates
 

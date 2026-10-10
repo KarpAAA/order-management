@@ -1,9 +1,9 @@
-import { Logger } from '@nestjs/common';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { ForbiddenError } from '@shared/errors/forbidden-error';
 
 import {
+  CORRELATION_ID,
   LATER,
   notificationWith,
   NOTICES,
@@ -22,8 +22,6 @@ import { RecordingMailer } from './__test__/recording-mailer';
 import { DispatchNotificationService } from './dispatch-notification.service';
 import { NotificationsPolicy } from './notifications.policy';
 
-import type { MockInstance } from 'vitest';
-
 const AWAY = new MailDeliveryError('connect ECONNREFUSED 127.0.0.1:1025', true);
 const REFUSED = new MailDeliveryError('550 no such user', false);
 
@@ -31,7 +29,6 @@ describe('DispatchNotificationService', () => {
   let notifications: InMemoryNotificationsRepository;
   let mailer: RecordingMailer;
   let service: DispatchNotificationService;
-  let logged: MockInstance<Logger['error']>;
 
   beforeAll(enableNoOpTransactions);
 
@@ -45,13 +42,11 @@ describe('DispatchNotificationService', () => {
       fixedClock,
       POLICY,
     );
-    logged = vi.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
   });
 
-  const dispatch = () => service.execute(dispatcher);
+  /** One pass: how it went. What it tells its caller besides is asked for by `tried()`. */
+  const dispatch = async () => (await service.execute(dispatcher)).outcome;
+  const tried = () => service.execute(dispatcher);
 
   it('NTF-010 hands the due notification to the mail server, as it was written', async () => {
     const notification = requested(NOTICES.paid);
@@ -139,7 +134,6 @@ describe('DispatchNotificationService', () => {
         nextAttemptAt: new Date(LATER.getTime() + POLICY.retryDelayMs),
         settledAt: null,
       });
-      expect(logged).not.toHaveBeenCalled();
     });
 
     it('NTF-012 gives up on the last try, and says so', async () => {
@@ -154,7 +148,6 @@ describe('DispatchNotificationService', () => {
         settledAt: LATER,
         nextAttemptAt: null,
       });
-      expect(logged).toHaveBeenCalledWith(expect.stringContaining(notification.id));
     });
 
     it('NTF-014 does not hold the notifications behind it', async () => {
@@ -203,7 +196,6 @@ describe('DispatchNotificationService', () => {
       sendAttempts: 1,
       lastError: `MailDeliveryError: ${REFUSED.message}`,
     });
-    expect(logged).toHaveBeenCalledWith(expect.stringContaining('550 no such user'));
   });
 
   it('NTF-011 an error the adapter did not name may pass on the next try', async () => {
@@ -225,5 +217,54 @@ describe('DispatchNotificationService', () => {
     await expect(service.execute(consumer)).rejects.toThrow(ForbiddenError);
 
     expect(mailer.tried).toEqual([]);
+  });
+
+  describe('what a pass tells its caller, which logs it (LOG-042)', () => {
+    it('names the notification it sent and the chain of its event, never the address', async () => {
+      const notification = requested(NOTICES.paid);
+      notifications.put(notification);
+
+      const dispatched = await tried();
+
+      expect(dispatched).toEqual({
+        outcome: 'sent',
+        notification: {
+          id: notification.id,
+          orderId: notification.orderId,
+          kind: 'order-paid',
+          attempt: 1,
+          sendAttempts: 1,
+          correlationId: CORRELATION_ID,
+          traceContext: notification.traceContext,
+        },
+      });
+      expect(JSON.stringify(dispatched)).not.toContain(RECIPIENT.email);
+    });
+
+    it('says why a try failed with the code of the server, not with its text', async () => {
+      mailer.failWith(
+        new MailDeliveryError(`550 no such user <${RECIPIENT.email}>`, false, { smtpCode: 550 }),
+      );
+      notifications.put(requested());
+
+      const dispatched = await tried();
+
+      expect(dispatched).toMatchObject({
+        outcome: 'given-up',
+        failure: { retryable: false, smtpCode: 550 },
+      });
+      expect(JSON.stringify(dispatched)).not.toContain(RECIPIENT.email);
+    });
+
+    it('says that a failure may pass when the server did not answer', async () => {
+      mailer.failWith(AWAY);
+      notifications.put(requested());
+
+      expect(await tried()).toMatchObject({ outcome: 'postponed', failure: { retryable: true } });
+    });
+
+    it('tells nothing about a pass that found nothing due', async () => {
+      expect(await tried()).toEqual({ outcome: 'idle' });
+    });
   });
 });

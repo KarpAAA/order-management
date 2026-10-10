@@ -5,6 +5,8 @@ export interface RequestNotificationCommand {
   workspaceId: string;
   recipient: Recipient;
   notice: OrderNotice;
+  /** The chain of the event: kept with the notification, for the mail that goes out later. */
+  correlationId: string;
 }
 
 /** How long one mail is tried: bound by the module from the configuration. */
@@ -20,3 +22,28 @@ export type DispatchOutcome =
   | 'postponed'
   /** The try failed and no other follows. */
   | 'given-up';
+
+/**
+ * The notification a pass tried: ids and counts, never the address or the text.
+ * `correlationId` and `traceContext` are where its line belongs, not what the line says:
+ * the chain and the trace of the event that asked for it.
+ */
+export interface TriedNotification {
+  id: string;
+  orderId: string;
+  kind: string;
+  attempt: number;
+  sendAttempts: number;
+  correlationId: string | null;
+  traceContext: Readonly<Record<string, string>> | null;
+}
+
+/**
+ * What one pass of the dispatcher did, for its caller to tell: the use case logs nothing.
+ * `failure` says why a try failed without the text of the server, which names the address.
+ */
+export interface Dispatched {
+  outcome: DispatchOutcome;
+  notification?: TriedNotification;
+  failure?: { retryable: boolean; smtpCode?: number };
+}

@@ -11,6 +11,7 @@ import { connectRabbit } from '@infra/messaging/rabbit-connection';
 import { Outbox } from '@infra/outbox/outbox';
 import { RabbitOutboxPublisher } from '@infra/outbox/rabbit-outbox.publisher';
 import { UnroutableMessageError } from '@infra/outbox/unroutable-message.error';
+import { silentLogger } from '@shared/logger/silent-logger';
 
 import { createIntModule, type IntModule } from '../helpers/int-module';
 import { waitFor } from '../helpers/waiting';
@@ -33,13 +34,16 @@ let publisher: RabbitOutboxPublisher;
 beforeAll(async () => {
   app = await createIntModule({ providers: [Outbox] });
   outbox = app.get(Outbox);
-  connection = await connectRabbit({
-    url: process.env.RABBITMQ_URL ?? '',
-    prefetch: 1,
-    redeliveryLimit: 3,
-    retry: {},
-    delays: {},
-  });
+  connection = await connectRabbit(
+    {
+      url: process.env.RABBITMQ_URL ?? '',
+      prefetch: 1,
+      redeliveryLimit: 3,
+      retry: {},
+      delays: {},
+    },
+    silentLogger,
+  );
   // what RabbitSubscribers declares beside a consumer whose queue has delays in the config
   await connection.channel.assertQueue(READER, { durable: true });
   await declareDelayQueues(connection.channel, READER, [SHORT_MS, LONG_MS]);

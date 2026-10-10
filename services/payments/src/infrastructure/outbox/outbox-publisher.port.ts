@@ -1,3 +1,5 @@
+import type { TraceCarrier } from '@infra/tracing/trace-context';
+
 export const OUTBOX_PUBLISHER = Symbol('OUTBOX_PUBLISHER');
 
 /** One row of the outbox, as the relay hands it over. */
@@ -7,6 +9,8 @@ export interface OutboxRecord {
   routingKey: string;
   /** The envelope, as it was stored. */
   payload: unknown;
+  /** The trace the row was written in; none for a row written outside one. */
+  traceContext?: TraceCarrier | null;
 }
 
 /**

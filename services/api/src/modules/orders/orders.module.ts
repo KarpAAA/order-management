@@ -21,6 +21,7 @@ import { OrdersPolicy } from './application/orders.policy';
 import { PlaceOrderService } from './application/place-order.service';
 import { RejectStockReservationService } from './application/reject-stock-reservation.service';
 import { UpdateOrderService } from './application/update-order.service';
+import { OrderEventsMeter } from './infrastructure/order-events.meter';
 import { OrderEventsTranslator } from './infrastructure/order-events.translator';
 import { OrderSagasRepository } from './infrastructure/order-sagas.repository';
 import { ORDERS_QUEUE, OrdersQueue } from './infrastructure/orders.queue';
@@ -81,6 +82,8 @@ const USE_CASES = [
     { provide: SAGA_TIMEOUT_SCHEDULER, useClass: OutboxSagaTimeoutAdapter },
     // what the reliable events of orders become on the broker, and whom they are for
     OrderEventsTranslator,
+    // and which of them are counted as business metrics
+    OrderEventsMeter,
     { provide: ORDER_RECIPIENTS, useClass: OrderRecipientsReader },
     { provide: ORDER_EVENT_PARTITIONS, useClass: PostgresOrderEventPartitions },
     // read

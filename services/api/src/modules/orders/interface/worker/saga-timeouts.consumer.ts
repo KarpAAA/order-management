@@ -1,21 +1,19 @@
 import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { z } from 'zod';
 
-import { CorrelationContext } from '@common/messaging/correlation-context';
-import { TenantContext } from '@common/tenancy/tenant-context';
 import { systemActor } from '@shared/auth/actor';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
 import { DELAYED_EXCHANGE } from '@shared/messaging/delayed';
-import { INBOX, type Inbox } from '@shared/messaging/inbox';
 
 import { ExpireSagaStepService } from '../../application/expire-saga-step.service';
+import { ConsumerScope } from '../../infrastructure/consumer-scope';
 import {
   SAGA_TIMEOUTS_QUEUE,
   SagaStepTimeoutV1,
 } from '../../infrastructure/saga-step-timeout.message';
 
-import { handleOnce, type MessageScope } from './handle-once';
+import { handleOnce } from './handle-once';
 
 const ACTOR = systemActor('consumer:orders');
 
@@ -30,12 +28,8 @@ const ACTOR = systemActor('consumer:orders');
  */
 @Injectable()
 export class SagaTimeoutsConsumer {
-  private readonly logger = new Logger(SagaTimeoutsConsumer.name);
-
   constructor(
-    private readonly tenant: TenantContext,
-    private readonly correlation: CorrelationContext,
-    @Inject(INBOX) private readonly inbox: Inbox,
+    private readonly scope: ConsumerScope,
     private readonly expireStep: ExpireSagaStepService,
   ) {}
 
@@ -53,17 +47,8 @@ export class SagaTimeoutsConsumer {
     }
     const message = parsed.data;
     const { orderId, attempt, step } = message.payload;
-    await handleOnce(this.scope(), SAGA_TIMEOUTS_QUEUE, message, () =>
+    await handleOnce(this.scope, SAGA_TIMEOUTS_QUEUE, message, () =>
       this.expireStep.execute({ orderId, attempt, step }, ACTOR),
     );
-  }
-
-  private scope(): MessageScope {
-    return {
-      tenant: this.tenant,
-      correlation: this.correlation,
-      inbox: this.inbox,
-      logger: this.logger,
-    };
   }
 }

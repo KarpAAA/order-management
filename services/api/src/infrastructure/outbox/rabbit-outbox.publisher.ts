@@ -2,6 +2,7 @@ import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
 import { Inject, Injectable } from '@nestjs/common';
 import { exchanges } from '@oms/contracts';
 
+import { TRACE_LINK_HEADER } from '@common/tracing/trace-context';
 import { outboxConfig, type OutboxConfig } from '@config/configuration';
 
 import { UnroutableMessageError } from './unroutable-message.error';
@@ -27,7 +28,10 @@ const correlationOf = (payload: unknown): string | undefined => {
  *  - a broker that is away never answers, so every publish has a timeout;
  *  - a command is published `mandatory`: with no queue bound for it the broker hands it back
  *    instead of dropping it, and the row stays unpublished. So is a delayed message, which
- *    has one reader as well. An event with no subscriber is not a loss, and is not mandatory.
+ *    has one reader as well. An event with no subscriber is not a loss, and is not mandatory;
+ *  - the `traceparent` of a message is written by the instrumentation of amqplib, from the
+ *    context the relay publishes in. A row whose trace is a link is published outside any,
+ *    and names the trace it points at in a header of its own (docs/adr/0025).
  */
 @Injectable()
 export class RabbitOutboxPublisher implements OutboxPublisher, OnModuleDestroy {
@@ -52,11 +56,13 @@ export class RabbitOutboxPublisher implements OutboxPublisher, OnModuleDestroy {
 
   async publish(record: OutboxRecord): Promise<void> {
     const content = Buffer.from(JSON.stringify(record.payload));
+    const link = record.traceContext?.link;
     await this.channel.publish(record.exchange, record.routingKey, content, {
       persistent: true,
       mandatory: record.exchange !== exchanges.events.name,
       messageId: record.id,
       correlationId: correlationOf(record.payload),
+      ...(link ? { headers: { [TRACE_LINK_HEADER]: link } } : {}),
     });
     if (this.returned.delete(record.id)) {
       throw new UnroutableMessageError(

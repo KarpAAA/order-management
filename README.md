@@ -66,7 +66,18 @@ pnpm dev
 ```
 
 - `pnpm infra:up`: Postgres, its read replica, PgBouncer, the Postgres of payments, of
-  inventory and of notifications, Redis, RabbitMQ, Mailpit and fake-psp, waits until healthy. The replica's first start copies the whole primary.
+  inventory and of notifications, Redis, RabbitMQ, Mailpit, the observability stack (`lgtm`) and fake-psp, waits until healthy. The replica's first start copies the whole primary.
+- Grafana with Loki, Tempo and Prometheus behind it runs as one container (`lgtm`, ADR 0024)
+  on port 3001. Every process sends its traces there (ADR 0025): Explore → Tempo → Search
+  shows one trace per placed order, from the request to the mail, across `oms-api`,
+  `oms-worker`, `oms-inventory`, `oms-payments` and `oms-notifications`. The log lines are
+  there too (ADR 0026): Explore → Loki → `{service_name=~"oms-.+"} | detected_level="error"`,
+  open a line, and the button beside its `trace_id` shows the trace of that request; from a
+  span, "Logs for this span" goes back. `| correlationId="<x-correlation-id>"` finds
+  everything an order caused. Under `pnpm dev` a process sends its lines itself
+  (`OTEL_LOGS_EXPORTER=otlp` in its `.env`); in the `app` profile the agent `alloy` reads the
+  stdout of the containers. Metrics (4.5) are not sent yet. What it keeps is in the volume
+  `oms_lgtm-data`.
 - Two database roles (ADR 0006): `pnpm db:*` connect as the owner `oms`
   (`DATABASE_ADMIN_URL`); api and worker connect as `oms_app` (`DATABASE_URL`), which sees only
   the rows of the current workspace (Row-Level Security). A fresh Postgres volume gets the
@@ -212,17 +223,20 @@ Other scripts: `pnpm build`, `pnpm lint`, `pnpm format`, `pnpm typecheck`, `pnpm
 
 ## URLs
 
-| What                          | URL                                                                                                          |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| API                           | http://localhost:3000/v1                                                                                     |
-| Swagger UI                    | http://localhost:3000/docs                                                                                   |
-| OpenAPI JSON                  | http://localhost:3000/docs-json                                                                              |
-| bull-board (queues, dev only) | http://localhost:3000/admin/queues                                                                           |
-| RabbitMQ management           | http://localhost:15672 (guest / guest)                                                                       |
-| Mailpit (the mails sent)      | http://localhost:8025                                                                                        |
-| fake-psp                      | http://localhost:4010 (`GET /charges`, `POST /charges/{id}/void`, `POST /admin/config`, `POST /admin/reset`) |
-| PgBouncer console             | `psql postgresql://stats:stats@localhost:6432/pgbouncer -c "SHOW POOLS"`                                     |
-| Replication state             | `psql postgresql://oms:oms@localhost:5432/oms -c "TABLE pg_stat_replication"`                                |
+| What                          | URL                                                                                                                                        |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| API                           | http://localhost:3000/v1                                                                                                                   |
+| Swagger UI                    | http://localhost:3000/docs                                                                                                                 |
+| OpenAPI JSON                  | http://localhost:3000/docs-json                                                                                                            |
+| bull-board (queues, dev only) | http://localhost:3000/admin/queues                                                                                                         |
+| RabbitMQ management           | http://localhost:15672 (guest / guest)                                                                                                     |
+| Mailpit (the mails sent)      | http://localhost:8025                                                                                                                      |
+| Grafana                       | http://localhost:3001 (no login; `admin` / `admin` to sign in). OTLP: `localhost:4317` (gRPC), `4318` (HTTP)                               |
+| Dashboards                    | http://localhost:3001/dashboards → folder OMS: `OMS · System`, `OMS · SLO`; the alert: Alerting → Alert rules. Traffic: `pnpm demo:orders` |
+| Metrics of a process          | `curl localhost:9464/metrics` (api), 9465 (worker), 9466 (payments), 9467 (inventory), 9468 (notifications)                                |
+| fake-psp                      | http://localhost:4010 (`GET /charges`, `POST /charges/{id}/void`, `POST /admin/config`, `POST /admin/reset`)                               |
+| PgBouncer console             | `psql postgresql://stats:stats@localhost:6432/pgbouncer -c "SHOW POOLS"`                                                                   |
+| Replication state             | `psql postgresql://oms:oms@localhost:5432/oms -c "TABLE pg_stat_replication"`                                                              |
 
 ## Seeded data
 

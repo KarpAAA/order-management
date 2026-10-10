@@ -24,6 +24,8 @@
     "test:contract": "pnpm contract:down && docker compose -p oms-contract -f docker-compose.yml -f docker-compose.contract.yml --profile app run --build --rm schemathesis",
     "contract:down": "docker compose -p oms-contract -f docker-compose.yml -f docker-compose.contract.yml --profile app down -v",
     "test:system": "pnpm --filter @oms/system-tests test:system",
+    "test:rules": "node devtools/observability/test-rules.mjs",
+    "demo:orders": "node devtools/demo/place-orders.mjs",
     "system:down": "docker compose -p oms-system -f docker-compose.yml -f docker-compose.system.yml --profile app down -v",
     "db:migrate": "pnpm --filter @oms/api db:migrate",
     "db:migrate:payments": "pnpm --filter @oms/payments db:migrate",

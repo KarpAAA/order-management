@@ -14,6 +14,9 @@ import {
 } from 'cockatiel';
 
 import type { GatewayConfig } from '@config/configuration';
+import type { Logger } from '@shared/logger/logger';
+import type { Metrics } from '@shared/observability/metrics';
+import { silentMetrics } from '@shared/observability/silent-metrics';
 
 import { PaymentGatewayError } from './payment-gateway.error';
 
@@ -26,12 +29,6 @@ export interface CallAttempt {
 export interface ResilientCall {
   /** Resolves with what `call` returned, or throws a `PaymentGatewayError`. */
   execute<T>(call: (attempt: CallAttempt) => Promise<T>): Promise<T>;
-}
-
-interface CallLogger {
-  log(message: string): void;
-  warn(message: string): void;
-  error(message: string): void;
 }
 
 type RetryContext = IRetryBackoffContext<unknown>;
@@ -73,7 +70,7 @@ function pauses(exponential: IBackoffFactory<unknown>): IBackoffFactory<RetryCon
   return { next: (context) => step(exponential.next(context), context) };
 }
 
-function retries(config: GatewayConfig, logger: CallLogger): RetryPolicy {
+function retries(config: GatewayConfig, logger: Logger): RetryPolicy {
   const policy = retry(
     // a pause the provider asks for that is longer than ours is not sat out in the process
     handleWhen((err) => isTransient(err) && (err.retryAfterMs ?? 0) <= config.pspRetryMaxDelayMs),
@@ -89,14 +86,30 @@ function retries(config: GatewayConfig, logger: CallLogger): RetryPolicy {
   );
   policy.onRetry(({ attempt, delay, ...reason }) => {
     logger.warn(
-      `psp call failed, retry ${String(attempt)} of ${String(config.pspMaxRetries)} ` +
-        `in ${String(Math.round(delay))} ms: ${messageOf(reason)}`,
+      {
+        retry: attempt,
+        maxRetries: config.pspMaxRetries,
+        delayMs: Math.round(delay),
+        reason: messageOf(reason),
+      },
+      'psp call failed, called again after a pause',
     );
   });
   return policy;
 }
 
-function breaker(config: GatewayConfig, logger: CallLogger): CircuitBreakerPolicy {
+/** The state of the circuit as a number a graph can show: the higher, the less is called. */
+export const CIRCUIT = { closed: 0, halfOpen: 1, open: 2 } as const;
+
+function breaker(config: GatewayConfig, logger: Logger, metrics: Metrics): CircuitBreakerPolicy {
+  const state = metrics.gauge({
+    name: 'circuit_breaker_state',
+    help: 'State of the circuit of a vendor: 0 closed, 1 half-open, 2 open.',
+    labels: ['vendor'],
+  });
+  const vendor = { vendor: 'psp' };
+  // said at once: a circuit that never opened is closed, not unknown
+  state.set(vendor, CIRCUIT.closed);
   const policy = circuitBreaker(handleWhen(isTransient), {
     halfOpenAfter: config.pspBreakerHalfOpenMs,
     breaker: new SamplingBreaker({
@@ -108,15 +121,19 @@ function breaker(config: GatewayConfig, logger: CallLogger): CircuitBreakerPolic
     }),
   });
   policy.onBreak((reason) => {
+    state.set(vendor, CIRCUIT.open);
     logger.error(
-      `psp circuit opened for ${String(config.pspBreakerHalfOpenMs)} ms: ${messageOf(reason)}`,
+      { openForMs: config.pspBreakerHalfOpenMs, reason: messageOf(reason) },
+      'psp circuit opened',
     );
   });
   policy.onHalfOpen(() => {
-    logger.warn('psp circuit half-open: one call decides');
+    state.set(vendor, CIRCUIT.halfOpen);
+    logger.warn({}, 'psp circuit half-open: one call decides');
   });
   policy.onReset(() => {
-    logger.log('psp circuit closed');
+    state.set(vendor, CIRCUIT.closed);
+    logger.info({}, 'psp circuit closed');
   });
   return policy;
 }
@@ -135,8 +152,17 @@ function breaker(config: GatewayConfig, logger: CallLogger): CircuitBreakerPolic
  * wait queue (docs/adr/0013): the retry here is for milliseconds, that one for an outage.
  * One instance per provider, shared by all its operations: the state is the provider's.
  */
-export function createResilientCall(config: GatewayConfig, logger: CallLogger): ResilientCall {
-  const policy = wrap(retries(config, logger), breaker(config, logger));
+export function createResilientCall(
+  config: GatewayConfig,
+  logger: Logger,
+  metrics: Metrics = silentMetrics,
+): ResilientCall {
+  const policy = wrap(retries(config, logger), breaker(config, logger, metrics));
+  const rejected = metrics.counter({
+    name: 'circuit_breaker_rejected_total',
+    help: 'Operations that failed at once because the circuit of a vendor was open.',
+    labels: ['vendor'],
+  });
 
   return {
     async execute(call) {
@@ -152,6 +178,7 @@ export function createResilientCall(config: GatewayConfig, logger: CallLogger): 
         }, budget);
       } catch (err: unknown) {
         if (err instanceof BrokenCircuitError) {
+          rejected.inc({ vendor: 'psp' });
           throw new PaymentGatewayError('PSP circuit is open: not called', true, { cause: err });
         }
         if (err instanceof BudgetExhausted) {

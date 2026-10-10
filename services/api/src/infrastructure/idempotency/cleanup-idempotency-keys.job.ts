@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { idempotencyConfig, type IdempotencyConfig } from '@config/configuration';
 import { Clock } from '@shared/domain/clock';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { IdempotencyCleanup } from './idempotency-cleanup';
 
@@ -21,31 +22,21 @@ export class CleanupIdempotencyKeysJob {
   // every hour: the retention is counted in hours, and a missed run only keeps keys longer
   static readonly SCHEDULE = '20 * * * *';
 
-  private readonly logger = new Logger(CleanupIdempotencyKeysJob.name);
+  private readonly log: Logger;
 
   constructor(
     private readonly cleanup: IdempotencyCleanup,
     private readonly clock: Clock,
     @Inject(idempotencyConfig.KEY) private readonly config: IdempotencyConfig,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: CleanupIdempotencyKeysJob.name });
+  }
 
   async run(): Promise<void> {
-    const job = CleanupIdempotencyKeysJob.NAME;
-    const startedAt = performance.now();
-    this.logger.log(`${job} started`);
-    try {
-      const cutoff = new Date(this.clock.now().getTime() - this.config.retentionHours * HOUR_MS);
-      const deleted = await this.cleanup.deleteCreatedBefore(cutoff);
-      this.logger.log(
-        `${job} finished: deleted=${String(deleted)} ` +
-          `durationMs=${String(Math.round(performance.now() - startedAt))}`,
-      );
-    } catch (err: unknown) {
-      this.logger.error(
-        `${job} failed after ${String(Math.round(performance.now() - startedAt))} ms: ` +
-          (err instanceof Error ? err.message : String(err)),
-      );
-      throw err; // the queue retries; the consumer alerts on a dead job
-    }
+    const cutoff = new Date(this.clock.now().getTime() - this.config.retentionHours * HOUR_MS);
+    const deleted = await this.cleanup.deleteCreatedBefore(cutoff);
+    // the line of the run (how long, whether it failed) is written by JobScope
+    this.log.info({ job: CleanupIdempotencyKeysJob.NAME, deleted }, 'cleanup done');
   }
 }
