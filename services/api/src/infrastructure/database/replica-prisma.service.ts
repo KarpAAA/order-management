@@ -1,10 +1,12 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { PrismaPg } from '@prisma/adapter-pg';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 
 import { databaseConfig, type DatabaseConfig } from '@config/configuration';
 import { LOGGER, type Logger } from '@shared/logger/logger';
+import { METRICS, type Metrics } from '@shared/observability/metrics';
+import { silentMetrics } from '@shared/observability/silent-metrics';
 
 import { PrismaClient } from './generated/prisma/client';
+import { MeasuredPrismaPg, measurePool } from './pool.metrics';
 import { PrismaService } from './prisma.service';
 
 import type { OnModuleDestroy } from '@nestjs/common';
@@ -23,10 +25,11 @@ export class ReplicaPrismaService implements OnModuleDestroy {
     @Inject(databaseConfig.KEY) config: DatabaseConfig,
     primary: PrismaService,
     @Inject(LOGGER) logger: Logger,
+    @Optional() @Inject(METRICS) metrics: Metrics = silentMetrics,
   ) {
     this.enabled = config.replicaUrl !== undefined;
     this.client = config.replicaUrl
-      ? createReplicaClient(config.replicaUrl, config, logger)
+      ? createReplicaClient(config.replicaUrl, config, logger, metrics)
       : primary;
   }
 
@@ -35,10 +38,18 @@ export class ReplicaPrismaService implements OnModuleDestroy {
   }
 }
 
-function createReplicaClient(url: string, config: DatabaseConfig, logger: Logger): PrismaClient {
+function createReplicaClient(
+  url: string,
+  config: DatabaseConfig,
+  logger: Logger,
+  metrics: Metrics,
+): PrismaClient {
   // the same adapter options as the primary: the replica is reached through PgBouncer too
   const client = new PrismaClient({
-    adapter: new PrismaPg({ connectionString: url, max: config.poolMax }),
+    adapter: new MeasuredPrismaPg(
+      { connectionString: url, max: config.poolMax },
+      measurePool(metrics, 'replica'),
+    ),
     log: config.logQueries
       ? ['warn', 'error', { emit: 'event', level: 'query' }]
       : ['warn', 'error'],

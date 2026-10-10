@@ -8,6 +8,7 @@ import { OUTBOX_PUBLISHER } from './outbox-publisher.port';
 import { OutboxRelay } from './outbox-relay';
 import { OutboxRelayRunner } from './outbox-relay.runner';
 import { OutboxConsumer } from './outbox.consumer';
+import { OutboxMetrics } from './outbox.metrics';
 import { OUTBOX_QUEUE, OutboxQueue } from './outbox.queue';
 import { RabbitOutboxPublisher } from './rabbit-outbox.publisher';
 
@@ -29,6 +30,7 @@ import type { OnApplicationBootstrap } from '@nestjs/common';
     { provide: OUTBOX_PUBLISHER, useClass: RabbitOutboxPublisher },
     OutboxRelay,
     OutboxRelayRunner,
+    OutboxMetrics,
     OutboxCleanup,
     OutboxQueue,
     OutboxConsumer,

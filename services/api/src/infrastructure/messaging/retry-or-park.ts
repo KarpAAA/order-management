@@ -6,6 +6,7 @@ import type { Delivery } from '@shared/messaging/delivery';
 import { correlationOf } from './message-correlation';
 import { deadLetterQueue, rejections } from './retry-topology';
 
+import type { BrokerMeters } from './broker.meters';
 import type { MessageErrorHandler } from '@golevelup/nestjs-rabbitmq';
 import type { ConfirmChannel, ConsumeMessage } from 'amqplib';
 
@@ -26,6 +27,8 @@ export interface CorrelationScope {
 export interface RetryContext {
   logger: Logger;
   correlation: CorrelationScope;
+  /** Left out, nothing is counted. */
+  meters?: BrokerMeters;
 }
 
 const describe = (error: unknown): string =>
@@ -72,7 +75,7 @@ export const retryOrPark =
   (
     queue: string,
     policy: RetryPolicy,
-    { logger, correlation }: RetryContext,
+    { logger, correlation, meters }: RetryContext,
   ): MessageErrorHandler =>
   (channel, message, error: unknown) =>
     correlation.run(correlationOf(message), async () => {
@@ -87,11 +90,13 @@ export const retryOrPark =
             'delivery failed, the message comes again',
           );
           channel.nack(message, false, false);
+          meters?.retried(queue);
           return;
         }
         // the consumer channels of the connection are confirm channels (amqp-connection-manager)
         await park(channel as ConfirmChannel, queue, message, error);
         channel.ack(message);
+        meters?.parked(queue);
         logger.error(
           { ...delivery, deadLetterQueue: deadLetterQueue(queue), err: error },
           'message parked',

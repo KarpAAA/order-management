@@ -43,6 +43,7 @@ export class IdempotencyConsumer extends WorkerHost {
     const attemptsSpent = job.attemptsMade >= (job.opts.attempts ?? 1);
     if (attemptsSpent || err.name === 'UnrecoverableError') {
       this.log.error({ queue: job.queueName, job: job.name, jobId: job.id, err }, 'dead job');
+      this.jobs.died(job);
     }
   }
 }

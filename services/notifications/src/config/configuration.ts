@@ -14,6 +14,12 @@ export const loggingConfig = registerAs('logging', () => ({
 }));
 export type LoggingConfig = ConfigType<typeof loggingConfig>;
 
+export const metricsConfig = registerAs('metrics', () => ({
+  port: env().METRICS_PORT,
+  durationBuckets: env().METRICS_DURATION_BUCKETS,
+}));
+export type MetricsConfig = ConfigType<typeof metricsConfig>;
+
 export const databaseConfig = registerAs('database', () => ({
   url: env().DATABASE_URL,
   poolMax: env().DATABASE_POOL_MAX,
@@ -77,6 +83,7 @@ export type InboxConfig = ConfigType<typeof inboxConfig>;
 
 export const allConfigs = [
   loggingConfig,
+  metricsConfig,
   databaseConfig,
   rabbitConfig,
   mailConfig,

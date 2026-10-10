@@ -10,8 +10,11 @@ import { WorkerModule } from '../../src/entrypoints/worker.module';
 import { captureLogs } from './log-capture';
 
 import type { LogLine } from './log-capture';
+import type { Type } from '@nestjs/common';
 
 export interface WorkerApp {
+  /** A provider of the running service. */
+  get<T>(token: Type<T>): T;
   /** Every line the service has logged so far, oldest first. */
   logs(): LogLine[];
   close(): Promise<void>;
@@ -29,5 +32,9 @@ export async function createWorkerApp(): Promise<WorkerApp> {
     .compile();
   await moduleRef.init(); // module init + bootstrap hooks: the consumer starts
 
-  return { logs: () => logs.lines(), close: () => moduleRef.close() };
+  return {
+    get: (token) => moduleRef.get(token),
+    logs: () => logs.lines(),
+    close: () => moduleRef.close(),
+  };
 }

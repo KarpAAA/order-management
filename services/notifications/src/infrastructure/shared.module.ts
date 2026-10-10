@@ -10,6 +10,7 @@ import { createTransactionalAdapter } from './database/transactional.adapter';
 import { InboxModule } from './inbox/inbox.module';
 import { LoggerModule } from './logger/logger.module';
 import { MessagingModule } from './messaging/messaging.module';
+import { ObservabilityModule } from './observability/observability.module';
 
 /**
  * The frame every entrypoint imports: config, the logger, database, CLS + transactions, broker
@@ -20,6 +21,7 @@ import { MessagingModule } from './messaging/messaging.module';
   imports: [
     ConfigModule,
     LoggerModule,
+    ObservabilityModule,
     DatabaseModule,
     ClsModule.forRoot({
       global: true,

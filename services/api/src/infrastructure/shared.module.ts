@@ -11,6 +11,7 @@ import { LocationInterceptor } from '@common/interceptors/location.interceptor';
 import { ConfigModule } from '@config/config.module';
 import { Clock, SystemClock } from '@shared/domain/clock';
 import { LOGGER, type Logger } from '@shared/logger/logger';
+import { METRICS, type Metrics } from '@shared/observability/metrics';
 
 import { DatabaseModule } from './database/database.module';
 import { createTransactionalAdapter } from './database/transactional.adapter';
@@ -19,6 +20,7 @@ import { IdempotencyModule } from './idempotency/idempotency.module';
 import { InboxModule } from './inbox/inbox.module';
 import { LoggerModule } from './logger/logger.module';
 import { MessagingModule } from './messaging/messaging.module';
+import { ObservabilityModule } from './observability/observability.module';
 import { OutboxModule } from './outbox/outbox.module';
 import { QueuesModule } from './queues/queues.module';
 import { ReadRoutingModule } from './read-routing/read-routing.module';
@@ -35,12 +37,16 @@ import { ReadRoutingModule } from './read-routing/read-routing.module';
     ConfigModule,
     DatabaseModule,
     LoggerModule,
+    ObservabilityModule,
     ClsModule.forRootAsync({
       global: true,
-      imports: [LoggerModule],
-      inject: [LOGGER],
-      // the scope of a request opens with its correlation id and its line in the log
-      useFactory: (logger: Logger) => ({ middleware: { mount: true, setup: httpEntry(logger) } }),
+      imports: [LoggerModule, ObservabilityModule],
+      inject: [LOGGER, METRICS],
+      // the scope of a request opens with its correlation id, and ends with its line in the
+      // log and its observation in the metrics
+      useFactory: (logger: Logger, metrics: Metrics) => ({
+        middleware: { mount: true, setup: httpEntry(logger, metrics) },
+      }),
       plugins: [
         new ClsPluginTransactional({
           imports: [DatabaseModule],

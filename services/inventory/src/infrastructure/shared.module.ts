@@ -10,6 +10,7 @@ import { createTransactionalAdapter } from './database/transactional.adapter';
 import { InboxModule } from './inbox/inbox.module';
 import { LoggerModule } from './logger/logger.module';
 import { MessagingModule } from './messaging/messaging.module';
+import { ObservabilityModule } from './observability/observability.module';
 import { OutboxModule } from './outbox/outbox.module';
 
 /**
@@ -21,6 +22,7 @@ import { OutboxModule } from './outbox/outbox.module';
   imports: [
     ConfigModule,
     LoggerModule,
+    ObservabilityModule,
     DatabaseModule,
     ClsModule.forRoot({
       global: true,

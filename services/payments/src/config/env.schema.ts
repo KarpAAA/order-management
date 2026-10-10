@@ -26,6 +26,20 @@ export const envSchema = z.object({
    */
   OTEL_LOGS_EXPORTER: z.enum(['otlp', 'none']).default('none'),
 
+  /**
+   * The port `GET /metrics` is served on, for Prometheus (docs/adr/0027). The default is this
+   * service's own: under `pnpm dev` every process shares one host. 0: not served.
+   */
+  METRICS_PORT: z.coerce.number().int().min(0).max(65_535).default(9466),
+  /** The buckets of the duration histograms, in seconds (ops/observability.md §1). */
+  METRICS_DURATION_BUCKETS: z
+    .string()
+    .default('0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10')
+    .transform((v) => v.split(',').map((bound) => Number(bound.trim())))
+    .refine((bounds) => bounds.every((bound) => Number.isFinite(bound) && bound > 0), {
+      message: 'a comma-separated list of positive numbers',
+    }),
+
   /** The application role: it reads and writes rows and cannot run DDL. */
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   DATABASE_POOL_MAX: z.coerce.number().int().min(1).max(100).default(10),
@@ -73,7 +87,7 @@ export const envSchema = z.object({
   INBOX_CLEANUP_INTERVAL_MS: z.coerce.number().int().min(1000).default(3_600_000),
 
   PAYMENT_GATEWAY: z.enum(['http', 'fake']).default('fake'),
-  PSP_BASE_URL: z.url().default('http://localhost:4010'),
+  PSP_BASE_URL: z.url().default('http://127.0.0.1:4010'),
   /** How long one call to the provider may take, its body included. */
   PSP_TIMEOUT_MS: z.coerce.number().int().positive().default(2000),
   /**

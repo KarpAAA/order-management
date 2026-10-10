@@ -8,7 +8,9 @@ import type { RabbitConfig, RetryPolicy } from '@config/configuration';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
 import { LOGGER, type Logger } from '@shared/logger/logger';
 import type { Delivery } from '@shared/messaging/delivery';
+import { METRICS, type Metrics } from '@shared/observability/metrics';
 
+import { brokerMeters, type BrokerMeters } from './broker.meters';
 import { declareDelayQueues } from './delay-topology';
 import { correlationOf } from './message-correlation';
 import { deliveryOf, retryOrPark } from './retry-or-park';
@@ -49,11 +51,15 @@ const subscription = (method: unknown): RabbitHandlerConfig | undefined => {
  * so nothing is registered there (test/architecture/process-graph.spec.ts).
  *
  * It is the entry of every message: a delivery is handled in a scope of its own, under the
- * correlation id of the message, and leaves one line in the log (docs/adr/0023).
+ * correlation id of the message, and leaves one line in the log (docs/adr/0023) and one
+ * observation in the metrics (docs/adr/0027).
  */
 @Injectable()
 export class RabbitSubscribers implements OnApplicationBootstrap, OnApplicationShutdown {
   private readonly log: Logger;
+  // a property: the constructor is at the limit of six (quality/code-style.md §2)
+  @Inject(METRICS) private readonly metrics!: Metrics;
+  private meters!: BrokerMeters;
 
   constructor(
     private readonly discovery: DiscoveryService,
@@ -67,6 +73,7 @@ export class RabbitSubscribers implements OnApplicationBootstrap, OnApplicationS
   }
 
   async onApplicationBootstrap(): Promise<void> {
+    this.meters = brokerMeters(this.metrics);
     for (const wrapper of this.discovery.getProviders()) {
       const instance: unknown = wrapper.instance;
       if (typeof instance !== 'object' || instance === null) continue;
@@ -132,6 +139,7 @@ export class RabbitSubscribers implements OnApplicationBootstrap, OnApplicationS
         errorHandler: retryOrPark(queue, policy, {
           logger: this.log,
           correlation: this.correlation,
+          meters: this.meters,
         }),
         // bytes that are not JSON reach the handler as a string and fail its contract check,
         // like every other message that is not a contract
@@ -177,9 +185,11 @@ export class RabbitSubscribers implements OnApplicationBootstrap, OnApplicationS
       await instance[name]?.call(instance, message, delivery);
     } catch (err: unknown) {
       // the error is logged by what settles the message (retry-or-park.ts)
+      this.meters.delivered(queue, 'failed', startedAt);
       this.log.info(line('failed'), 'message delivered');
       throw err;
     }
+    this.meters.delivered(queue, 'ok', startedAt);
     this.log.info(line('ok'), 'message delivered');
   }
 }

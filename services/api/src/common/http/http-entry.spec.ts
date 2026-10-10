@@ -7,6 +7,7 @@ import { userActor } from '@shared/auth/actor';
 import { RecordingLogger } from '@shared/logger/__test__/recording-logger';
 import type { Logger } from '@shared/logger/logger';
 import { silentLogger } from '@shared/logger/silent-logger';
+import { silentMetrics } from '@shared/observability/silent-metrics';
 
 import { CorrelationContext } from '../messaging/correlation-context';
 
@@ -33,7 +34,11 @@ function request(headers: Record<string, unknown>, route?: string) {
   });
   const req = { method: 'POST', headers, ...(route ? { route: { path: route } } : {}) };
   const inScope = cls.run(() => {
-    httpEntry(logger)(cls, req as unknown as RequestWithActor, res as unknown as Response);
+    httpEntry(logger, silentMetrics)(
+      cls,
+      req as unknown as RequestWithActor,
+      res as unknown as Response,
+    );
     return correlation.current();
   });
   return { logger, sent, res, req: req as unknown as RequestWithActor, inScope };
@@ -102,7 +107,7 @@ describe('the entry of an HTTP request (LOG-010, LOG-021)', () => {
     };
     const res = Object.assign(new EventEmitter(), { statusCode: 200, setHeader: () => undefined });
     cls.run(() => {
-      httpEntry(asking)(
+      httpEntry(asking, silentMetrics)(
         cls,
         { method: 'GET', headers: { 'x-correlation-id': ID } } as unknown as RequestWithActor,
         res as unknown as Response,

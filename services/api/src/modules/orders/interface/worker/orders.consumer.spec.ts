@@ -23,7 +23,11 @@ const fakeJob = (overrides: Partial<Job> = {}): Job =>
   }) as Job;
 
 /** The scope of a job, without its correlation id and its line (`job-scope.spec.ts`). */
-const jobs = { run: (_job: Job, work: () => Promise<unknown>) => work() } as JobScope;
+const died = vi.fn();
+const jobs = {
+  run: (_job: Job, work: () => Promise<unknown>) => work(),
+  died,
+} as unknown as JobScope;
 
 /** The consumer with the cron job replaced by `run`. */
 function consumerWith(run: MaintainOrderEventPartitionsJob['run'] = vi.fn()) {
@@ -71,11 +75,13 @@ describe('OrdersConsumer dead jobs (dlq: alert, transport/queues.md §4)', () =>
       fakeJob({ attemptsMade: 1 }),
       new UnrecoverableError('unknown job'),
     ],
-  ])('alerts on a job %s', (_case, job, err) => {
+  ])('alerts on a job %s, and counts it (MET-012)', (_case, job, err) => {
     const { consumer, logger } = consumerWith();
+    died.mockClear();
 
     consumer.onFailed(job, err);
 
+    expect(died).toHaveBeenCalledExactlyOnceWith(job);
     expect(logger.at('error')).toEqual([
       {
         level: 'error',
@@ -87,9 +93,11 @@ describe('OrdersConsumer dead jobs (dlq: alert, transport/queues.md §4)', () =>
 
   it('stays quiet on an attempt that BullMQ will retry', () => {
     const { consumer, logger } = consumerWith();
+    died.mockClear();
 
     consumer.onFailed(fakeJob({ attemptsMade: 2 }), new Error('database is down'));
 
     expect(logger.lines).toEqual([]);
+    expect(died).not.toHaveBeenCalled();
   });
 });

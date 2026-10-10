@@ -4,11 +4,12 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import type { GatewayConfig } from '@config/configuration';
 import { silentLogger } from '@shared/logger/silent-logger';
+import { RecordingMetrics } from '@shared/observability/__test__/recording-metrics';
 
 import { FakePaymentGateway } from './fake-payment-gateway.adapter';
 import { HttpPaymentGateway } from './http-payment-gateway.adapter';
 import { PaymentGatewayError } from './payment-gateway.error';
-import { parseRetryAfter } from './resilient-call';
+import { CIRCUIT, parseRetryAfter } from './resilient-call';
 
 import type { ChargeRequest, PaymentGateway } from '../ports/payment-gateway.port';
 
@@ -611,5 +612,76 @@ describe('HttpPaymentGateway: the chain a call belongs to (LOG-040)', () => {
     await httpGateway(config()).charge(request());
 
     expect(seen).toEqual([null]);
+  });
+});
+
+describe('HttpPaymentGateway: what it counts (MET-040, MET-041)', () => {
+  const HALF_OPEN_MS = 100;
+  const measured = (overrides: Partial<GatewayConfig> = {}) => {
+    const metrics = new RecordingMetrics();
+    const gateway = new HttpPaymentGateway(
+      config({ pspBreakerMinCalls: 4, pspBreakerHalfOpenMs: HALF_OPEN_MS, ...overrides }),
+      silentLogger,
+      { current: () => undefined },
+      metrics,
+    );
+    const circuit = () => metrics.of('circuit_breaker_state').at(-1)?.value;
+    return { gateway, metrics, circuit };
+  };
+  const calls = (metrics: RecordingMetrics) =>
+    metrics.of('outbound_call_duration_seconds').map((sample) => sample.labels);
+
+  it('MET-040 observes every call by its operation and the status of the provider', async () => {
+    const { gateway, metrics } = measured();
+
+    await gateway.charge(request());
+    await gateway.void('ch_1');
+
+    expect(calls(metrics)).toEqual([
+      { vendor: 'psp', operation: 'charge', status: 201 },
+      { vendor: 'psp', operation: 'void', status: 200 },
+    ]);
+  });
+
+  it('MET-040 observes a failed call too, and one the provider never answered', async () => {
+    script(CHARGES_URL, 503);
+    const { gateway, metrics } = measured();
+    await gatewayError(gateway);
+    server.use(http.post(CHARGES_URL, () => HttpResponse.error()));
+    await gatewayError(gateway);
+
+    expect(calls(metrics).map(({ status }) => status)).toEqual([503, 'no_answer']);
+  });
+
+  it('MET-040 never puts a charge id on a series: a void is one operation', async () => {
+    const { gateway, metrics } = measured();
+    await gateway.charge(request());
+
+    await gateway.void('ch_1');
+
+    expect(JSON.stringify(calls(metrics))).not.toContain('ch_1');
+  });
+
+  it('MET-041 says the circuit is closed from the start, open when it opens, and closed again', async () => {
+    script(CHARGES_URL, ...repeat(503, 4));
+    const { gateway, metrics, circuit } = measured();
+    expect(circuit()).toBe(CIRCUIT.closed);
+
+    for (let i = 0; i < 4; i += 1) await gatewayError(gateway);
+    expect(circuit()).toBe(CIRCUIT.open);
+
+    // not called: counted as rejected, and no call is observed
+    await gatewayError(gateway);
+    expect(metrics.total('circuit_breaker_rejected_total', { vendor: 'psp' })).toBe(1);
+    expect(calls(metrics)).toHaveLength(4);
+
+    await delay(HALF_OPEN_MS + 20);
+    await gateway.charge(request());
+    expect(metrics.of('circuit_breaker_state').map((sample) => sample.value)).toEqual([
+      CIRCUIT.closed,
+      CIRCUIT.open,
+      CIRCUIT.halfOpen,
+      CIRCUIT.closed,
+    ]);
   });
 });

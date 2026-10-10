@@ -1,10 +1,12 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Optional } from '@nestjs/common';
 
 import { notificationsConfig, type NotificationsConfig } from '@config/configuration';
 import { systemActor } from '@shared/auth/actor';
 import { newId } from '@shared/domain/id';
 import { LOGGER, type Logger } from '@shared/logger/logger';
 import { CORRELATION, type Correlation } from '@shared/messaging/correlation';
+import { METRICS, type Counter, type Metrics } from '@shared/observability/metrics';
+import { silentMetrics } from '@shared/observability/silent-metrics';
 import { TRACE_SCOPE, type TraceScope } from '@shared/tracing/trace-scope';
 
 import { DispatchNotificationService } from '../../application/dispatch-notification.service';
@@ -30,6 +32,9 @@ const ACTOR = systemActor('dispatcher:notifications');
  * the send has ended when the line is written, so the line is written in the trace the row
  * kept. Never the address, and never the text of the server, which names it: the row has
  * both (`last_error`).
+ *
+ * And every try is counted by how it ended (docs/adr/0027): mails that are given up are the
+ * number somebody has to look at.
  */
 @Injectable()
 export class DispatchNotificationsJob implements OnApplicationBootstrap, OnModuleDestroy {
@@ -38,6 +43,7 @@ export class DispatchNotificationsJob implements OnApplicationBootstrap, OnModul
   private stopped = false;
   private stuck = false;
   private wake: (() => void) | undefined;
+  private readonly dispatched: Counter<'outcome'>;
 
   constructor(
     private readonly dispatch: DispatchNotificationService,
@@ -45,8 +51,15 @@ export class DispatchNotificationsJob implements OnApplicationBootstrap, OnModul
     @Inject(CORRELATION) private readonly correlation: Correlation,
     @Inject(TRACE_SCOPE) private readonly trace: TraceScope,
     @Inject(LOGGER) logger: Logger,
+    // left out by a test that builds the job by hand
+    @Optional() @Inject(METRICS) metrics: Metrics = silentMetrics,
   ) {
     this.log = logger.child({ context: DispatchNotificationsJob.name });
+    this.dispatched = metrics.counter({
+      name: 'notifications_dispatched_total',
+      help: 'Tries to send the mail of a notification: sent, postponed or given_up.',
+      labels: ['outcome'],
+    });
   }
 
   onApplicationBootstrap(): void {
@@ -87,6 +100,7 @@ export class DispatchNotificationsJob implements OnApplicationBootstrap, OnModul
   /** The line of one mail, in the chain and in the trace of the event that asked for it. */
   private tell({ outcome, notification, failure }: Dispatched): void {
     if (notification === undefined) return;
+    this.dispatched.inc({ outcome: outcome === 'given-up' ? 'given_up' : outcome });
     const { id: notificationId, correlationId, traceContext, ...about } = notification;
     this.trace.run(traceContext, () => {
       this.correlation.run(correlationId ?? newId(), () => {

@@ -6,6 +6,7 @@ import { OutboxCleanupRunner } from './outbox-cleanup.runner';
 import { OUTBOX_PUBLISHER } from './outbox-publisher.port';
 import { OutboxRelay } from './outbox-relay';
 import { OutboxRelayRunner } from './outbox-relay.runner';
+import { OutboxMetrics } from './outbox.metrics';
 import { RabbitOutboxPublisher } from './rabbit-outbox.publisher';
 
 /**
@@ -17,6 +18,7 @@ import { RabbitOutboxPublisher } from './rabbit-outbox.publisher';
     { provide: OUTBOX_PUBLISHER, useClass: RabbitOutboxPublisher },
     OutboxRelay,
     OutboxRelayRunner,
+    OutboxMetrics,
     OutboxCleanup,
     OutboxCleanupRunner,
   ],

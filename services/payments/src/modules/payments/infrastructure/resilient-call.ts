@@ -15,6 +15,8 @@ import {
 
 import type { GatewayConfig } from '@config/configuration';
 import type { Logger } from '@shared/logger/logger';
+import type { Metrics } from '@shared/observability/metrics';
+import { silentMetrics } from '@shared/observability/silent-metrics';
 
 import { PaymentGatewayError } from './payment-gateway.error';
 
@@ -96,7 +98,18 @@ function retries(config: GatewayConfig, logger: Logger): RetryPolicy {
   return policy;
 }
 
-function breaker(config: GatewayConfig, logger: Logger): CircuitBreakerPolicy {
+/** The state of the circuit as a number a graph can show: the higher, the less is called. */
+export const CIRCUIT = { closed: 0, halfOpen: 1, open: 2 } as const;
+
+function breaker(config: GatewayConfig, logger: Logger, metrics: Metrics): CircuitBreakerPolicy {
+  const state = metrics.gauge({
+    name: 'circuit_breaker_state',
+    help: 'State of the circuit of a vendor: 0 closed, 1 half-open, 2 open.',
+    labels: ['vendor'],
+  });
+  const vendor = { vendor: 'psp' };
+  // said at once: a circuit that never opened is closed, not unknown
+  state.set(vendor, CIRCUIT.closed);
   const policy = circuitBreaker(handleWhen(isTransient), {
     halfOpenAfter: config.pspBreakerHalfOpenMs,
     breaker: new SamplingBreaker({
@@ -108,15 +121,18 @@ function breaker(config: GatewayConfig, logger: Logger): CircuitBreakerPolicy {
     }),
   });
   policy.onBreak((reason) => {
+    state.set(vendor, CIRCUIT.open);
     logger.error(
       { openForMs: config.pspBreakerHalfOpenMs, reason: messageOf(reason) },
       'psp circuit opened',
     );
   });
   policy.onHalfOpen(() => {
+    state.set(vendor, CIRCUIT.halfOpen);
     logger.warn({}, 'psp circuit half-open: one call decides');
   });
   policy.onReset(() => {
+    state.set(vendor, CIRCUIT.closed);
     logger.info({}, 'psp circuit closed');
   });
   return policy;
@@ -136,8 +152,17 @@ function breaker(config: GatewayConfig, logger: Logger): CircuitBreakerPolicy {
  * wait queue (docs/adr/0013): the retry here is for milliseconds, that one for an outage.
  * One instance per provider, shared by all its operations: the state is the provider's.
  */
-export function createResilientCall(config: GatewayConfig, logger: Logger): ResilientCall {
-  const policy = wrap(retries(config, logger), breaker(config, logger));
+export function createResilientCall(
+  config: GatewayConfig,
+  logger: Logger,
+  metrics: Metrics = silentMetrics,
+): ResilientCall {
+  const policy = wrap(retries(config, logger), breaker(config, logger, metrics));
+  const rejected = metrics.counter({
+    name: 'circuit_breaker_rejected_total',
+    help: 'Operations that failed at once because the circuit of a vendor was open.',
+    labels: ['vendor'],
+  });
 
   return {
     async execute(call) {
@@ -153,6 +178,7 @@ export function createResilientCall(config: GatewayConfig, logger: Logger): Resi
         }, budget);
       } catch (err: unknown) {
         if (err instanceof BrokenCircuitError) {
+          rejected.inc({ vendor: 'psp' });
           throw new PaymentGatewayError('PSP circuit is open: not called', true, { cause: err });
         }
         if (err instanceof BudgetExhausted) {

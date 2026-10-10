@@ -13,8 +13,8 @@ import type { DestinationStream } from 'pino';
 
 /** Where the lines are written: stdout. A test puts a stream of its own here and reads it. */
 export const LOG_DESTINATION = Symbol('LOG_DESTINATION');
-/** Which process of the service this is (`api`, `worker`): a field of every line. */
-const PROCESS_NAME = Symbol('PROCESS_NAME');
+/** Which process of the service this is (`api`, `worker`): a field of every line, a label of every metric. */
+export const PROCESS_NAME = Symbol('PROCESS_NAME');
 
 const SERVICE = 'api';
 

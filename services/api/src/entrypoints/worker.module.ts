@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { IdempotencyWorkerModule } from '@infra/idempotency/idempotency.worker.module';
 import { InboxWorkerModule } from '@infra/inbox/inbox.worker.module';
 import { ProcessNameModule } from '@infra/logger/logger.module';
+import { ObservabilityWorkerModule } from '@infra/observability/observability.worker.module';
 import { OutboxWorkerModule } from '@infra/outbox/outbox.worker.module';
 import { SharedModule } from '@infra/shared.module';
 
@@ -20,6 +21,7 @@ import { OrdersWorkerModule } from '@modules/orders';
     OutboxWorkerModule,
     InboxWorkerModule,
     IdempotencyWorkerModule,
+    ObservabilityWorkerModule,
   ],
 })
 export class WorkerModule {}
