@@ -24,6 +24,7 @@ export const NotificationMapper = {
       nextAttemptAt: row.nextAttemptAt,
       lastError: row.lastError,
       occurredAt: row.occurredAt,
+      correlationId: row.correlationId,
       createdAt: row.createdAt,
       settledAt: row.settledAt,
     });

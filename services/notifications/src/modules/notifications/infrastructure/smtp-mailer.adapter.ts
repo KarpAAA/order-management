@@ -20,7 +20,10 @@ export function toMailDeliveryError(err: unknown): MailDeliveryError {
   const code =
     typeof err === 'object' && err !== null && 'responseCode' in err ? err.responseCode : undefined;
   const refused = typeof code === 'number' && code >= PERMANENT_FAILURE;
-  return new MailDeliveryError(message, !refused, { cause: err });
+  return new MailDeliveryError(message, !refused, {
+    cause: err,
+    ...(typeof code === 'number' ? { smtpCode: code } : {}),
+  });
 }
 
 /**

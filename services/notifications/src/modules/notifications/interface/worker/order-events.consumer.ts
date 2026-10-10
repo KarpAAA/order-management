@@ -1,5 +1,5 @@
 import { RabbitSubscribe } from '@golevelup/nestjs-rabbitmq';
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import {
   exchanges,
   OrderCancelledV1,
@@ -14,6 +14,7 @@ import {
 import { systemActor } from '@shared/auth/actor';
 import { DomainError } from '@shared/errors/domain-error';
 import { UnprocessableMessageError } from '@shared/errors/unprocessable-message.error';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 import { INBOX, type Inbox } from '@shared/messaging/inbox';
 
 import { RequestNotificationService } from '../../application/request-notification.service';
@@ -42,12 +43,15 @@ const ORDER_EVENTS_QUEUE = 'notifications.order-events';
  */
 @Injectable()
 export class OrderEventsConsumer {
-  private readonly logger = new Logger(OrderEventsConsumer.name);
+  private readonly log: Logger;
 
   constructor(
     @Inject(INBOX) private readonly inbox: Inbox,
     private readonly requestNotification: RequestNotificationService,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: OrderEventsConsumer.name });
+  }
 
   // the queue's arguments and its retry policy are added by RabbitSubscribers, from the config
   @RabbitSubscribe({
@@ -73,6 +77,8 @@ export class OrderEventsConsumer {
       workspaceId: message.workspaceId,
       recipient: recipientOf(message),
       notice: noticeOf(message),
+      // kept with the notification: its mail is sent later, outside the scope of this message
+      correlationId: message.correlationId,
     };
     let fresh: boolean;
     try {
@@ -87,7 +93,10 @@ export class OrderEventsConsumer {
     }
     if (!fresh) {
       // the same message again (the broker, the relay of the sender, an operator): done before
-      this.logger.log(`${message.name} ${message.messageId} skipped: duplicate`);
+      this.log.info(
+        { messageName: message.name, messageId: message.messageId, reason: 'duplicate' },
+        'message skipped',
+      );
     }
   }
 }

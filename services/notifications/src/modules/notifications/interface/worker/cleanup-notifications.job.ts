@@ -1,7 +1,8 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 
 import { notificationsConfig, type NotificationsConfig } from '@config/configuration';
 import { Clock } from '@shared/domain/clock';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { NotificationsCleanup } from '../../infrastructure/notifications-cleanup';
 
@@ -18,7 +19,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 @Injectable()
 export class CleanupNotificationsJob implements OnApplicationBootstrap, OnModuleDestroy {
-  private readonly logger = new Logger(CleanupNotificationsJob.name);
+  private readonly log: Logger;
   private timer: NodeJS.Timeout | undefined;
   private running: Promise<void> = Promise.resolve();
 
@@ -26,7 +27,10 @@ export class CleanupNotificationsJob implements OnApplicationBootstrap, OnModule
     private readonly cleanup: NotificationsCleanup,
     private readonly clock: Clock,
     @Inject(notificationsConfig.KEY) private readonly config: NotificationsConfig,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: CleanupNotificationsJob.name });
+  }
 
   onApplicationBootstrap(): void {
     this.running = this.run();
@@ -48,11 +52,9 @@ export class CleanupNotificationsJob implements OnApplicationBootstrap, OnModule
     try {
       const cutoff = new Date(this.clock.now().getTime() - this.config.retentionDays * DAY_MS);
       const deleted = await this.cleanup.deleteSettledBefore(cutoff);
-      if (deleted > 0) this.logger.log(`notifications cleanup: deleted=${String(deleted)}`);
+      if (deleted > 0) this.log.info({ deleted }, 'notifications cleanup done');
     } catch (err: unknown) {
-      this.logger.error(
-        `notifications cleanup failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
+      this.log.error({ err }, 'notifications cleanup failed');
     }
   }
 }

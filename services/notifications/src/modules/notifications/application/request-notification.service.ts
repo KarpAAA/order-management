@@ -1,8 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
 import { Transactional } from '@nestjs-cls/transactional';
 
 import type { Actor } from '@shared/auth/actor';
 import { Clock } from '@shared/domain/clock';
+import { LOGGER, type Logger } from '@shared/logger/logger';
 
 import { Notification } from '../domain/notification';
 import {
@@ -25,13 +26,16 @@ import type { RequestNotificationCommand } from './notification-commands';
  */
 @Injectable()
 export class RequestNotificationService {
-  private readonly logger = new Logger(RequestNotificationService.name);
+  private readonly log: Logger;
 
   constructor(
     @Inject(NOTIFICATIONS_REPOSITORY) private readonly notifications: NotificationsRepositoryPort,
     private readonly policy: NotificationsPolicy,
     private readonly clock: Clock,
-  ) {}
+    @Inject(LOGGER) logger: Logger,
+  ) {
+    this.log = logger.child({ context: RequestNotificationService.name });
+  }
 
   @Transactional()
   async execute(cmd: RequestNotificationCommand, actor: Actor): Promise<void> {
@@ -41,7 +45,7 @@ export class RequestNotificationService {
     const written = await this.notifications.insertIfAbsent(notification);
     if (!written) {
       const { orderId, kind, attempt } = notification;
-      this.logger.log(`${kind} of order ${orderId}, attempt ${attempt}: already owed, skipped`);
+      this.log.info({ orderId, kind, attempt }, 'notification already owed, skipped');
     }
   }
 }

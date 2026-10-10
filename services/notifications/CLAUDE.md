@@ -20,11 +20,11 @@ broker: rabbitmq                # in: queue `notifications.order-events` on the 
 mail: smtp                      # nodemailer behind the port `Mailer`; dev and tests: Mailpit
 queue: none                     # no BullMQ, no Redis
 processes: worker               # one process: a broker consumer, the dispatcher, the cleanups of the notifications and the inbox; no HTTP
-dlq: alert                      # an event given up → `notifications.order-events.dlq` + Logger.error; a mail given up → `FAILED` + Logger.error (Step 4: metric)
+dlq: alert                      # an event given up → `notifications.order-events.dlq` + an `error` line; a mail given up → `FAILED` + an `error` line (4.5: metric)
 cron: none                      # the dispatcher and the cleanups are timers of the process
 validation: zod                 # messages through `parseMessage()` of @oms/contracts; env through zod
 pii-encryption: no              # `recipient_email` is kept in clear for NOTIFICATIONS_RETENTION_DAYS
-logs: stdout                    # Nest built-in Logger; pino in Step 4
+logs: stdout                    # JSON lines, pino behind LOGGER, correlationId from CLS (ADR 0023); LOG_LEVEL, LOG_PRETTY
 testing: vitest                 # projects unit + e2e; the e2e suite stops at the service boundary
 ```
 
@@ -102,6 +102,21 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/notificati
   takes one event at a time (`RABBITMQ_PREFETCH=1`), which is what makes `handledUpTo()` a
   proof. `delivery.e2e-spec.ts` sends through `helpers/smtp-gate.ts`, a port of its own in
   front of Mailpit that can be closed and opened while the service runs.
+- **One logger, and a correlation id nobody passes** (ADR 0023; a copy of the api's:
+  `@shared/logger/logger`, `infrastructure/logger/`, `infrastructure/correlation/`, the port
+  `CORRELATION`). `RabbitSubscribers` runs every delivery in the chain of its message and
+  writes its line (`message delivered`); `retry-or-park.ts` opens the chain again. A class
+  injects `LOGGER`: fields first, a message that never changes, ids and codes only, never
+  `Logger` of Nest (lint). A class built by hand takes `silentLogger`; the e2e app logs to
+  memory (`app.logs()`).
+- **The mail of a notification is logged in the chain of its event.** The consumer puts the
+  `correlationId` of the envelope into the command, and the row keeps it
+  (`correlation_id`, nullable: older rows have none). `DispatchNotificationService` logs
+  nothing: it returns what it tried (`Dispatched`), and `DispatchNotificationsJob` tells it
+  inside `correlation.run(<id of the row>)`: `mail sent`, `mail not sent, the next try is due
+later` (warn), `notification given up…` (error). Never the address, and never the text of
+  the mail server, which names it: the reply code (`MailDeliveryError.smtpCode`). The text is
+  in `last_error` of the row.
 - **The service is held to its rows of the map of parties** (ADR 0021;
   `notifications.contract.spec.ts`): what the queue is bound to, and a released message of
   each event through the consumer. A new event to tell about is a row in
@@ -129,5 +144,8 @@ Process model: `src/entrypoints/main.worker.ts`, one image (`services/notificati
 - The use cases are `@Injectable()` with `@Transactional()`, without the `@UseCase()` decorator
   of the api: the service has no `common/` and no in-process events to hold back until commit.
 - The cleanups are timers in the process, not scheduled jobs (`transport/cron.md`).
-- One migration, no migration checker and no mutation run (`docs/architecture.md` → Known gaps).
+- Two migrations, no migration checker and no mutation run (`docs/architecture.md` → Known gaps).
+- The use case of the dispatcher returns what it tried instead of logging it, and its job
+  logs (`ops/logging.md` §3 has the use case log itself): the job knows the chain the line
+  belongs to (`docs/conventions-backlog.md` §25).
 - `Actor` is a system actor only; `role-scope`, guards and HTTP rules do not apply.

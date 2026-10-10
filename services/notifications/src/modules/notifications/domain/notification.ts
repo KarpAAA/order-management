@@ -37,6 +37,8 @@ export interface NotificationProps {
   nextAttemptAt: Date | null;
   lastError: string | null;
   occurredAt: Date;
+  /** The chain of the event that asked for it; null for one written before it was kept. */
+  correlationId: string | null;
   createdAt: Date;
   /** SENT or FAILED: when. */
   settledAt: Date | null;
@@ -60,6 +62,7 @@ export class Notification {
     workspaceId: string;
     recipient: Recipient;
     notice: OrderNotice;
+    correlationId: string | null;
     now: Date;
   }): Notification {
     const { notice, now } = input;
@@ -76,6 +79,7 @@ export class Notification {
       nextAttemptAt: now,
       lastError: null,
       occurredAt: notice.occurredAt,
+      correlationId: input.correlationId,
       createdAt: now,
       settledAt: null,
     });
@@ -141,6 +145,12 @@ export class Notification {
   }
   get body(): string {
     return this.props.body;
+  }
+  get sendAttempts(): number {
+    return this.props.sendAttempts;
+  }
+  get correlationId(): string | null {
+    return this.props.correlationId;
   }
   /** Nobody will try again: somebody has to look. */
   get givenUp(): boolean {

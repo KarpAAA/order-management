@@ -20,12 +20,16 @@ export interface OutgoingMail {
 export class MailDeliveryError extends InfrastructureError {
   readonly code = 'MAIL_DELIVERY_FAILED';
 
+  /** The reply code of the server (550, 421), when it answered. */
+  readonly smtpCode: number | undefined;
+
   constructor(
     message: string,
     readonly retryable: boolean,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; smtpCode?: number },
   ) {
     super(message, options);
+    this.smtpCode = options?.smtpCode;
   }
 }
 

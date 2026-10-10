@@ -1,8 +1,10 @@
 import { AmqpConnection } from '@golevelup/nestjs-rabbitmq';
-import { Logger } from '@nestjs/common';
 import { exchanges } from '@oms/contracts';
 
 import type { RabbitConfig } from '@config/configuration';
+import type { Logger } from '@shared/logger/logger';
+
+import { NestLoggerAdapter } from '../logger/nest-logger.adapter';
 
 export const CONNECTION_NAME = 'notifications-worker';
 
@@ -11,7 +13,7 @@ export const CONNECTION_NAME = 'notifications-worker';
  * Queues are declared by the consumer that reads them (`@RabbitSubscribe`); what happens to a
  * message whose handler throws is decided in `retry-or-park.ts`.
  */
-export async function connectRabbit(config: RabbitConfig): Promise<AmqpConnection> {
+export async function connectRabbit(config: RabbitConfig, logger: Logger): Promise<AmqpConnection> {
   const connection = new AmqpConnection({
     uri: config.url,
     exchanges: Object.values(exchanges).map(({ name, type }) => ({ name, type })),
@@ -27,7 +29,8 @@ export async function connectRabbit(config: RabbitConfig): Promise<AmqpConnectio
     },
     // no request/reply between the services: commands are answered by events
     enableDirectReplyTo: false,
-    logger: new Logger('RabbitMQ'),
+    // the library asks for a Nest logger: its lines go through ours
+    logger: new NestLoggerAdapter(logger.child({ context: 'RabbitMQ' })),
   });
   await connection.init();
   return connection;

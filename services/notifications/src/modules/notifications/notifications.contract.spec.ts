@@ -7,6 +7,7 @@ import { consumedBy, contractKey, producedBy } from '@oms/contracts';
 import { bindingProblems, releasedSample, type Binding } from '@oms/contracts/testing';
 import { describe, expect, it, vi } from 'vitest';
 
+import { silentLogger } from '@shared/logger/silent-logger';
 import type { Inbox } from '@shared/messaging/inbox';
 
 import { OrderEventsConsumer } from './interface/worker/order-events.consumer';
@@ -47,9 +48,11 @@ describe('notifications as a consumer', () => {
 
   it.each(READ)('CTR-021 handles $key as it was released', async ({ contract }) => {
     const execute = vi.fn().mockResolvedValue(undefined);
-    const consumer = new OrderEventsConsumer(inbox, {
-      execute,
-    } as unknown as RequestNotificationService);
+    const consumer = new OrderEventsConsumer(
+      inbox,
+      { execute } as unknown as RequestNotificationService,
+      silentLogger,
+    );
 
     await expect(consumer.onOrderEvent(releasedSample(contract))).resolves.toBeUndefined();
 

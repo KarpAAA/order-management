@@ -8,16 +8,18 @@ import { Clock, SystemClock } from '@shared/domain/clock';
 import { DatabaseModule } from './database/database.module';
 import { createTransactionalAdapter } from './database/transactional.adapter';
 import { InboxModule } from './inbox/inbox.module';
+import { LoggerModule } from './logger/logger.module';
 import { MessagingModule } from './messaging/messaging.module';
 
 /**
- * The frame every entrypoint imports: config, database, CLS + transactions, broker
+ * The frame every entrypoint imports: config, the logger, database, CLS + transactions, broker
  * connection, the inbox, clock. No outbox: the service publishes nothing.
  */
 @Global()
 @Module({
   imports: [
     ConfigModule,
+    LoggerModule,
     DatabaseModule,
     ClsModule.forRoot({
       global: true,

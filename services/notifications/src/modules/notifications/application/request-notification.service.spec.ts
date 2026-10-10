@@ -1,10 +1,11 @@
-import { Logger } from '@nestjs/common';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import { ForbiddenError } from '@shared/errors/forbidden-error';
+import { silentLogger } from '@shared/logger/silent-logger';
 
 import {
   ALL_NOTICES,
+  CORRELATION_ID,
   LATER,
   NOTICES,
   OTHER_ORDER,
@@ -28,15 +29,19 @@ describe('RequestNotificationService', () => {
 
   beforeEach(() => {
     notifications = new InMemoryNotificationsRepository();
-    service = new RequestNotificationService(notifications, new NotificationsPolicy(), fixedClock);
-    vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
+    service = new RequestNotificationService(
+      notifications,
+      new NotificationsPolicy(),
+      fixedClock,
+      silentLogger,
+    );
   });
 
   const request = (notice: OrderNotice, recipient = RECIPIENT) =>
-    service.execute({ workspaceId: WORKSPACE, recipient, notice }, consumer);
+    service.execute(
+      { workspaceId: WORKSPACE, recipient, notice, correlationId: CORRELATION_ID },
+      consumer,
+    );
 
   it.each(ALL_NOTICES)(
     'NTF-001 $kind: one notification is owed, and nothing is sent',
@@ -46,6 +51,8 @@ describe('RequestNotificationService', () => {
       expect(notifications.all().map((row) => row.snapshot())).toEqual([
         expect.objectContaining({
           workspaceId: WORKSPACE,
+          // the chain of the event, for the mail that goes out later (LOG-041)
+          correlationId: CORRELATION_ID,
           orderId: n.orderId,
           kind: n.kind,
           recipient: RECIPIENT,
@@ -114,7 +121,12 @@ describe('RequestNotificationService', () => {
   it('NTF-022 only the consumer of the events may ask for a notification', async () => {
     await expect(
       service.execute(
-        { workspaceId: WORKSPACE, recipient: RECIPIENT, notice: NOTICES.paid },
+        {
+          workspaceId: WORKSPACE,
+          recipient: RECIPIENT,
+          notice: NOTICES.paid,
+          correlationId: CORRELATION_ID,
+        },
         dispatcher,
       ),
     ).rejects.toThrow(ForbiddenError);
