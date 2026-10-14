@@ -217,7 +217,7 @@ services:
   # the lag of the replica (docs/adr/0027). One exporter: Prometheus names the server in its
   # request, and the login for it is in the mounted file. Nobody depends on it.
   postgres-exporter:
-    image: quay.io/prometheuscommunity/postgres-exporter:v0.17.1
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
     command: ['--config.file=/etc/postgres-exporter.yml']
     volumes:
       - ./devtools/observability/postgres-exporter.yml:/etc/postgres-exporter.yml:ro
