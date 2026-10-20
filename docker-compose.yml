@@ -182,7 +182,7 @@ services:
   # the broker and of postgres-exporter (docs/adr/0027; devtools/observability/prometheus.yaml).
   # The dashboards, the SLIs and the alert are files of the repository (docs/adr/0028).
   lgtm:
-    image: grafana/otel-lgtm:0.36.0
+    image: grafana/otel-lgtm:0.37.0
     ports:
       - '3001:3000' # Grafana; 3000 on the host is the api
       - '4317:4317'
